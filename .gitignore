@@ -1,0 +1,16 @@
+__pycache__/
+.pytest_cache/
+.venv/
+tmp/
+data/raw/*
+data/processed/*
+data/feedback/*
+models/*
+outputs/**
+train/postings.csv/
+train/raw/
+train/derived/
+train/remote_feeds/
+train/*.csv
+!outputs/**/
+!**/.gitkeep

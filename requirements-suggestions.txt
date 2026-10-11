@@ -1,0 +1,2 @@
+# Optional, local-only inference for pretrained Manual Labeling suggestions.
+sentence-transformers>=3.3,<6

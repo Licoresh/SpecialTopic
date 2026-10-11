@@ -1,0 +1,4 @@
+Official Philippine Skills Framework for Analytics and Artificial Intelligence (PSF-AAI)
+https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf
+
+Use the official framework as the taxonomy for manual PSF competency mapping.

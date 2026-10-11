@@ -1,0 +1,71 @@
+# The Future of Work in the Philippines
+
+A local Streamlit research application for analyzing skills required in Philippine AI and analytics job advertisements and their alignment with the Philippine Skills Framework for Analytics and Artificial Intelligence (PSF-AAI).
+
+The app preserves the existing job ingestion, cleaning, NLP extraction, human labeling, TF-IDF classifiers, evaluation, and exports. The research pipeline maps employer skills to a researcher-reviewed PSF-AAI reference.
+
+## Run locally
+
+From this directory in PowerShell:
+
+```powershell
+..\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+For a new environment, create a virtual environment and install `requirements.txt`. Python 3.11+ is supported. Ordinary processing is local. To enable pretrained category and PSF-AAI suggestions on **Manual Labeling**, also install `requirements-suggestions.txt`; the model downloads on first use. Suggestions run locally.
+
+The app uses [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3), pinned to a fixed model revision, to rank category descriptions and the active PSF-AAI taxonomy by multilingual semantic similarity. BGE-M3 is an embedding model, not a trained category classifier; its similarity scores are suggestions, not calibrated confidence or research metrics. The first suggestion run downloads roughly 2.3 GB of model files and runs locally on CPU. Install the optional runtime from this folder with `..\.venv\Scripts\python.exe -m pip install -r requirements-suggestions.txt` when using the shared parent environment.
+
+Manual Labeling has a resumable **Run all local suggestions** action that prepares eligible posting CSVs already in `./train` and saves BGE-M3 drafts in batches. It does not crawl websites, create researcher labels, or train a classifier. Review and save each research label yourself.
+
+Manual Labeling can also fetch one page (up to 20 jobs) from the free Himalayas public API. The importer keeps only listings whose location restrictions explicitly include the Philippines, stores their original listing URLs, and deduplicates by the provider's stable job ID. The provider can rate-limit API calls, so automated cycles make at most one request each. To run one bounded feed-and-suggest cycle from the project directory, use `..\\.venv\\Scripts\\python.exe scripts\\feed_and_suggest.py`. It creates source postings and editable BGE-M3 drafts only; researchers must review labels, and draft suggestions never train the research classifier. Credit Himalayas and link each original listing when displaying its data.
+
+For exact phrases already present in the project's competency vocabulary, the displayed category draft uses that deterministic mapping instead of a potentially conflicting embedding result; the page identifies this source and leaves the category similarity score blank. Other category drafts and PSF-AAI matches use BGE-M3 similarity rankings, which are prompts for review rather than calibrated confidence or research metrics.
+
+For the click-by-click workflow, see [USER_GUIDE.md](USER_GUIDE.md).
+
+## Navigation
+
+The app has 16 pages: Home; Job Data Upload (with automatic editable column mapping); Data Quality; Job Market Analysis; PSF-AAI Framework; Competency Extraction; Manual Labeling; ML Training; Model Evaluation; PSF Mapping; Employer–PSF Alignment; Unmapped / Emerging Skills; Reports; Feedback; Methodology; Settings.
+
+## Research workflow
+
+1. Upload Philippine job ads and review automatically suggested column mappings.
+2. Review job source evidence for Philippine provenance and AI/analytics relevance, confirm the scope check, deduplicate and clean the records. Extraction remains blocked until this review is recorded. Original fields and source IDs remain available.
+3. Load the official PSF-AAI PDF or a verified structured table. PDF parsing saves a traceable draft; a researcher must check each definition, official code, page reference and role/level evidence before activating the taxonomy. Aliases and keywords are left blank unless a researcher supplies them.
+4. Extract phrases from job titles, descriptions, required/preferred skills and qualifications. Extraction shows source evidence and can run before a classifier exists.
+5. On **Manual Labeling**, category and PSF-AAI fields start blank for new phrases in the review table. Researchers may generate AI drafts and explicitly check a row's Copy draft box if they want to use one. Unchecked rows use manual cell values; checking a box uses that draft for the field when saving. Only clicking **Save annotations** records the final choices under the reviewer ID and timestamp. AI drafts stay in `data/processed/pretrained_label_suggestions.csv` and never enter the training table automatically. Automatic retraining is off by default; manually train from **ML Training** after the dataset passes validation.
+6. The ML Training page requires at least 30 distinct usable labels, two classes, five examples per class, complete source/reviewer provenance, no conflicting labels and a valid stratified split. These are workflow gates, not proof of adequate statistical validation. The explicit Train / Retrain action compares TF-IDF + Multinomial Naive Bayes with TF-IDF + balanced Logistic Regression; it never trains on refresh.
+7. Review model performance and per-class errors, then explicitly rerun extraction to apply the saved classifier.
+8. PSF mapping and employer alignment use the active reviewed reference. Review exact/alias/fuzzy evidence, source pages and heuristic scores. Configure thresholds in Settings; they are not official PSF standards.
+9. Explore employer skill demand and PSF-AAI alignment, plus job-title/family trends and education/experience requirements. Requirement text matches remain source-linked candidates for researcher verification. Download CSV tables, the workbook, HTML summary and generated written report.
+
+The research scope is Philippine AI- and analytics-related job advertisements compared with the TESDA PSF-AAI reference. This system does not analyze university curricula or claim that job-ad counts represent the entire Philippine labor market.
+
+The pretrained model ranks human-defined categories and PSF-AAI competency descriptions; it does not validate extraction, prove a phrase is a competency, or establish PSF equivalence. Scores are semantic similarities, not calibrated confidence or research metrics. A PSF match does not establish equivalence. Researchers must review the original context and can ignore or explicitly copy each suggestion. The saved label is a researcher decision because only the manual field value submitted by the reviewer is saved.
+
+## Alignment and demand definitions
+
+The alignment unit is a distinct normalized employer phrase across the selected job-ad sample. Scores ≥0.80 are ALIGNED, ≥0.60 and <0.80 PARTIALLY ALIGNED, below 0.60 NOT MAPPED, and unavailable reference evidence is UNCLASSIFIED. These configurable thresholds are researcher heuristics, not official PSF requirements. “Not clearly mapped” does not mean PSF-AAI lacks the skill. Role and proficiency details describe the framework, not applicants.
+
+Employer demand count is the number of distinct selected job ads containing a skill. Demand percentage divides this count by all selected job ads, including ads without detections. Alignment and partial alignment percentages use ALIGNED + PARTIALLY ALIGNED phrases as their denominator; unmapped percentage uses all assessed phrases. UNCLASSIFIED phrases are excluded from assessed rates. Counts and formulas are recorded in report metadata.
+
+An emerging-skill candidate has NOT MAPPED status and appears in a configurable minimum number of distinct job ads (default 2). This is a screening flag only; researchers must review context, source quality and longitudinal evidence before claiming novelty.
+
+## Official framework and provenance
+
+The official source is [TESDA's PSF-AAI PDF](https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf). The included copy is stored at `data/reference/psf_aai_official.pdf`. Draft definitions, role evidence, source pages, URL and SHA-256 are stored in `data/processed/psf_aai_draft.csv` and `psf_role_links.csv`. These are not active until a researcher reviews and activates them on PSF-AAI Framework. The file `verified_psf_aai.csv` records the active reviewed reference.
+
+## Training and model outputs
+
+The authoritative label file is `train/labeled_competencies.csv`, with phrase, normalized_phrase, label, psf_competency, source_type, source_id, reviewer and timestamp. The app does not create example labels. Both fitted pipelines and the selected research classifier, metadata, model comparison, holdout predictions, metrics, per-class report and confusion matrix are written only after valid manual labels and explicit training. The app loads the selected research classifier from `models/competency_classifier.joblib`; the separate artifact under `models/provisional/` is an unevaluated weak-supervision experiment and is not used in the app or reportable research.
+
+For teammates labeling on separate computers, each person downloads their reviewed CSV and sends it to the project coordinator. On the coordinator's copy, import the teammate-reviewed CSV from Manual Labeling; reviewer IDs and timestamps are preserved. Resolve any phrase conflicts in the table, then train the combined dataset once it passes validation. Do not combine these files by overwriting each other.
+
+The supplied `train/postings.csv/postings.csv` has 123,849 records but only two with an explicit Philippine location. Their job titles do not establish AI/analytics relevance. Treat extracted phrases as candidates only, verify original sources and research scope, and collect a suitable Philippine AI/analytics sample before analysis.
+
+Tests use synthetic fixtures only inside temporary test directories; their metrics are not research results. To run tests: `..\.venv\Scripts\python.exe -m pytest -q`.
+
+## Limitations
+
+Sample representativeness depends on source coverage and researcher selection. Parsing and text extraction can miss PDF/table structure; verify every framework definition and role link against the source before activation. Lexical matching may miss synonyms or overmatch context. Source-grouped classifier metrics apply only to the sampled postings and do not measure extraction or taxonomy-mapping accuracy. The Model Evaluation page withholds phrase-level leaked scores and scores based on fewer than two held-out ads; the **Research readiness** page reports dataset coverage and unresolved research checks. Independent validation and reviewer agreement are needed for publication. The local app has no multi-user permissions or concurrency controls.
