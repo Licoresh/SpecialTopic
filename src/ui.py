@@ -2,6 +2,7 @@ from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
 import json
+import os
 import time
 import pandas as pd
 import streamlit as st
@@ -591,7 +592,10 @@ def labeling():
                 )
             except ImportError:
                 progress.empty()
-                st.error("Install the optional local models once: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`. The first BGE-M3 run downloads about 2.3 GB.")
+                if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+                    st.error("The suggestion package is missing from this Vercel deployment. Redeploy the latest GitHub commit and check the Vercel build logs for dependency installation errors.")
+                else:
+                    st.error("Install the optional local models once: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`. The first BGE-M3 run downloads about 2.3 GB.")
             except Exception as exc:
                 progress.empty()
                 st.error(f"The local suggestion run stopped safely. Suggestions saved in earlier batches remain available to resume: {exc}")
@@ -714,7 +718,10 @@ def labeling():
                     complete = min(start + len(batch), len(rows))
                     progress.progress(complete / max(len(rows), 1), text=f"Generated suggestions for {complete:,} of {len(rows):,} phrases")
         except ImportError:
-            st.error("Install the optional local models once from the project folder: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`.")
+            if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+                st.error("The suggestion package is missing from this Vercel deployment. Redeploy the latest GitHub commit and check the Vercel build logs for dependency installation errors.")
+            else:
+                st.error("Install the optional local models once from the project folder: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`.")
         except Exception as exc:
             st.error(f"The pretrained models stopped before completing all suggestions. Completed batches remain saved separately: {exc}")
         else:
@@ -723,6 +730,8 @@ def labeling():
 
     if not shown.empty:
         st.caption(f"Local pretrained embedding model: {MODEL_ID} (pinned revision {MODEL_REVISION[:8]}). Its first run downloads about 2.3 GB; inference runs on CPU. It ranks category descriptions and competencies in the active PSF-AAI taxonomy, and each saved draft records the model and similarity scores.")
+        if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+            st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
         if taxonomy.empty:
             st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
         else:
