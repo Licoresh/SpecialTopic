@@ -6,6 +6,21 @@ from . import supabase_store as backend
 from .action_guard import action_button, action_form_submit_button, finish_action_run
 
 
+def render_login_skeleton():
+    """Render a centered wireframe matching the sign-in form while auth waits."""
+    _, center, _ = st.columns([1, 1.6, 1])
+    with center:
+        with st.container(border=True):
+            st.skeleton(height=14, width=190)
+            st.skeleton(height=38, width=300)
+            st.skeleton(height=18, width=350)
+            st.skeleton(height=14, width=90)
+            st.skeleton(height=48)
+            st.skeleton(height=14, width=90)
+            st.skeleton(height=48)
+            st.skeleton(height=44)
+
+
 def login_page():
     view = st.empty()
     with view.container():
@@ -29,36 +44,30 @@ def login_page():
             st.caption("Use your individual research-team account. The project owner creates accounts and grants team access in Supabase.")
 
     if submitted:
-        # Replace the form with a dedicated loading view while the two remote
-        # authentication checks run. No artificial percentage is shown.
+        # Keep all loading elements inside the same placeholder as the form so
+        # no narrow column or stale page content is left behind.
         view.empty()
-        _, center, _ = st.columns([1, 1.6, 1])
-        with center:
-            st.caption("FUTURE OF WORK · PHILIPPINES")
-            st.title("Signing you in")
-            with st.container(border=True):
-                st.write("Checking your account and research-team access.")
-                st.caption("This usually takes a few seconds. Keep this page open.")
-                try:
-                    with st.spinner("Connecting securely to the shared workspace…"):
-                        session = backend.sign_in(email, password)
-                        role = backend.check_connection(session["access_token"])
-                except backend.SupabaseError as exc:
-                    # No partially authenticated session survives a failed setup check.
-                    backend.sign_out()
-                    st.session_state["_fow_login_error"] = str(exc)
-                    finish_action_run()
-                    st.rerun()
-                else:
-                    st.session_state.update({
-                        "supabase_access_token": session["access_token"],
-                        "supabase_refresh_token": session["refresh_token"],
-                        "supabase_expires_at": time.time() + int(session.get("expires_in", 3600)) - 60,
-                        "supabase_user_email": session["user"].get("email", email),
-                        "supabase_role": role,
-                    })
-                    finish_action_run()
-                    st.rerun()
+        with view.container():
+            render_login_skeleton()
+            try:
+                session = backend.sign_in(email, password)
+                role = backend.check_connection(session["access_token"])
+            except backend.SupabaseError as exc:
+                # No partially authenticated session survives a failed setup check.
+                backend.sign_out()
+                st.session_state["_fow_login_error"] = str(exc)
+                finish_action_run()
+                st.rerun()
+            else:
+                st.session_state.update({
+                    "supabase_access_token": session["access_token"],
+                    "supabase_refresh_token": session["refresh_token"],
+                    "supabase_expires_at": time.time() + int(session.get("expires_in", 3600)) - 60,
+                    "supabase_user_email": session["user"].get("email", email),
+                    "supabase_role": role,
+                })
+                finish_action_run()
+                st.rerun()
 
 
 def require_workspace_access():

@@ -139,6 +139,15 @@ def test_login_does_not_keep_token_after_schema_failure(monkeypatch):
     assert "supabase_access_token" not in app.session_state
 
 
+def test_sign_in_loading_wireframe_renders_without_error():
+    from src.auth_ui import render_login_skeleton
+
+    app = AppTest.from_string(
+        "from src.auth_ui import render_login_skeleton\nrender_login_skeleton()"
+    ).run()
+    assert not app.exception
+
+
 def test_logged_out_app_only_shows_login(monkeypatch):
     monkeypatch.setattr(backend, "configured", lambda: True)
     app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=20).run()
