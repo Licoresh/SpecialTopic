@@ -67,7 +67,28 @@ def require_workspace_access():
             st.rerun()
         st.stop()
     st.session_state["supabase_role"] = role
-    st.sidebar.caption(f"{st.session_state.get('supabase_user_email', 'Team account')} · {role}")
-    if action_button("Sign out", key="sign_out", cooldown=4.0):
-        backend.sign_out()
-        st.rerun()
+
+
+def render_account_controls():
+    """Render account actions after page navigation, in the sidebar footer."""
+    if not backend.configured():
+        return
+    email = st.session_state.get("supabase_user_email")
+    role = st.session_state.get("supabase_role")
+    if not email:
+        return
+
+    with st.sidebar.container(border=True):
+        st.caption("ACCOUNT")
+        st.write(email)
+        if role:
+            st.caption(str(role).replace("_", " ").title())
+        if action_button(
+            "Sign out",
+            key="sign_out",
+            cooldown=4.0,
+            type="secondary",
+            use_container_width=True,
+        ):
+            backend.sign_out()
+            st.rerun()

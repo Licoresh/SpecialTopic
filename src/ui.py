@@ -1294,4 +1294,6 @@ def render(page):
         st.error(str(exc))
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")
     finally:
+        from .auth_ui import render_account_controls
+        render_account_controls()
         finish_action_run()
