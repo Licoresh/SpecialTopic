@@ -2,8 +2,13 @@ FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 COPY requirements.txt requirements-suggestions.txt ./
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+# Keep PyTorch CPU-only: this app does not use CUDA, and GPU wheels add large CUDA libraries.
 RUN pip install --no-cache-dir --root-user-action=ignore \
-    -r requirements.txt -r requirements-suggestions.txt
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch
+# Install the optional model stack in its own image layer to stay below Vercel's per-layer upload limit.
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements-suggestions.txt
 COPY . .
 EXPOSE 80
 CMD ["sh", "-c", "exec python -m streamlit run app.py --server.address=0.0.0.0 --server.port=${PORT:-80} --server.headless=true"]
