@@ -7,20 +7,42 @@ def group_candidates_by_phrase(candidates):
     """Return one display row per normalized phrase with a representative source."""
     if candidates.empty:
         return candidates.copy()
-    rows = []
-    for normalized, group in candidates.groupby("normalized_phrase", sort=False, dropna=False):
-        # Prefer the most informative source row for draft suggestions and evidence.
-        ranked = group.assign(
-            _context=group.get("original_text", pd.Series("", index=group.index)).astype(str).str.len(),
-            _title=group.get("job_title", pd.Series("", index=group.index)).astype(str).str.len(),
-        ).sort_values(["_context", "_title", "source_id"], ascending=[False, False, True], kind="stable")
-        representative = ranked.iloc[0].drop(labels=["_context", "_title"], errors="ignore").to_dict()
-        source_pairs = group[["source_type", "source_id"]].astype(str).apply(lambda column: column.str.strip())
-        source_pairs = source_pairs[source_pairs.source_id.ne("")].drop_duplicates()
-        representative["source_ads"] = int(len(source_pairs))
-        representative["normalized_phrase"] = str(normalized)
-        rows.append(representative)
-    return pd.DataFrame(rows).reset_index(drop=True)
+    # Streamlit reruns this page when reviewers edit a cell or change a filter.
+    # Keep grouping in vectorized pandas operations so a few thousand phrases do
+    # not require thousands of Python-level group iterations on every rerun.
+    grouped = candidates.copy()
+    grouped["_group_order"] = grouped.groupby(
+        "normalized_phrase", sort=False, dropna=False
+    ).ngroup()
+    grouped["_context"] = grouped.get(
+        "original_text", pd.Series("", index=grouped.index)
+    ).astype(str).str.len()
+    grouped["_title"] = grouped.get(
+        "job_title", pd.Series("", index=grouped.index)
+    ).astype(str).str.len()
+
+    # Match the existing rule: longest context, then longest title, then the
+    # lexicographically first source ID, with stable order for any remaining tie.
+    ranked = grouped.sort_values(
+        ["_group_order", "_context", "_title", "source_id"],
+        ascending=[True, False, False, True],
+        kind="stable",
+    )
+    representatives = ranked.drop_duplicates("_group_order", keep="first").copy()
+
+    source_pairs = grouped[["_group_order", "source_type", "source_id"]].copy()
+    source_pairs[["source_type", "source_id"]] = source_pairs[
+        ["source_type", "source_id"]
+    ].astype(str).apply(lambda column: column.str.strip())
+    source_pairs = source_pairs[source_pairs["source_id"].ne("")].drop_duplicates()
+    source_counts = source_pairs.groupby("_group_order", sort=False).size()
+    representatives["source_ads"] = (
+        representatives["_group_order"].map(source_counts).fillna(0).astype(int)
+    )
+    representatives["normalized_phrase"] = representatives["normalized_phrase"].astype(str)
+    return representatives.drop(
+        columns=["_group_order", "_context", "_title"], errors="ignore"
+    ).reset_index(drop=True)
 
 
 def labels_by_phrase(labels):
