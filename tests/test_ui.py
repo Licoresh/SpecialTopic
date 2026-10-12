@@ -81,6 +81,19 @@ def test_manual_labels_not_invented_from_candidates(ui_workspace, jobs):
     assert storage.read_frame("labeled_competencies").empty
     assert app.checkbox[0].value is False
 
+def test_manual_review_shows_repeated_phrase_once_with_ad_count(ui_workspace):
+    import pandas as pd
+    storage.save_frame("team_training_candidates", pd.DataFrame([
+        {"phrase":"Python", "normalized_phrase":"python", "source_type":"jobs", "source_id":"SYNTH-1", "original_text":"Python used for reporting."},
+        {"phrase":"python", "normalized_phrase":"python", "source_type":"jobs", "source_id":"SYNTH-2", "original_text":"Build Python data tools."},
+    ]))
+    app = page_app("Manual Labeling")
+    assert not app.exception and not app.error
+    table = next(editor.value for editor in app.dataframe if "Source ads" in editor.value.columns)
+    assert len(table) == 1
+    assert table.iloc[0]["Phrase"].casefold() == "python"
+    assert int(table.iloc[0]["Source ads"]) == 2
+
 def test_extraction_exposes_reused_researcher_approved_labels(ui_workspace, jobs, taxonomy, labeled):
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)

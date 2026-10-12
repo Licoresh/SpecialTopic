@@ -95,7 +95,7 @@ def test_pack_manual_labeling_and_disabled_training_pages(workspace, monkeypatch
     monkeypatch.setattr(ui, "ROOT", workspace)
     app = AppTest.from_string("from src.ui import render\nrender('Manual Labeling')").run(timeout=60)
     assert not app.exception and not app.error
-    assert any("2 candidate occurrences" in caption.value for caption in app.caption)
+    assert any("2 source occurrences" in caption.value for caption in app.caption)
     assert storage.read_frame("labeled_competencies").empty
     training = AppTest.from_string("from src.ui import render\nrender('ML Training')").run(timeout=60)
     assert not training.exception and not training.error

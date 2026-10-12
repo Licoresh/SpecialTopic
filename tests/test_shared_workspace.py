@@ -139,18 +139,18 @@ def test_login_does_not_keep_token_after_schema_failure(monkeypatch):
     assert "supabase_access_token" not in app.session_state
 
 
-def test_page_loading_skeleton_is_only_used_once_per_route():
+def test_skeleton_is_scoped_to_the_slow_data_loader():
     app = AppTest.from_string(
         "from contextlib import nullcontext\n"
         "from unittest.mock import patch\n"
         "import streamlit as st\n"
-        "from src.loading_ui import run_page_with_loading\n"
-        "class Page:\n"
-        "    def run(self): st.write('page content')\n"
+        "from src.loading_ui import load_data_with_skeleton\n"
+        "st.title('Page UI stays outside the loading region')\n"
         "with patch('src.loading_ui.st.skeleton', return_value=nullcontext()) as skeleton:\n"
-        "    run_page_with_loading(Page(), 'job-market')\n"
-        "    run_page_with_loading(Page(), 'job-market')\n"
+        "    value = load_data_with_skeleton(lambda: 'loaded data', height=180)\n"
+        "    assert value == 'loaded data'\n"
         "    assert skeleton.call_count == 1\n"
+        "st.write(value)\n"
     ).run()
     assert not app.exception
 

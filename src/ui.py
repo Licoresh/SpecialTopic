@@ -31,6 +31,8 @@ from .readiness import (assess_research_readiness, source_overlap,
                         historical_category_disagreements, research_data_profile)
 from . import supabase_store
 from .action_guard import action_button, action_form_submit_button, finish_action_run
+from .review_queue import group_candidates_by_phrase, labels_by_phrase, expand_phrase_annotations
+from .loading_ui import load_data_with_skeleton
 
 DESIGN_CSS = """
 <style>
@@ -151,9 +153,8 @@ def _load_manual_review_data(labels):
     candidates = candidates[candidates.phrase.str.strip().ne("")].drop_duplicates(["normalized_phrase", "source_type", "source_id"])
     from .pretrained_suggestions import is_incomplete_phrase
     candidates["needs_phrase_edit"] = candidates.phrase.map(is_incomplete_phrase)
-    reviewed = {(row.normalized_phrase, row.source_type, row.source_id): row for row in labels.itertuples()}
     taxonomy = training_taxonomy(storage.ROOT)
-    return candidates, reviewed, taxonomy
+    return candidates, taxonomy
 
 @st.cache_data(show_spinner=False)
 def cached_clean(frame, kind, duplicate_list):
@@ -271,13 +272,19 @@ def home():
     st.markdown("<div class='fow-eyebrow'>RESEARCH WORKSPACE · PHILIPPINES</div>", unsafe_allow_html=True)
     st.title("The Future of Work in the Philippines")
     st.markdown("Explore the skills employers request in Philippine AI and analytics jobs, then compare them with the TESDA PSF-AAI framework.")
-    jobs = storage.read_frame("cleaned_jobs")
-    taxonomy = storage.read_frame("cleaned_psf_aai")
-    mapped_jobs = storage.read_frame("mapped_jobs")
-    has_extractions = (storage.ROOT / "data/processed/extractions_original.csv").is_file()
-    label_count = reviewed_label_count()
-    model = read_model_metadata()
-    meta = storage.read_json("extraction_metadata", {})
+    def load_overview_data():
+        return (
+            storage.read_frame("cleaned_jobs"),
+            storage.read_frame("cleaned_psf_aai"),
+            storage.read_frame("mapped_jobs"),
+            (storage.ROOT / "data/processed/extractions_original.csv").is_file(),
+            reviewed_label_count(),
+            read_model_metadata(),
+            storage.read_json("extraction_metadata", {}),
+        )
+    jobs, taxonomy, mapped_jobs, has_extractions, label_count, model, meta = load_data_with_skeleton(
+        load_overview_data, height=120
+    )
 
     metrics = st.columns(4)
     metrics[0].metric("Clean job ads", f"{len(jobs):,}")
@@ -364,7 +371,9 @@ def upload(kind="jobs"):
                 book.close()
             except Exception as exc:
                 raise ValueError("Cannot read the workbook. Upload a valid XLSX file.") from exc
-        frame = cached_load(content, uploaded.name, sheet, encoding)
+        frame = load_data_with_skeleton(
+            lambda: cached_load(content, uploaded.name, sheet, encoding), height=220
+        )
         display(frame.head(50))
         st.caption(f"{len(frame):,} rows. Preview shows at most 50.")
         if action_button("Save raw upload", type="primary"):
@@ -431,13 +440,15 @@ def column_mapping(kind="jobs"):
 def quality():
     page_intro("Review data quality", "Check the uploaded job-ad columns and the cleaned preview, then save the job table used by the analysis.")
     kind = st.selectbox("Dataset", list(FIELDS), format_func=lambda value: {"jobs": "Job advertisements", "psf_aai": "PSF-AAI reference", "stakeholder": "Stakeholder responses"}.get(value, value))
-    frame = storage.read_frame("mapped_"+kind)
+    frame = load_data_with_skeleton(lambda: storage.read_frame("mapped_"+kind), height=180)
     if frame.empty:
         st.info("Map this dataset first.")
         return
     potential = duplicate_ids(frame)
     selected = st.multiselect("Confirm duplicate record IDs to remove from the cleaned copy", potential)
-    cleaned, report = cached_clean(frame, kind, tuple(selected))
+    cleaned, report = load_data_with_skeleton(
+        lambda: cached_clean(frame, kind, tuple(selected)), height=220
+    )
     st.caption("Missing text remains empty; it is never invented. Raw columns are retained alongside *_clean columns. Source IDs identify the raw dataset hash and row.")
     display(report)
     if potential:
@@ -465,7 +476,8 @@ def extraction():
     page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
     with st.expander("How extraction works", expanded=False):
         st.write("Previously approved labels are attached when a normalized phrase matches the reviewed dataset. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
-    if storage.read_frame("cleaned_psf_aai").empty:
+    taxonomy = load_data_with_skeleton(lambda: storage.read_frame("cleaned_psf_aai"), height=120)
+    if taxonomy.empty:
         st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
     if not (ROOT / "models/competency_classifier.joblib").exists():
         st.info("No selected classifier yet. Extract initial phrases for manual labeling, then train both models and select one.")
@@ -473,11 +485,11 @@ def extraction():
         if training_data_changed():
             st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     if action_button("Run extraction and classification", type="primary"):
-        with st.spinner("Processing unique texts and mapping competencies…"):
+        with st.skeleton(height=240):
             cached_nlp()
             result = run_extraction()
         st.success(f"Saved {len(result):,} candidate/match records with evidence.")
-    result = storage.read_frame("extractions_original")
+    result = load_data_with_skeleton(lambda: storage.read_frame("extractions_original"), height=220)
     if not result.empty:
         approved = result.human_label.fillna("").astype(str).str.strip().ne("") if "human_label" in result else pd.Series(False, index=result.index)
         metrics = st.columns(3)
@@ -493,7 +505,7 @@ def extraction():
             accepted = result.accepted.astype(str).str.casefold().eq("true")
             result = result[accepted]
         display(result)
-        diagnostics = storage.read_frame("nlp_processed")
+        diagnostics = load_data_with_skeleton(lambda: storage.read_frame("nlp_processed"), height=140)
         if not diagnostics.empty and diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").any():
             limited = int(diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").sum())
             cap = storage.settings()["max_candidates"]
@@ -606,7 +618,7 @@ def labeling():
         if posting_files:
             posting_file = st.selectbox("Posting CSV in ./train", posting_files)
             if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
-                with st.spinner("Scanning postings and extracting candidate phrases…"):
+                with st.skeleton(height=240):
                     report = prepare_posting_candidates(storage.ROOT, posting_file)
                     candidate_path = storage.ROOT / "train" / report["candidate_file"]
                     new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
@@ -630,15 +642,21 @@ def labeling():
                     del st.session_state[key]
             st.rerun()
         if "review_snapshot" not in st.session_state:
-            st.session_state["review_snapshot"] = storage.read_frame("labeled_competencies")
+            st.session_state["review_snapshot"] = load_data_with_skeleton(
+                lambda: storage.read_frame("labeled_competencies"), height=120
+            )
         labels = st.session_state["review_snapshot"].copy()
     else:
-        labels = storage.read_frame("labeled_competencies")
+        labels = load_data_with_skeleton(lambda: storage.read_frame("labeled_competencies"), height=120)
     path = resolve_training_file(storage.ROOT)
     st.caption("Reviewed annotations save to the shared database; a local CSV backup is kept separately." if supabase_store.configured() else f"Reviewed annotations save to `{project_relative_path(path)}`.")
-    candidates, reviewed, taxonomy = _load_manual_review_data(labels)
+    candidates, taxonomy = load_data_with_skeleton(
+        lambda: _load_manual_review_data(labels), height=220
+    )
     from .cleaning import normalize_text
-    st.caption(f"{len(candidates)} candidate occurrences; {candidates.normalized_phrase.nunique()} distinct phrases; {int(candidates.needs_phrase_edit.sum())} likely connector fragments to inspect or edit; {len(labels)} saved review rows. Source-pack descriptions are researcher-provided summaries; check their original URLs before final research use.")
+    st.caption(f"{len(candidates):,} source occurrences across {candidates.normalized_phrase.nunique():,} distinct phrases; {int(candidates.needs_phrase_edit.sum()):,} likely connector fragments to inspect or edit; {len(labels):,} saved review rows. Repeated phrases across different ads are retained for frequency analysis and reviewed once here. Source-pack descriptions are researcher-provided summaries; check their original URLs before final research use.")
+    occurrences = candidates.copy()
+    reviewed_phrases = labels_by_phrase(labels)
     categories = list(dict.fromkeys(LABELS + (taxonomy.competency_category.tolist() if not taxonomy.empty else []) + (labels.label.tolist() if not labels.empty else [])))
     extra = st.text_input("Additional category (optional)")
     if extra.strip():
@@ -649,33 +667,39 @@ def labeling():
     else:
         reviewer = st.text_input("Reviewer ID", key="label_reviewer")
     if not candidates.empty:
+        source_filtered = candidates
         if "candidate_file" in candidates:
             sources = sorted(candidates.candidate_file.unique())
             selected_sources = st.multiselect("Candidate source files", sources)
             if selected_sources:
-                candidates = candidates[candidates.candidate_file.isin(selected_sources)]
+                source_filtered = candidates[candidates.candidate_file.isin(selected_sources)]
         if st.checkbox("Only show phrases awaiting review", value=True):
-            pending = pd.Series([((row.normalized_phrase, row.source_type, row.source_id) not in reviewed and
-                                  (normalize_text(row.phrase), row.source_type, row.source_id) not in reviewed) for row in candidates.itertuples()], index=candidates.index, dtype=bool)
-            candidates = candidates.loc[pending]
+            source_filtered = source_filtered.loc[~source_filtered.normalized_phrase.isin(reviewed_phrases)]
         if st.checkbox("Hide obvious connector fragments", value=True, help="This hides phrases beginning or ending with a common connector, such as ‘with strong’ or ‘written and’. Turn it off to inspect and manually label or correct them."):
-            candidates = candidates.loc[~candidates.needs_phrase_edit]
+            source_filtered = source_filtered.loc[~source_filtered.needs_phrase_edit]
         query = st.text_input("Find candidate phrase")
         if query:
-            candidates = candidates[candidates.phrase.str.contains(query, case=False, regex=False)]
-        page = st.number_input("Phrase page (10 per page)", 1, max(1, (len(candidates)+9)//10), 1)
-        shown = candidates.iloc[(page-1)*10:page*10]
+            source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
+        phrase_rows = group_candidates_by_phrase(source_filtered)
+        phrase_counts = group_candidates_by_phrase(occurrences).set_index("normalized_phrase").source_ads
+        if not phrase_rows.empty:
+            phrase_rows["source_ads"] = phrase_rows.normalized_phrase.map(phrase_counts).fillna(0).astype(int)
+        st.caption("One table row represents one distinct phrase. Source ads shows how many job ads contain it; saving a label applies it to every occurrence while preserving each ad’s source record.")
+        page = st.number_input("Phrase page (10 per page)", 1, max(1, (len(phrase_rows)+9)//10), 1)
+        shown = phrase_rows.iloc[(page-1)*10:page*10]
         with st.expander("Read-only source evidence (open to check context)", expanded=False):
-            st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
+            evidence = occurrences[occurrences.normalized_phrase.isin(shown.normalized_phrase)]
+            st.dataframe(evidence[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
     else:
         st.info("No candidate phrases yet. Add Philippine job-ad source/candidate data to ./train or run Competency Extraction on uploaded jobs. No example labels are added automatically.")
-        shown = pd.DataFrame(columns=["phrase", "source_type", "source_id", "original_text"])
+        occurrences = candidates.copy()
+        shown = pd.DataFrame(columns=["phrase", "normalized_phrase", "source_type", "source_id", "source_ads", "original_text"])
     from .pretrained_suggestions import (
         MODEL_ID, MODEL_REVISION,
         save_ai_suggestions, suggest_labels, suggestion_key,
     )
     page_rows = shown.to_dict("records") if not shown.empty else []
-    page_identity = frame_hash(shown[["phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
+    page_identity = frame_hash(shown[["normalized_phrase", "phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
     saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
     page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
     def generate_ai_drafts(rows):
@@ -710,17 +734,18 @@ def labeling():
         st.caption("AI drafts are optional. The manual fields remain blank until you enter a value or explicitly check a Copy draft box. Similarity scores rank suggestions; they are not calibrated confidence or research metrics.")
     if not shown.empty:
         st.subheader("Manual review")
-        st.caption("Review phrases in the table. New category and PSF-AAI fields start blank. A checked Copy draft box uses that AI value instead of the manual cell for that field when you save.")
+        st.caption("Review one distinct phrase per row. New category and PSF-AAI fields start blank. A checked Copy draft box uses that AI value instead of the manual cell for that field when you save. AI drafts use one representative posting; inspect the source evidence before accepting them.")
     taxonomy_names = taxonomy.competency_name.astype(str).tolist() if not taxonomy.empty else []
     table_rows = []
     for index, row in enumerate(page_rows):
         suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
         row_normalized = normalize_text(row.get("normalized_phrase") or row.get("phrase", ""))
-        saved = reviewed.get((row_normalized, row.get("source_type", ""), row.get("source_id", "")))
+        saved = reviewed_phrases.get(row_normalized)
         table_row = {
             "Phrase": row.get("phrase", ""),
-            "Category": saved.label if saved else "",
-            "PSF-AAI competency": saved.psf_competency if saved else "",
+            "Source ads": int(row.get("source_ads", 0)),
+            "Category": saved.get("label", "") if saved else "",
+            "PSF-AAI competency": saved.get("psf_competency", "") if saved else "",
         }
         if has_page_suggestions:
             table_row.update({
@@ -733,10 +758,11 @@ def labeling():
     manual_table = pd.DataFrame(table_rows)
     table_config = {
         "Phrase": st.column_config.TextColumn(disabled=True),
+        "Source ads": st.column_config.NumberColumn(help="Number of distinct source job ads containing this normalized phrase.", disabled=True),
         "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), help="Choose one competency category. Leave blank until reviewed."),
         "PSF-AAI competency": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(taxonomy_names)), help="Optional: choose an exact competency from the active taxonomy."),
     }
-    disabled_columns = ["Phrase"]
+    disabled_columns = ["Phrase", "Source ads"]
     if has_page_suggestions:
         table_config.update({
             "AI category draft": st.column_config.TextColumn(disabled=True),
@@ -761,10 +787,11 @@ def labeling():
         psf = suggestion.get("psf_competency", "") if row.get("Copy PSF-AAI draft", False) else row.get("PSF-AAI competency", "")
         source_row = page_rows[index]
         reviewed_rows.append({
-            "phrase": source_row.get("phrase", ""), "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
+            "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
+            "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
             "label": str(category or "").strip(), "psf_competency": str(psf or "").strip(),
         })
-    edited = pd.DataFrame(reviewed_rows, columns=["phrase", "source_type", "source_id", "label", "psf_competency"])
+    edited = pd.DataFrame(reviewed_rows, columns=["phrase", "normalized_phrase", "source_type", "source_id", "label", "psf_competency"])
 
     def show_conflict_resolutions(rows, key_prefix):
         conflicts = annotation_conflicts(rows, labels)
@@ -832,7 +859,9 @@ def labeling():
                        if row.get("Copy category draft", False) or row.get("Copy PSF-AAI draft", False)
                        or row.get("Category", "") != manual_table.iloc[i].get("Category", "")
                        or row.get("PSF-AAI competency", "") != manual_table.iloc[i].get("PSF-AAI competency", "")]
-            submitted_rows = edited.iloc[changed]
+            changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
+            submitted_rows = edited[edited.normalized_phrase.isin(changed_phrases)]
+        submitted_rows = expand_phrase_annotations(submitted_rows, occurrences)
         labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
         if supabase_store.configured():
             st.session_state.pop("review_snapshot", None)
@@ -858,7 +887,7 @@ def labeling():
 
 def training():
     page_intro("Train classifier", "Train Naive Bayes and Logistic Regression models using researcher-reviewed labels. Training stays disabled until the real dataset passes the validation checks.")
-    inventory = inspect_training_folder(storage.ROOT)
+    inventory = load_data_with_skeleton(lambda: inspect_training_folder(storage.ROOT), height=140)
     with st.expander("Detected files in ./train"):
         display(pd.DataFrame(inventory))
     try:
@@ -875,11 +904,17 @@ def training():
     if path is None:
         return
     st.caption(f"Training data file: `{project_relative_path(path)}`")
-    labels = (storage.read_frame("labeled_competencies") if supabase_store.configured() else load_labeled_data(path))
     fraction = st.slider("Holdout fraction", .1, .5, .2, .05)
     include_irrelevant = st.checkbox("Intentionally train IRRELEVANT as a separate class", value=False)
     max_features = st.number_input("Maximum TF-IDF features", 100, 100000, 10000, 100)
-    data, validation = cached_label_validation(labels, fraction, include_irrelevant, require_provenance=True)
+    def load_training_review_data():
+        current_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
+                          else load_labeled_data(path))
+        validated, report = cached_label_validation(
+            current_labels, fraction, include_irrelevant, require_provenance=True
+        )
+        return current_labels, validated, report
+    labels, data, validation = load_data_with_skeleton(load_training_review_data, height=240)
     a, b, c = st.columns(3)
     a.metric("Labeled file rows", validation["total_rows"])
     b.metric("Distinct usable phrases", validation["rows_used"])
@@ -927,8 +962,9 @@ def evaluation():
     page_intro("Evaluate models", "Review model evaluation only when the holdout represents independent job-ad sources.")
     with st.expander("How to read the evaluation metrics", expanded=False):
         st.markdown("**Precision** is the share of a model's category predictions that are correct. **Recall** is the share of actual items in a category that the model finds. **F1-score** balances precision and recall. Macro F1 weighs categories equally; Weighted F1 accounts for category frequency.")
-    metadata = read_model_metadata()
-    metrics = storage.read_frame("model_metrics")
+    metadata, metrics = load_data_with_skeleton(
+        lambda: (read_model_metadata(), storage.read_frame("model_metrics")), height=160
+    )
     if not metadata or metrics.empty:
         st.info("No research model has been trained. Complete manual labeling and the training gate before any F1-scores or other model results can be reported.")
         return
@@ -961,10 +997,17 @@ def evaluation():
     chart(bar(data, "model", "score", "Model Metric Comparison", "metric"))
     choice = st.selectbox("Evaluation model", metrics.model.tolist(), index=metrics.model.tolist().index(metadata["model_name"]))
     slug = "nb" if choice.startswith("Multinomial") else "lr"
-    matrix = storage.read_frame(f"evaluation_{slug}_confusion").set_index("actual").apply(pd.to_numeric)
+    matrix, per_class, predictions = load_data_with_skeleton(
+        lambda: (
+            storage.read_frame(f"evaluation_{slug}_confusion"),
+            storage.read_frame(f"evaluation_{slug}_per_class"),
+            storage.read_frame(f"evaluation_{slug}_predictions"),
+        ), height=220
+    )
+    matrix = matrix.set_index("actual").apply(pd.to_numeric)
     chart(heatmap(matrix, "Model Confusion Matrix — actual rows, predicted columns"))
-    display(storage.read_frame(f"evaluation_{slug}_per_class"))
-    display(storage.read_frame(f"evaluation_{slug}_predictions"))
+    display(per_class)
+    display(predictions)
     st.subheader("Stratified cross-validation (training partition only)")
     st.json(metadata["cross_validation_results"][choice])
     with st.expander("Reproducibility metadata"):
@@ -985,7 +1028,7 @@ def research_page(page):
     st.header(page)
     if not current_analysis():
         return
-    tables, meta = filtered_bundle()
+    tables, meta = load_data_with_skeleton(filtered_bundle, height=300)
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
@@ -1055,13 +1098,20 @@ def research_page(page):
     elif page == "Reports":
         tables.update(job_profile_tables(jobs))
         tables["corrections"] = corrections()
-        tables["nlp_processed"] = storage.read_frame("nlp_processed")
-        tables["usability"] = storage.read_frame("usability")
-        for slug in ("nb", "lr"):
-            for report in ("per_class", "confusion", "predictions"):
-                tables[f"evaluation_{slug}_{report}"] = storage.read_frame(f"evaluation_{slug}_{report}")
-        for kind in FIELDS:
-            tables["quality_"+kind] = storage.read_frame("quality_"+kind)
+        def load_report_tables():
+            extras = {
+                "nlp_processed": storage.read_frame("nlp_processed"),
+                "usability": storage.read_frame("usability"),
+            }
+            for slug in ("nb", "lr"):
+                for report_name in ("per_class", "confusion", "predictions"):
+                    extras[f"evaluation_{slug}_{report_name}"] = storage.read_frame(
+                        f"evaluation_{slug}_{report_name}"
+                    )
+            for kind in FIELDS:
+                extras["quality_"+kind] = storage.read_frame("quality_"+kind)
+            return extras
+        tables.update(load_data_with_skeleton(load_report_tables, height=220))
         with st.expander(f"Individual research tables ({len(tables)})"):
             for name, frame in tables.items():
                 st.download_button(name + ".csv", export_csv(frame), name + ".csv", "text/csv", key="download_"+name)
@@ -1089,7 +1139,7 @@ def feedback():
     reviewer = st.text_input("Reviewer ID", key="feedback_reviewer")
     source = st.selectbox("Correction target", ["extraction", "alignment"])
     if current_analysis():
-        tables, _ = filtered_bundle()
+        tables, _ = load_data_with_skeleton(filtered_bundle, height=240)
         frame = tables["all_candidates"] if source == "extraction" else tables["alignment_results"]
         key = "extraction_id" if source == "extraction" else "alignment_id"
         if not frame.empty:
@@ -1120,7 +1170,8 @@ def feedback():
             ):
                 save_annotations(pd.DataFrame([{"phrase": row.normalized_phrase, "label": row.competency_category, "psf_competency": row.psf_competency, "source_type": "jobs", "source_id": row.source_id}]), reviewer)
                 st.success("Added to annotations. Retraining requires an explicit action on ML Training.")
-    display(corrections())
+    correction_rows = load_data_with_skeleton(corrections, height=140)
+    display(correction_rows)
     st.subheader("Usability evaluation")
     cfg = storage.settings()
     with st.form("usability"):
@@ -1134,11 +1185,11 @@ def feedback():
             data = pd.concat([storage.read_frame("usability"), pd.DataFrame([record])], ignore_index=True)
             storage.save_frame("usability", data)
             st.success("Evaluation recorded.")
-    usability = storage.read_frame("usability")
+    usability = load_data_with_skeleton(lambda: storage.read_frame("usability"), height=120)
     if not usability.empty:
         display(usability)
         st.download_button("Download usability evaluations", export_csv(usability), "usability.csv")
-    stakeholder = storage.read_frame("cleaned_stakeholder")
+    stakeholder = load_data_with_skeleton(lambda: storage.read_frame("cleaned_stakeholder"), height=120)
     if not stakeholder.empty:
         st.subheader("Stakeholder evaluations")
         display(stakeholder)
@@ -1154,8 +1205,14 @@ def research_readiness():
     page_intro("Research readiness", "A practical audit of the current data and model workflow. Passing app checks does not by itself make results ready for a thesis or publication.")
     try:
         path = resolve_training_file(storage.ROOT)
-        labels = (storage.read_frame("labeled_competencies") if supabase_store.configured() else load_labeled_data(path))
-        usable, validation = cached_label_validation(labels, require_provenance=True)
+        def load_readiness_labels():
+            current_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
+                              else load_labeled_data(path))
+            current_usable, current_validation = cached_label_validation(
+                current_labels, require_provenance=True
+            )
+            return current_labels, current_usable, current_validation
+        labels, usable, validation = load_data_with_skeleton(load_readiness_labels, height=220)
     except (ValueError, OSError) as exc:
         path, labels, usable, validation = None, pd.DataFrame(), pd.DataFrame(), {"errors": [str(exc)], "warnings": []}
     metadata = read_model_metadata()
@@ -1174,7 +1231,7 @@ def research_readiness():
     c.metric("Distinct job-ad source IDs", f"{source_count:,}")
     d.metric("Reviewer ID spellings", f"{len(audit['reviewer_ids']):,}")
     st.subheader("Active job-ad sample")
-    jobs = storage.read_frame("cleaned_jobs")
+    jobs = load_data_with_skeleton(lambda: storage.read_frame("cleaned_jobs"), height=160)
     if jobs.empty:
         st.warning("No cleaned job-ad sample is active. Upload, review, and save the study sample before extracting or reporting findings.")
     else:

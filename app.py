@@ -1,6 +1,5 @@
 import streamlit as st
 from src.auth_ui import require_workspace_access
-from src.loading_ui import run_page_with_loading
 
 st.set_page_config(page_title="Future of Work | Philippines", page_icon="🇵🇭", layout="wide")
 
@@ -37,5 +36,4 @@ pages = {
     ],
 }
 page = st.navigation(pages, position="sidebar", expanded=True)
-route = page.url_path or page.title
-run_page_with_loading(page, route)
+page.run()

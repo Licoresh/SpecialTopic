@@ -1,17 +1,19 @@
-"""Delay a lightweight loading skeleton until a page is genuinely slow to appear."""
+"""Skeletons scoped to data fetches that may delay an otherwise visible page."""
+
+from collections.abc import Callable
+from typing import TypeVar
 
 import streamlit as st
 
+T = TypeVar("T")
 
-def run_page_with_loading(page, route: str) -> None:
-    """Run a page with a delayed skeleton on its first visit in this session only."""
-    loaded_routes = st.session_state.setdefault("_fow_loaded_routes", set())
-    if route in loaded_routes:
-        page.run()
-        return
 
-    # Streamlit delays context-manager skeletons briefly, so fast pages never flash.
-    # Previously visited pages and ordinary widget reruns bypass it entirely.
-    with st.skeleton(height=560):
-        page.run()
-    loaded_routes.add(route)
+def load_data_with_skeleton(loader: Callable[[], T], *, height: int = 160) -> T:
+    """Show a compact placeholder only while the enclosed data load is running.
+
+    Keep page layout and controls outside this context so revisiting a page or
+    rerunning a widget never replaces its already-rendered UI with a wireframe.
+    Streamlit delays the skeleton briefly, so cached/fast reads do not flash.
+    """
+    with st.skeleton(height=height):
+        return loader()
