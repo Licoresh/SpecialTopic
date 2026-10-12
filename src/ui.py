@@ -529,14 +529,29 @@ def _auto_train_after_review(labels, enabled):
     )
 
 
+def _auto_retraining_control():
+    """Offer automatic retraining only to users allowed to publish shared models."""
+    shared_workspace = supabase_store.configured()
+    can_train = supabase_store.is_admin() if shared_workspace else True
+    enabled = st.checkbox(
+        "Automatically retrain after I save reviewed labels",
+        value=False,
+        key="auto_train_after_review",
+        disabled=not can_train,
+        help=(
+            "When enabled, saving labels will retrain both classifiers if the complete reviewed dataset passes validation. "
+            "Training runs during the save and can take a few minutes. It never trains on AI drafts."
+        ),
+    )
+    if shared_workspace and not can_train:
+        st.caption("Only the project administrator can start model training in the shared workspace. Ask the administrator to use this option.")
+    return bool(enabled and can_train)
+
+
 def labeling():
     page_intro("Review and label phrases", "Enter each category and PSF-AAI competency yourself. Optional AI drafts stay separate until you explicitly copy a value into a field.")
     st.info("Nothing from AI fills a label automatically. Typed values and values you explicitly copy are saved only when you click Save, under your reviewer ID and timestamp.")
-    auto_train = st.checkbox(
-        "Automatically retrain after saving reviewed labels",
-        value=False, disabled=supabase_store.configured(),
-        help="Off by default so annotation and team-import actions do not train a model unexpectedly. If enabled, only saved researcher-reviewed labels with source provenance are used, and all validation checks must pass.",
-    )
+    auto_train = _auto_retraining_control()
     with st.container(border=True):
         st.subheader("Add a small, free remote-job feed")
         st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")

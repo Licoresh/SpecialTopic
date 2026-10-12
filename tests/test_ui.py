@@ -96,8 +96,28 @@ def test_extraction_exposes_reused_researcher_approved_labels(ui_workspace, jobs
 
 def test_manual_retraining_is_opt_in_by_default(ui_workspace):
     app = page_app("Manual Labeling")
-    retrain = next(box for box in app.checkbox if box.label == "Automatically retrain after saving reviewed labels")
+    retrain = next(box for box in app.checkbox if box.label == "Automatically retrain after I save reviewed labels")
     assert retrain.value is False
+
+def test_shared_admin_can_enable_automatic_retraining(monkeypatch):
+    monkeypatch.setattr(ui.supabase_store, "configured", lambda: True)
+    monkeypatch.setattr(ui.supabase_store, "is_admin", lambda: True)
+    app = AppTest.from_string(
+        "from src.ui import _auto_retraining_control\n_auto_retraining_control()"
+    ).run()
+    assert not app.exception
+    assert not app.checkbox[0].disabled
+    assert app.checkbox[0].value is False
+
+def test_shared_reviewer_gets_reason_auto_retraining_is_unavailable(monkeypatch):
+    monkeypatch.setattr(ui.supabase_store, "configured", lambda: True)
+    monkeypatch.setattr(ui.supabase_store, "is_admin", lambda: False)
+    app = AppTest.from_string(
+        "from src.ui import _auto_retraining_control\n_auto_retraining_control()"
+    ).run()
+    assert not app.exception
+    assert app.checkbox[0].disabled
+    assert any("Only the project administrator" in item.value for item in app.caption)
 
 def test_manual_labeling_can_resolve_all_saved_category_conflicts(ui_workspace):
     import pandas as pd
