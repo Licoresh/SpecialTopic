@@ -1,5 +1,6 @@
 """SYNTHETIC DATA — NOT RESEARCH DATA."""
 import pandas as pd
+from src.analytics import filter_frame
 import pytest
 from src.alignment import calculate_alignment
 
@@ -37,3 +38,7 @@ def test_reference_traceability_and_human_assignment(taxonomy):
     result = calculate_alignment(skills, taxonomy).iloc[0]
     assert result.psf_competency == "SQL" and result.source_page == "99"
     assert result.match_method == "human_annotation" and result.status == "ALIGNED"
+def test_skill_phrase_filter_is_case_insensitive_literal_substring():
+    frame = pd.DataFrame({"normalized_phrase": ["sql querying", "python programming", "c++"]})
+    filtered = filter_frame(frame, {"normalized_phrase_contains": "SQL"})
+    assert filtered.normalized_phrase.tolist() == ["sql querying"]

@@ -1,7 +1,11 @@
 import streamlit as st
-from src.ui import render
+from src.auth_ui import require_workspace_access
 
 st.set_page_config(page_title="Future of Work | Philippines", page_icon="🇵🇭", layout="wide")
+
+require_workspace_access()
+
+from src.ui import render
 
 pages = {
     "Workspace": [

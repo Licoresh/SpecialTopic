@@ -176,6 +176,9 @@ def training_candidates(root):
     return candidates.drop_duplicates(["normalized_phrase", "source_type", "source_id"], keep="first")
 
 def training_taxonomy(root):
+    from . import supabase_store, storage
+    if supabase_store.configured():
+        return storage.read_frame("cleaned_psf_aai")
     root = Path(root)
     cleaned = root / "data/processed/cleaned_psf_aai.csv"
     if cleaned.exists():

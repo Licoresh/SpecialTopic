@@ -4,6 +4,12 @@ import pytest
 from src.loaders import map_columns
 from src.cleaning import clean_dataset
 
+@pytest.fixture(autouse=True)
+def keep_tests_off_real_supabase(monkeypatch):
+    """Tests use synthetic fixtures only and must never touch the live project."""
+    from src import supabase_store
+    monkeypatch.setattr(supabase_store, "configured", lambda: False)
+
 def prepared(rows, kind, suffix="synthetic"):
     raw = pd.DataFrame(rows).fillna("")
     mapped = map_columns(raw, {c:c for c in raw}, kind, suffix)

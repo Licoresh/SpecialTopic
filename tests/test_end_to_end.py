@@ -1,9 +1,10 @@
 from io import BytesIO
 from openpyxl import load_workbook
+import pandas as pd
 from src import storage
 from src.classification import compare_models, save_model
 from src.labeling import save_annotations
-from src.workflow import run_extraction, analysis_bundle, input_signature
+from src.workflow import run_extraction, analysis_bundle, input_signature, current_extractions
 from src.reporting import export_excel
 import pytest
 
@@ -21,6 +22,11 @@ def test_input_to_workbook(workspace, jobs, taxonomy, labeled):
     assert not tables["employer_skill_demand"].empty
     assert {"psf_mapping", "alignment_results", "unmapped_skills", "emerging_skills", "verified_psf_aai", "extracted_job_skills"} <= set(tables)
     assert meta["extraction"]["signature"] == input_signature()
+    snapshot = {"jobs": storage.read_frame("cleaned_jobs"),
+                "taxonomy": storage.read_frame("cleaned_psf_aai"),
+                "extracted": current_extractions()}
+    cached_path_tables, _ = analysis_bundle(source_snapshot=snapshot)
+    pd.testing.assert_frame_equal(tables["employer_skill_demand"], cached_path_tables["employer_skill_demand"])
     book = load_workbook(BytesIO(export_excel(tables, meta)))
     assert "employer_skill_demand" in book.sheetnames
     assert book["employer_skill_demand"].max_row > 1

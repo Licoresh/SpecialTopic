@@ -3,6 +3,11 @@ import pandas as pd
 def filter_frame(frame, filters):
     mask = pd.Series(True, index=frame.index)
     for field, values in filters.items():
+        if field == "normalized_phrase_contains":
+            query = str(values or "").strip()
+            if query and "normalized_phrase" in frame:
+                mask &= frame.normalized_phrase.astype(str).str.contains(query, case=False, regex=False, na=False)
+            continue
         if field in frame and values:
             mask &= frame[field].astype(str).isin([str(v) for v in values])
     return frame.loc[mask]

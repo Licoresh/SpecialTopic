@@ -1,0 +1,15 @@
+.git
+.agents
+.venv
+.pytest_cache
+**/__pycache__
+.env*
+.streamlit/secrets.toml
+tmp
+data/raw
+data/processed
+data/feedback
+train
+models
+outputs
+tests

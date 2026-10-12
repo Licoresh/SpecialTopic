@@ -16,6 +16,18 @@ For a new environment, create a virtual environment and install `requirements.tx
 
 The app uses [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3), pinned to a fixed model revision, to rank category descriptions and the active PSF-AAI taxonomy by multilingual semantic similarity. BGE-M3 is an embedding model, not a trained category classifier; its similarity scores are suggestions, not calibrated confidence or research metrics. The first suggestion run downloads roughly 2.3 GB of model files and runs locally on CPU. Install the optional runtime from this folder with `..\.venv\Scripts\python.exe -m pip install -r requirements-suggestions.txt` when using the shared parent environment.
 
+## Shared team workspace with Supabase
+
+The app can use Supabase Auth and a shared Postgres-backed workspace while continuing to keep local CSV backups. Copy `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` into `.streamlit/secrets.toml` for local use, or into the hosting provider's Streamlit secrets when deployed. Do not add secret keys or passwords to Git. The app uses each researcher's Auth session and Row Level Security; it does not need a Supabase secret/service-role key.
+
+1. For a new Supabase project, apply `supabase/migrations/*.sql` once in filename order. The connected project already has these migrations.
+2. Disable public sign-ups, create an Auth account for each teammate, and explicitly add their user ID to `research_members` with role `reviewer` (or `admin` for the coordinator).
+3. Add the two app settings above, then restart Streamlit. Teammates sign in with their own accounts.
+4. On the device holding the existing local dataset, open **Settings → Shared team workspace → Copy local workspace to shared database** once. This seeds only empty source-data slots; local labels and old model metrics are not automatically certified or promoted.
+5. Deploy this repository to a host teammates can reach. The deployed app must receive the same two settings through its private secrets configuration. A local `127.0.0.1` address is reachable only from the computer running Streamlit.
+
+Processed analysis tables and settings are shared as JSONB records. Candidate phrases and reviewed annotations use separate row-based tables; the database enforces one category per normalized phrase and records the authenticated editor. The app writes local CSV/JSON copies as recoverable backups. Re-export and retain backups in the research project folder. The `SUPABASE_JWKS_URL` value is not needed for this Auth flow.
+
 Manual Labeling has a resumable **Run all local suggestions** action that prepares eligible posting CSVs already in `./train` and saves BGE-M3 drafts in batches. It does not crawl websites, create researcher labels, or train a classifier. Review and save each research label yourself.
 
 Manual Labeling can also fetch one page (up to 20 jobs) from the free Himalayas public API. The importer keeps only listings whose location restrictions explicitly include the Philippines, stores their original listing URLs, and deduplicates by the provider's stable job ID. The provider can rate-limit API calls, so automated cycles make at most one request each. To run one bounded feed-and-suggest cycle from the project directory, use `..\\.venv\\Scripts\\python.exe scripts\\feed_and_suggest.py`. It creates source postings and editable BGE-M3 drafts only; researchers must review labels, and draft suggestions never train the research classifier. Credit Himalayas and link each original listing when displaying its data.
@@ -26,7 +38,7 @@ For the click-by-click workflow, see [USER_GUIDE.md](USER_GUIDE.md).
 
 ## Navigation
 
-The app has 16 pages: Home; Job Data Upload (with automatic editable column mapping); Data Quality; Job Market Analysis; PSF-AAI Framework; Competency Extraction; Manual Labeling; ML Training; Model Evaluation; PSF Mapping; Employer–PSF Alignment; Unmapped / Emerging Skills; Reports; Feedback; Methodology; Settings.
+The app has a separate sign-in screen and 16 workspace pages: Overview; Upload job data; Review data quality; Extract skill phrases; Review and label phrases; Train classifier; Evaluate models; Job market; PSF mapping; Employer–PSF alignment; Unmapped and emerging skills; Reports and downloads; Research readiness; Methodology; Feedback and corrections; Settings. Data preparation and training are administrator responsibilities in shared mode.
 
 ## Research workflow
 
@@ -68,4 +80,4 @@ Tests use synthetic fixtures only inside temporary test directories; their metri
 
 ## Limitations
 
-Sample representativeness depends on source coverage and researcher selection. Parsing and text extraction can miss PDF/table structure; verify every framework definition and role link against the source before activation. Lexical matching may miss synonyms or overmatch context. Source-grouped classifier metrics apply only to the sampled postings and do not measure extraction or taxonomy-mapping accuracy. The Model Evaluation page withholds phrase-level leaked scores and scores based on fewer than two held-out ads; the **Research readiness** page reports dataset coverage and unresolved research checks. Independent validation and reviewer agreement are needed for publication. The local app has no multi-user permissions or concurrency controls.
+Sample representativeness depends on source coverage and researcher selection. Parsing and text extraction can miss PDF/table structure; verify every framework definition and role link against the source before activation. Lexical matching may miss synonyms or overmatch context. Source-grouped classifier metrics apply only to the sampled postings and do not measure extraction or taxonomy-mapping accuracy. The Model Evaluation page withholds phrase-level leaked scores and scores based on fewer than two held-out ads; the **Research readiness** page reports dataset coverage and unresolved research checks. Independent validation and reviewer agreement are needed for publication. Local-only mode has no multi-user permissions. Supabase mode enforces team membership, database audit records and optimistic annotation conflicts. See [DEPLOYMENT.md](DEPLOYMENT.md) for the shared-site setup and remaining research checks.

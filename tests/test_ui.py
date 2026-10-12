@@ -81,6 +81,19 @@ def test_manual_labels_not_invented_from_candidates(ui_workspace, jobs):
     assert storage.read_frame("labeled_competencies").empty
     assert app.checkbox[0].value is False
 
+def test_extraction_exposes_reused_researcher_approved_labels(ui_workspace, jobs, taxonomy, labeled):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    save_annotations(labeled, "Synthetic reviewer")
+    run_extraction()
+    app = page_app("Competency Extraction")
+    assert not app.exception and not app.error
+    assert any(metric.label == "Researcher-approved labels" and int(metric.value.replace(",", "")) > 0
+               for metric in app.metric)
+    view = next(item for item in app.selectbox if item.label == "View")
+    assert "Researcher-approved labels" in view.options
+    assert "Unreviewed candidates" in view.options
+
 def test_manual_retraining_is_opt_in_by_default(ui_workspace):
     app = page_app("Manual Labeling")
     retrain = next(box for box in app.checkbox if box.label == "Automatically retrain after saving reviewed labels")

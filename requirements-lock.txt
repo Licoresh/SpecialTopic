@@ -85,3 +85,5 @@ weasel==1.0.0
 websockets==17.2
 wrapt==2.5.0
 pypdf==6.20.0
+
+filelock==4.1.0

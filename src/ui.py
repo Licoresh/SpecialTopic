@@ -1,6 +1,8 @@
 from io import BytesIO
 from pathlib import Path
+from copy import deepcopy
 import json
+import time
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -24,9 +26,10 @@ from .job_profile import job_profile_tables
 from .alignment import STATUSES
 from .visualization import bar, distribution, heatmap
 from .reporting import export_csv, export_excel, export_html, export_research_report
-from .utils import timestamp, frame_hash
+from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
                         historical_category_disagreements, research_data_profile)
+from . import supabase_store
 
 DESIGN_CSS = """
 <style>
@@ -67,9 +70,89 @@ hr { border-color: var(--fow-border); }
 </style>
 """
 
+
 @st.cache_data(show_spinner=False)
 def cached_load(content, filename, sheet, encoding):
     return load_data(content, filename, sheet, encoding)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def cached_load_path(path, modified, size, source_hash, sheet, encoding):
+    from .utils import digest
+    content = Path(path).read_bytes()
+    if digest(content) != source_hash:
+        raise ValueError("The raw source bytes no longer match the saved upload hash. Restore or upload the original source.")
+    return load_data(content, Path(path).name, sheet, encoding)
+
+
+cached_label_validation = st.cache_data(show_spinner=False, ttl=60, max_entries=8)(validate_labeled_data)
+
+
+def _session_cached_value(cache_name, key, loader, *, ttl=12, max_entries=4):
+    """Cache derived research data inside one authenticated Streamlit session."""
+    cache = st.session_state.setdefault(cache_name, {})
+    now = time.monotonic()
+    entry = cache.get(key)
+    if entry and now - entry[0] < ttl:
+        return deepcopy(entry[1])
+    value = loader()
+    cache[key] = (now, deepcopy(value))
+    for stale_key in [item for item, saved in cache.items() if now - saved[0] >= ttl]:
+        cache.pop(stale_key, None)
+    while len(cache) > max_entries:
+        oldest = min(cache, key=lambda item: cache[item][0])
+        cache.pop(oldest, None)
+    return value
+
+
+def _page_ai_suggestions(path):
+    """Avoid parsing the full drafts CSV on every edit while detecting atomic saves."""
+    path = Path(path)
+    try:
+        stat = path.stat()
+        signature = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        signature = (str(path.resolve()), None, None)
+    saved = st.session_state.get("_page_ai_suggestions")
+    if saved and saved[0] == signature:
+        return saved[1]
+    from .pretrained_suggestions import load_ai_suggestions
+    result = load_ai_suggestions(path.parents[2])
+    st.session_state["_page_ai_suggestions"] = (signature, result)
+    return result
+
+
+def _load_manual_review_data(labels):
+    """Load the real candidate, label, and taxonomy tables for the review page."""
+    candidates = pd.DataFrame() if supabase_store.configured() else training_candidates(storage.ROOT)
+    shared_candidates = storage.read_frame("team_training_candidates")
+    if not shared_candidates.empty:
+        candidates = pd.concat([candidates, shared_candidates], ignore_index=True).fillna("")
+    extracted = storage.read_frame("extractions_original")
+    if not extracted.empty:
+        extracted = extracted.rename(columns={"original_phrase": "phrase"})
+        jobs = storage.read_frame("cleaned_jobs")
+        if not jobs.empty:
+            source = jobs.drop_duplicates("source_id").set_index("source_id")
+            for target, column in (("source_url", "url"), ("job_title", "job_title"), ("company", "company")):
+                extracted[target] = extracted.source_id.map(source[column]).fillna("")
+        candidates = pd.concat([candidates, extracted], ignore_index=True).fillna("")
+    for column in ("phrase", "normalized_phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"):
+        if column not in candidates:
+            candidates[column] = ""
+    if supabase_store.configured() and not candidates.empty:
+        jobs = storage.read_frame("cleaned_jobs")
+        if not jobs.empty and {"source_id", "job_description"}.issubset(jobs):
+            contexts = jobs.drop_duplicates("source_id").set_index("source_id").job_description
+            candidates["original_text"] = candidates.original_text.where(candidates.original_text.ne(""), candidates.source_id.map(contexts).fillna(""))
+    from .cleaning import normalize_text
+    candidates["normalized_phrase"] = candidates.normalized_phrase.where(candidates.normalized_phrase.ne(""), candidates.phrase.map(normalize_text))
+    candidates = candidates[candidates.phrase.str.strip().ne("")].drop_duplicates(["normalized_phrase", "source_type", "source_id"])
+    from .pretrained_suggestions import is_incomplete_phrase
+    candidates["needs_phrase_edit"] = candidates.phrase.map(is_incomplete_phrase)
+    reviewed = {(row.normalized_phrase, row.source_type, row.source_id): row for row in labels.itertuples()}
+    taxonomy = training_taxonomy(storage.ROOT)
+    return candidates, reviewed, taxonomy
 
 @st.cache_data(show_spinner=False)
 def cached_clean(frame, kind, duplicate_list):
@@ -106,6 +189,8 @@ def project_relative_path(path):
 
 def reviewed_label_count():
     """Read only the small selected annotation table for the overview page."""
+    if supabase_store.configured():
+        return len(storage.read_frame("labeled_competencies"))
     selection = storage.read_json("training_source", {})
     paths = []
     if selection.get("file"):
@@ -126,7 +211,10 @@ def current_analysis():
     if not meta:
         st.info("Upload, map and clean data, then run Competency Extraction to create results.")
         return False
-    if meta.get("signature") != input_signature():
+    signature = _session_cached_value("_fow_signature_cache", "active", input_signature,
+                                     ttl=4, max_entries=1)
+    st.session_state["_current_analysis_signature"] = signature
+    if meta.get("signature") != signature:
         st.warning("Inputs, labels, settings or the selected model changed. Run Competency Extraction again before interpreting or exporting results.")
         return False
     return True
@@ -141,8 +229,22 @@ def select_filters(frame, fields, prefix):
     return selected
 
 def filtered_bundle():
-    jobs = storage.read_frame("cleaned_jobs")
-    skills = current_extractions()
+    signature = st.session_state.get("_current_analysis_signature") or input_signature()
+    corrections_path = storage.ROOT / "data/feedback/corrections.csv"
+    try:
+        corrections_stat = corrections_path.stat()
+        correction_revision = (corrections_stat.st_mtime_ns, corrections_stat.st_size)
+    except OSError:
+        correction_revision = None
+    analysis_revision = digest({"inputs": signature, "corrections": correction_revision})
+    source_key = f"sources:{analysis_revision}"
+    source_snapshot = _session_cached_value(
+        "_fow_source_cache", source_key,
+        lambda: {"jobs": storage.read_frame("cleaned_jobs"),
+                 "taxonomy": storage.read_frame("cleaned_psf_aai"),
+                 "extracted": current_extractions()},
+    )
+    jobs, skills = source_snapshot["jobs"], source_snapshot["extracted"]
     with st.sidebar.expander("Job filters"):
         jf = select_filters(jobs, ["job_title", "location", "company", "industry"], "jobs")
         if "posting_date_parsed" in jobs:
@@ -151,22 +253,31 @@ def filtered_bundle():
             if chosen:
                 jf["posting_date_parsed"] = jobs.loc[jobs.posting_date_parsed.str[:4].isin(chosen), "posting_date_parsed"].unique().tolist()
     with st.sidebar.expander("Competency filters"):
-        sf = select_filters(skills, ["normalized_phrase", "competency_category", "job_role", "proficiency_level", "skill_type"], "skills")
+        sf = select_filters(skills, ["competency_category", "job_role", "proficiency_level", "skill_type"], "skills")
+        phrase_query = st.text_input("Skill phrase contains", key="filter_skills_phrase_contains")
+        if phrase_query.strip():
+            sf["normalized_phrase_contains"] = phrase_query.strip()
         status = st.multiselect("Alignment status", STATUSES, key="filter_status")
-    return analysis_bundle(job_filters=jf, skill_filters=sf, statuses=status)
+    bundle_key = digest({"signature": analysis_revision, "jobs": jf, "skills": sf, "statuses": status})
+    return _session_cached_value(
+        "_fow_analysis_cache", bundle_key,
+        lambda: analysis_bundle(job_filters=jf, skill_filters=sf, statuses=status,
+                                source_snapshot=source_snapshot),
+    )
 
 
 def home():
     st.markdown("<div class='fow-eyebrow'>RESEARCH WORKSPACE · PHILIPPINES</div>", unsafe_allow_html=True)
     st.title("The Future of Work in the Philippines")
     st.markdown("Explore the skills employers request in Philippine AI and analytics jobs, then compare them with the TESDA PSF-AAI framework.")
-    jobs = storage.read_frame("cleaned_jobs")
-    taxonomy = storage.read_frame("cleaned_psf_aai")
-    mapped_jobs = storage.read_frame("mapped_jobs")
-    has_extractions = (storage.ROOT / "data/processed/extractions_original.csv").is_file()
-    label_count = reviewed_label_count()
-    model = read_model_metadata()
-    meta = storage.read_json("extraction_metadata", {})
+    with st.skeleton(height=130):
+        jobs = storage.read_frame("cleaned_jobs")
+        taxonomy = storage.read_frame("cleaned_psf_aai")
+        mapped_jobs = storage.read_frame("mapped_jobs")
+        has_extractions = (storage.ROOT / "data/processed/extractions_original.csv").is_file()
+        label_count = reviewed_label_count()
+        model = read_model_metadata()
+        meta = storage.read_json("extraction_metadata", {})
 
     metrics = st.columns(4)
     metrics[0].metric("Clean job ads", f"{len(jobs):,}")
@@ -216,15 +327,15 @@ def home():
                     page_button(path, link, key=f"home_workflow_{number}")
     try:
         readiness_path = resolve_training_file(storage.ROOT)
-        readiness_labels = load_labeled_data(readiness_path)
-        _, readiness_validation = validate_labeled_data(readiness_labels, require_provenance=True)
+        readiness_labels = storage.read_frame("labeled_competencies") if supabase_store.configured() else load_labeled_data(readiness_path)
+        _, readiness_validation = cached_label_validation(readiness_labels, require_provenance=True)
         readiness_audit = assess_research_readiness(readiness_labels, model, readiness_validation)
     except (ValueError, OSError) as exc:
         readiness_labels, readiness_audit = pd.DataFrame(), {"findings": [{"title": "Training data unavailable", "detail": str(exc)}]}
     if readiness_audit["findings"]:
         with st.container(border=True):
             st.subheader("Research readiness needs attention")
-            blocking = [finding for finding in readiness_audit["findings"] if finding["status"] == "blocking"]
+            blocking = [finding for finding in readiness_audit["findings"] if finding.get("status", "blocking") == "blocking"]
             st.warning("The current dataset and evaluation are not ready for defensible research findings.")
             if blocking:
                 st.write(" · ".join(finding["title"] for finding in blocking[:3]))
@@ -277,7 +388,9 @@ def column_mapping(kind="jobs"):
         return
     entry = manifest[kind]
     opts = storage.read_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
-    frame = cached_load(Path(entry["path"]).read_bytes(), entry["filename"], opts["sheet"], opts["encoding"])
+    path = storage.raw_upload_path(entry, kind)
+    stat = path.stat()
+    frame = cached_load_path(str(path), stat.st_mtime_ns, stat.st_size, entry["hash"], opts["sheet"], opts["encoding"])
     saved = storage.read_json(f"mapping_{kind}", {})
     suggested, evidence = suggest_column_mapping(frame.columns, kind, saved)
     fresh, _ = suggest_column_mapping(frame.columns, kind)
@@ -349,9 +462,9 @@ def quality():
         st.success("Cleaned data and quality report saved. Re-run extraction if analysis inputs changed.")
 
 def extraction():
-    page_intro("Extract skill phrases", "Scan the cleaned job ads for candidate skills. Extraction creates a review queue; it does not create researcher-approved training labels.")
+    page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
     with st.expander("How extraction works", expanded=False):
-        st.write("The system searches for phrases using the built-in PSF-AAI reference, a general skills vocabulary, and the saved classifier when one is available. Review the source context on Manual Labeling before using a phrase as a research label.")
+        st.write("Previously approved labels are attached when a normalized phrase matches the reviewed dataset. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
     if storage.read_frame("cleaned_psf_aai").empty:
         st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
     if not (ROOT / "models/competency_classifier.joblib").exists():
@@ -364,12 +477,22 @@ def extraction():
             cached_nlp()
             result = run_extraction()
         st.success(f"Saved {len(result):,} candidate/match records with evidence.")
-    result = storage.read_frame("extractions_original")
+    with st.skeleton(height=160):
+        result = storage.read_frame("extractions_original")
     if not result.empty:
-        choice = st.selectbox("View", ["All candidates", "Accepted detections", "Awaiting review"])
-        if choice != "All candidates":
+        approved = result.human_label.fillna("").astype(str).str.strip().ne("") if "human_label" in result else pd.Series(False, index=result.index)
+        metrics = st.columns(3)
+        metrics[0].metric("Researcher-approved labels", f"{int(approved.sum()):,}")
+        metrics[1].metric("Unreviewed extracted phrases", f"{int((~approved).sum()):,}")
+        metrics[2].metric("Model predictions (separate)", f"{int(result.model_prediction.fillna('').astype(str).str.strip().ne('').sum()):,}" if "model_prediction" in result else "0")
+        choice = st.selectbox("View", ["All extracted phrases", "Researcher-approved labels", "Unreviewed candidates", "Accepted detections"])
+        if choice == "Researcher-approved labels":
+            result = result[approved]
+        elif choice == "Unreviewed candidates":
+            result = result[~approved]
+        elif choice == "Accepted detections":
             accepted = result.accepted.astype(str).str.casefold().eq("true")
-            result = result[accepted if choice == "Accepted detections" else ~accepted]
+            result = result[accepted]
         display(result)
         diagnostics = storage.read_frame("nlp_processed")
         if not diagnostics.empty and diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").any():
@@ -381,7 +504,7 @@ def _auto_train_after_review(labels, enabled):
     """Refresh development models only from saved, provenance-checked review labels."""
     if not enabled:
         return
-    _, validation = validate_labeled_data(labels, .2, False, require_provenance=True)
+    _, validation = cached_label_validation(labels, .2, False, require_provenance=True)
     if validation["errors"]:
         st.warning(
             "Annotations were saved, but automatic training is waiting for the labeled dataset to pass validation. "
@@ -410,13 +533,13 @@ def labeling():
     st.info("Nothing from AI fills a label automatically. Typed values and values you explicitly copy are saved only when you click Save, under your reviewer ID and timestamp.")
     auto_train = st.checkbox(
         "Automatically retrain after saving reviewed labels",
-        value=False,
+        value=False, disabled=supabase_store.configured(),
         help="Off by default so annotation and team-import actions do not train a model unexpectedly. If enabled, only saved researcher-reviewed labels with source provenance are used, and all validation checks must pass.",
     )
     with st.container(border=True):
         st.subheader("Add a small, free remote-job feed")
         st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
-        if st.button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs"):
+        if st.button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
             from .himalayas_feed import fetch_philippines_jobs
             try:
                 report = fetch_philippines_jobs(storage.ROOT)
@@ -432,7 +555,7 @@ def labeling():
     with st.container(border=True):
         st.subheader("Automate local candidate preparation and suggestions")
         st.caption("Scans posting CSVs already in ./train, prepares Philippine-location candidates, and generates BGE-M3 category and PSF drafts in resumable batches. It does not fetch new websites, save labels, or train a classifier. Keep this app running until the progress bar completes.")
-        if st.button("Run all local suggestions", type="primary", key="run_local_suggestions"):
+        if st.button("Run all local suggestions", type="primary", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
             from .unattended_suggestions import run_local_suggestions
             progress = st.progress(0.0, text="Starting local candidate scan")
             try:
@@ -468,44 +591,52 @@ def labeling():
         st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
         if posting_files:
             posting_file = st.selectbox("Posting CSV in ./train", posting_files)
-            if st.button("Prepare Philippine posting candidates"):
+            if st.button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
                 with st.spinner("Scanning postings and extracting candidate phrases…"):
                     report = prepare_posting_candidates(storage.ROOT, posting_file)
+                    candidate_path = storage.ROOT / "train" / report["candidate_file"]
+                    new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
+                    shared_candidates = storage.read_frame("team_training_candidates")
+                    combined_candidates = pd.concat([shared_candidates, new_candidates], ignore_index=True).drop_duplicates(
+                        [column for column in ("normalized_phrase", "source_type", "source_id") if column in new_candidates], keep="last"
+                    ) if not shared_candidates.empty else new_candidates
+                    storage.save_frame("team_training_candidates", combined_candidates)
                 st.success(f"Prepared {report['candidate_occurrences']:,} candidates from {report['explicit_philippine_postings']:,} of {report['total_postings']:,} postings. Labels remain blank until reviewed.")
         for report_path in sorted((storage.ROOT / "train/derived").glob("postings_*/import_report.json")):
             report = json.loads(report_path.read_text(encoding="utf-8"))
             st.write(f"{report['source_file']}: {report['explicit_philippine_postings']:,} postings with explicit Philippine locations; {report['excluded_without_explicit_philippine_location']:,} excluded; {report['candidate_occurrences']:,} candidate occurrences.")
             if report["postings_reaching_candidate_limit"]:
                 st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
-    labels = storage.read_frame("labeled_competencies")
+    if supabase_store.configured():
+        st.caption("Your team can review simultaneously. Saves detect changes made by another reviewer. Refresh before starting a new batch; unsaved table edits will be discarded.")
+        if st.button("Refresh shared review table"):
+            supabase_store.clear_read_cache()
+            for key in list(st.session_state):
+                if str(key).startswith(("review_snapshot", "manual_labels_", "resolve_label_")):
+                    del st.session_state[key]
+            st.rerun()
+        with st.skeleton(height=100):
+            if "review_snapshot" not in st.session_state:
+                st.session_state["review_snapshot"] = storage.read_frame("labeled_competencies")
+            labels = st.session_state["review_snapshot"].copy()
+    else:
+        with st.skeleton(height=100):
+            labels = storage.read_frame("labeled_competencies")
     path = resolve_training_file(storage.ROOT)
-    st.caption(f"Reviewed annotations save to `{project_relative_path(path)}`.")
-    candidates = training_candidates(storage.ROOT)
-    extracted = storage.read_frame("extractions_original")
-    if not extracted.empty:
-        extracted = extracted.rename(columns={"original_phrase": "phrase"})
-        jobs = storage.read_frame("cleaned_jobs")
-        if not jobs.empty:
-            source = jobs.drop_duplicates("source_id").set_index("source_id")
-            for target, column in (("source_url", "url"), ("job_title", "job_title"), ("company", "company")):
-                extracted[target] = extracted.source_id.map(source[column]).fillna("")
-        candidates = pd.concat([candidates, extracted], ignore_index=True).fillna("")
-    for column in ("phrase", "normalized_phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"):
-        if column not in candidates:
-            candidates[column] = ""
+    st.caption("Reviewed annotations save to the shared database; a local CSV backup is kept separately." if supabase_store.configured() else f"Reviewed annotations save to `{project_relative_path(path)}`.")
+    with st.skeleton(height=170):
+        candidates, reviewed, taxonomy = _load_manual_review_data(labels)
     from .cleaning import normalize_text
-    candidates["normalized_phrase"] = candidates.normalized_phrase.where(candidates.normalized_phrase.ne(""), candidates.phrase.map(normalize_text))
-    candidates = candidates[candidates.phrase.str.strip().ne("")].drop_duplicates(["normalized_phrase", "source_type", "source_id"])
-    from .pretrained_suggestions import is_incomplete_phrase
-    candidates["needs_phrase_edit"] = candidates.phrase.map(is_incomplete_phrase)
-    reviewed = {(row.normalized_phrase, row.source_type, row.source_id): row for row in labels.itertuples()}
     st.caption(f"{len(candidates)} candidate occurrences; {candidates.normalized_phrase.nunique()} distinct phrases; {int(candidates.needs_phrase_edit.sum())} likely connector fragments to inspect or edit; {len(labels)} saved review rows. Source-pack descriptions are researcher-provided summaries; check their original URLs before final research use.")
-    taxonomy = training_taxonomy(storage.ROOT)
     categories = list(dict.fromkeys(LABELS + (taxonomy.competency_category.tolist() if not taxonomy.empty else []) + (labels.label.tolist() if not labels.empty else [])))
     extra = st.text_input("Additional category (optional)")
     if extra.strip():
         categories.append(extra.strip())
-    reviewer = st.text_input("Reviewer ID", key="label_reviewer")
+    if supabase_store.configured():
+        reviewer = st.session_state.get("supabase_user_email", "")
+        st.caption(f"Signed-in reviewer: {reviewer}")
+    else:
+        reviewer = st.text_input("Reviewer ID", key="label_reviewer")
     if not candidates.empty:
         if "candidate_file" in candidates:
             sources = sorted(candidates.candidate_file.unique())
@@ -530,11 +661,11 @@ def labeling():
         shown = pd.DataFrame(columns=["phrase", "source_type", "source_id", "original_text"])
     from .pretrained_suggestions import (
         MODEL_ID, MODEL_REVISION,
-        load_ai_suggestions, save_ai_suggestions, suggest_labels, suggestion_key,
+        save_ai_suggestions, suggest_labels, suggestion_key,
     )
     page_rows = shown.to_dict("records") if not shown.empty else []
     page_identity = frame_hash(shown[["phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
-    saved_suggestions = load_ai_suggestions(storage.ROOT)
+    saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
     page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
     def generate_ai_drafts(rows):
         progress = st.progress(0, text="Preparing local pretrained models…")
@@ -560,7 +691,7 @@ def labeling():
         if taxonomy.empty:
             st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
         else:
-            if st.button("Generate AI suggestions for this page", key=f"suggest_labels_{page_identity}"):
+            if st.button("Generate AI suggestions for this page", key=f"suggest_labels_{page_identity}", disabled=not supabase_store.is_admin()):
                 generate_ai_drafts(page_rows)
 
     has_page_suggestions = bool(page_suggestions and any(item.get("category") for item in page_suggestions))
@@ -682,11 +813,27 @@ def labeling():
     st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
     can_submit = has_category or bool(conflicts)
     if st.button("Save annotations", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit):
-        labels = save_annotations(edited, reviewer, conflict_resolutions=conflict_resolutions)
-        st.success(f"Saved {len(labels)} reviewed rows to {path}.")
+        submitted_rows = edited
+        versions = None
+        if supabase_store.configured():
+            versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
+            changed = [i for i, row in edited_table.iterrows()
+                       if row.get("Copy category draft", False) or row.get("Copy PSF-AAI draft", False)
+                       or row.get("Category", "") != manual_table.iloc[i].get("Category", "")
+                       or row.get("PSF-AAI competency", "") != manual_table.iloc[i].get("PSF-AAI competency", "")]
+            submitted_rows = edited.iloc[changed]
+        labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+        if supabase_store.configured():
+            st.session_state.pop("review_snapshot", None)
+            for key in list(st.session_state):
+                if str(key).startswith("manual_labels_"):
+                    del st.session_state[key]
+        st.success(f"Saved. The dataset now has {len(labels):,} reviewed rows.")
+        if st.session_state.get("backup_warning"):
+            st.warning(st.session_state.pop("backup_warning"))
         _auto_train_after_review(labels, auto_train)
-    st.caption("To combine work from teammates' own devices, import their downloaded reviewed-label CSV. Reviewer IDs and timestamps are preserved; unresolved phrase conflicts must be resolved in the table above.")
-    uploaded = st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
+    st.caption("For offline/local work only: to combine work from teammates' own devices, import their downloaded reviewed-label CSV. Reviewer IDs and timestamps are preserved; unresolved phrase conflicts must be resolved in the table above.")
+    uploaded = None if supabase_store.configured() else st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
     imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
     import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
     if uploaded and st.button("Import annotations", disabled=not import_conflicts_resolved):
@@ -717,11 +864,11 @@ def training():
     if path is None:
         return
     st.caption(f"Training data file: `{project_relative_path(path)}`")
-    labels = load_labeled_data(path)
+    labels = (storage.read_frame("labeled_competencies") if supabase_store.configured() else load_labeled_data(path))
     fraction = st.slider("Holdout fraction", .1, .5, .2, .05)
     include_irrelevant = st.checkbox("Intentionally train IRRELEVANT as a separate class", value=False)
     max_features = st.number_input("Maximum TF-IDF features", 100, 100000, 10000, 100)
-    data, validation = validate_labeled_data(labels, fraction, include_irrelevant, require_provenance=True)
+    data, validation = cached_label_validation(labels, fraction, include_irrelevant, require_provenance=True)
     a, b, c = st.columns(3)
     a.metric("Labeled file rows", validation["total_rows"])
     b.metric("Distinct usable phrases", validation["rows_used"])
@@ -740,10 +887,12 @@ def training():
         st.json({"TF-IDF": config, "holdout_fraction": fraction, "random_state": 42,
                  "Logistic Regression": {"max_iter": 1000, "class_weight": "balanced"},
                  "Multinomial Naive Bayes": {"alpha": 1.0}, "include_irrelevant": include_irrelevant})
+    if supabase_store.configured():
+        st.caption("Team reviewers label together. Only the administrator starts model training; each run uses a fixed shared-label snapshot.")
     st.caption("Minimum software gate: 30 distinct phrases, two classes, five examples per class, no conflicting labels, complete provenance and a feasible holdout by job-ad source. These minimums do not establish adequate research validation. Cross-validation is grouped by source where each fold can contain all categories. Models are trained only by the button below.")
     if training_data_changed():
         st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-    if st.button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"])):
+    if st.button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
         progress = st.progress(0., text="Validating reviewed annotations")
         try:
             metadata, comparison = train_and_save_models(fraction, include_irrelevant, {"max_features": int(max_features)},
@@ -774,7 +923,7 @@ def evaluation():
         return
     st.write("Selected model:", metadata["model_name"])
     try:
-        training_frame = load_labeled_data(resolve_training_file(storage.ROOT))
+        training_frame = (storage.read_frame("training_snapshot") if supabase_store.configured() else load_labeled_data(resolve_training_file(storage.ROOT)))
         overlap = source_overlap(training_frame, metadata)
     except (ValueError, OSError):
         overlap = None
@@ -825,7 +974,8 @@ def research_page(page):
     st.header(page)
     if not current_analysis():
         return
-    tables, meta = filtered_bundle()
+    with st.skeleton(height=190):
+        tables, meta = filtered_bundle()
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
@@ -929,7 +1079,8 @@ def feedback():
     reviewer = st.text_input("Reviewer ID", key="feedback_reviewer")
     source = st.selectbox("Correction target", ["extraction", "alignment"])
     if current_analysis():
-        tables, _ = filtered_bundle()
+        with st.skeleton(height=160):
+            tables, _ = filtered_bundle()
         frame = tables["all_candidates"] if source == "extraction" else tables["alignment_results"]
         key = "extraction_id" if source == "extraction" else "alignment_id"
         if not frame.empty:
@@ -991,14 +1142,15 @@ def research_readiness():
     page_intro("Research readiness", "A practical audit of the current data and model workflow. Passing app checks does not by itself make results ready for a thesis or publication.")
     try:
         path = resolve_training_file(storage.ROOT)
-        labels = load_labeled_data(path)
-        usable, validation = validate_labeled_data(labels, require_provenance=True)
+        labels = (storage.read_frame("labeled_competencies") if supabase_store.configured() else load_labeled_data(path))
+        usable, validation = cached_label_validation(labels, require_provenance=True)
     except (ValueError, OSError) as exc:
         path, labels, usable, validation = None, pd.DataFrame(), pd.DataFrame(), {"errors": [str(exc)], "warnings": []}
     metadata = read_model_metadata()
     audit = assess_research_readiness(labels, metadata, validation)
     history_path = storage.ROOT / "data/feedback/annotation_history.csv"
-    history = pd.read_csv(history_path, dtype=str, keep_default_na=False) if history_path.is_file() else pd.DataFrame()
+    history = (pd.DataFrame(supabase_store.read_annotation_history(supabase_store.get_token())) if supabase_store.configured()
+               else pd.read_csv(history_path, dtype=str, keep_default_na=False) if history_path.is_file() else pd.DataFrame())
     disagreements = historical_category_disagreements(history)
     profile = research_data_profile(labels)
     st.warning("Not yet ready for defensible research findings" if audit["findings"] else "No software risks detected; researcher sign-off is still required")
@@ -1077,6 +1229,19 @@ def research_readiness():
 
 def settings_page():
     st.header("Settings")
+    st.subheader("Shared team workspace")
+    if supabase_store.configured():
+        st.success("Supabase is connected. Saved tables and settings are shared with signed-in teammates; local CSVs remain as backups.")
+        st.caption("To copy this computer's existing processed tables into empty shared slots, use the one-time import below. Existing shared rows are preserved.")
+        if st.button("Copy local workspace to shared database", type="secondary"):
+            with st.spinner("Copying local processed tables and annotations to Supabase…"):
+                seeded, skipped = storage.seed_shared_workspace()
+            st.success(f"Copied {len(seeded)} tables: {', '.join(seeded) if seeded else 'none needed'}.")
+            if skipped:
+                st.info(f"Kept {len(skipped)} existing shared tables unchanged: {', '.join(skipped)}.")
+    else:
+        st.info("Supabase is not configured. This app is using local files on this computer.")
+        st.caption("For a shared site, configure SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Streamlit secrets, then run the schema in supabase_schema.sql.")
     cfg = storage.settings()
     with st.form("settings"):
         aligned = st.slider("Aligned threshold", .01, 1., float(cfg["aligned_threshold"]), .01)
@@ -1114,9 +1279,12 @@ PAGES = {"Home": home, "Job Data Upload": upload, "Data Quality": quality,
 def render(page):
     storage.initialize()
     st.markdown(DESIGN_CSS, unsafe_allow_html=True)
-    st.sidebar.caption(f"Local research workspace · v{VERSION}")
+    st.sidebar.caption(f"Research workspace · v{VERSION}")
     try:
+        if supabase_store.configured() and page in {"Job Data Upload", "Data Quality", "Competency Extraction", "Settings", "Feedback", "PSF Framework"} and not supabase_store.is_admin():
+            st.info("This step is managed by the project administrator. Open Review and label phrases to contribute your annotations.")
+            return
         PAGES[page]()
-    except (ValueError, OSError, KeyError, TypeError) as exc:
+    except (ValueError, OSError, KeyError, TypeError, supabase_store.SupabaseError) as exc:
         st.error(str(exc))
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")

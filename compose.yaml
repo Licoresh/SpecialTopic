@@ -1,0 +1,34 @@
+services:
+  research:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./train:/app/train
+      - ./models:/app/models
+      - ./outputs:/app/outputs
+
+  caddy:
+    image: caddy:2
+    profiles: ["public"]
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - research
+
+volumes:
+  caddy_data:
+  caddy_config:

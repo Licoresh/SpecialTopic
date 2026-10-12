@@ -1,6 +1,11 @@
 __pycache__/
 .pytest_cache/
 .venv/
+.agents/
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
 tmp/
 data/raw/*
 data/processed/*

@@ -39,7 +39,13 @@ def annotation_conflicts(rows, previous=None):
     return conflicts
 
 
-def save_annotations(rows, reviewer, conflict_resolutions=None, preserve_row_provenance=False):
+def save_annotations(rows, reviewer, conflict_resolutions=None, preserve_row_provenance=False, expected_versions=None):
+    from . import supabase_store
+    shared = supabase_store.configured()
+    if shared:
+        if preserve_row_provenance:
+            raise ValueError("Review imported labels in the shared table first. A CSV upload cannot verify another researcher's decisions.")
+        reviewer = str(supabase_store.st.session_state.get("supabase_user_email", ""))
     if not reviewer.strip():
         raise ValueError("Enter a reviewer name or research ID.")
     rows = rows.copy().fillna("")
@@ -57,6 +63,8 @@ def save_annotations(rows, reviewer, conflict_resolutions=None, preserve_row_pro
         if missing_values:
             raise ValueError("Team annotation rows are missing " + ", ".join(missing_values) + ". Export the reviewed file again from each teammate's app.")
     previous = read_frame("labeled_competencies")
+    if shared and expected_versions is None:
+        expected_versions = {r.normalized_phrase: int(r.version) for r in previous.itertuples()}
     resolved_previous = pd.DataFrame()
     resolved_import = pd.DataFrame()
     # Conflicts are a dataset-wide invariant: expose old conflicts even when the
@@ -126,6 +134,18 @@ def save_annotations(rows, reviewer, conflict_resolutions=None, preserve_row_pro
     if remaining_conflicts:
         phrases = ", ".join(item["phrase"] for item in list(remaining_conflicts.values())[:5])
         raise ValueError("The saved dataset still has conflicting categories for normalized phrases: " + phrases)
+    if shared:
+        # Submit only the explicit edits. The RPC applies category reconciliation
+        # and records the authenticated identity in one database transaction.
+        supabase_store.save_reviewed_annotations(rows.to_dict("records"), supabase_store.get_token(),
+                                                expected_versions, conflict_resolutions)
+        current = read_frame("labeled_competencies")
+        try:
+            atomic_bytes(ROOT / "data/processed/shared_labeled_competencies.csv", current[ANNOTATION_COLUMNS].to_csv(index=False).encode("utf-8-sig"))
+        except OSError:
+            # The database commit succeeded. Do not misreport it as a failed save.
+            supabase_store.st.session_state["backup_warning"] = "Labels saved in Supabase, but the local CSV backup could not be written. Download reviewed data to retain a backup."
+        return current
     audit = ROOT / "data/feedback/annotation_history.csv"
     history = pd.read_csv(audit, keep_default_na=False) if audit.exists() else pd.DataFrame()
     atomic_bytes(audit, pd.concat([history, resolved_previous, resolved_import, rows], ignore_index=True).to_csv(index=False).encode("utf-8-sig"))

@@ -1,0 +1,2 @@
+create index research_annotations_phrase_category_idx on public.research_annotations(normalized_phrase,label);
+create index training_lease_owner_idx on research_private.training_lease(owner_id);

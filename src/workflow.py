@@ -34,6 +34,15 @@ def run_extraction():
     matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"]) if not taxonomy.empty else None
     model_path = ROOT / "models/competency_classifier.joblib"
     model = cached_load_model(model_path) if model_path.exists() else None
+    from . import supabase_store
+    if supabase_store.configured():
+        from .model_training import read_model_metadata
+        import json
+        local_meta = ROOT / "models/model_metadata.json"
+        published = read_model_metadata()
+        local = json.loads(local_meta.read_text()) if local_meta.exists() else {}
+        if not published or local.get("training_timestamp") != published.get("training_timestamp"):
+            model = None
     annotations = storage.read_frame("labeled_competencies")
     frames, diagnostics = [], []
     for kind in ("jobs",):
@@ -70,10 +79,13 @@ def current_extractions():
         extracted.loc[category.str.contains("soft|enabling|leadership", regex=True), "skill_type"] = "Soft / Enabling"
     return extracted
 
-def analysis_bundle(job_filters=None, skill_filters=None, statuses=None):
-    jobs = filter_frame(storage.read_frame("cleaned_jobs"), job_filters or {})
-    taxonomy = storage.read_frame("cleaned_psf_aai")
-    extracted = current_extractions()
+def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, source_snapshot=None):
+    source_snapshot = source_snapshot or {}
+    jobs_source = source_snapshot["jobs"] if "jobs" in source_snapshot else storage.read_frame("cleaned_jobs")
+    taxonomy = source_snapshot["taxonomy"] if "taxonomy" in source_snapshot else storage.read_frame("cleaned_psf_aai")
+    extracted_source = source_snapshot["extracted"] if "extracted" in source_snapshot else current_extractions()
+    jobs = filter_frame(jobs_source, job_filters or {})
+    extracted = extracted_source.copy()
     if not extracted.empty:
         extracted = extracted[extracted.source_type.eq("jobs") & extracted.source_id.isin(jobs.get("source_id", []))]
         extracted = filter_frame(extracted, skill_filters or {})

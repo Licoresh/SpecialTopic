@@ -10,8 +10,12 @@ from .training_data import load_labeled_data, labeled_file_hash
 from .reporting import export_csv
 from .utils import timestamp, frame_hash
 from .training_sources import resolve_training_file
+from .training_lock import exclusive_training, ensure_training_lease
+from . import supabase_store
 
 def read_model_metadata(root=None):
+    if supabase_store.configured():
+        return storage.read_json("model_metadata", {})
     path = Path(root or storage.ROOT) / "models/model_metadata.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
@@ -20,17 +24,30 @@ def training_data_changed(root=None):
     meta = read_model_metadata(root)
     if not meta:
         return False
+    if supabase_store.configured():
+        return meta.get("shared_annotation_hash") != frame_hash(storage.read_frame("labeled_competencies"))
     path = resolve_training_file(root)
     return str(path.resolve()) != meta.get("training_file") or meta.get("training_file_hash", meta.get("training_data_hash")) != labeled_file_hash(path)
 
+@exclusive_training
 def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_config=None, progress=None):
     root = storage.ROOT
-    path = resolve_training_file(root)
+    shared = supabase_store.configured()
+    if shared:
+        supabase_store.clear_read_cache()
+        labels = storage.read_frame("labeled_competencies").copy(deep=True)
+        shared_hash = frame_hash(labels)
+        # Immutable input snapshot; labeling can continue during this run.
+        path = root / "models/snapshots" / f"{shared_hash}.csv"
+        storage.atomic_bytes(path, export_csv(labels))
+    else:
+        path = resolve_training_file(root)
+        labels = load_labeled_data(path)
     before_hash = labeled_file_hash(path)
-    labels = load_labeled_data(path)
     results = compare_models(labels, test_size, include_irrelevant, vectorizer_config, progress, require_provenance=True)
     if labeled_file_hash(path) != before_hash:
         raise ValueError("Annotations changed during training. No model was published; retry with the current dataset.")
+    ensure_training_lease()
     selected = select_best_model(results)
     trained_at = timestamp()
     vectorizer = VECTORIZER_CONFIG | (vectorizer_config or {})
@@ -63,6 +80,10 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
                 "interpretation": "Based on the current labeled validation sample. Minimum sample gates do not establish research accuracy; independent validation is still required.",
                 "classifier_config": details[selected]["config"], "refit_on_holdout": False}
     # No artifacts are written before both models, their evaluation, and selection succeed.
+    if shared:
+        metadata["shared_annotation_hash"] = shared_hash
+        metadata["shared_run_id"] = supabase_store.st.session_state["training_run_id"]
+        metadata["snapshot_note"] = "Evaluated on a fixed Supabase reviewed-label snapshot; subsequent team edits are not included."
     for name, result in results.items():
         slug = "nb" if name.startswith("Multinomial") else "lr"
         save_model(result["model"], root / "models" / MODEL_FILES[name])
@@ -77,4 +98,7 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
     save_model(winner["model"], root / "models/competency_classifier.joblib")
     storage.atomic_bytes(root / "models/model_metadata.json", json.dumps(metadata, indent=2, default=str).encode("utf-8"))
     storage.save_json("selected_model", {"name": selected, **details[selected]})
+    if shared:
+        storage.save_frame("training_snapshot", labels)
+        storage.save_json("model_metadata", metadata)
     return metadata, table
