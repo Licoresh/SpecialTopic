@@ -71,8 +71,8 @@ def require_workspace_access():
     st.session_state["supabase_role"] = role
 
 
-def render_account_controls():
-    """Render account actions after page navigation, in the sidebar footer."""
+def render_account_menu():
+    """Render account actions in a compact top-right menu on workspace pages."""
     if not backend.configured():
         return
     email = st.session_state.get("supabase_user_email")
@@ -80,18 +80,20 @@ def render_account_controls():
     if not email:
         return
 
-    with st.sidebar.container(border=True):
-        st.caption("ACCOUNT")
-        st.write(email)
-        if role:
-            st.caption(str(role).replace("_", " ").title())
-        if action_button(
-            "Sign out",
-            key="sign_out",
-            cooldown=4.0,
-            type="secondary",
-            use_container_width=True,
-        ):
-            backend.sign_out()
-            st.session_state["_fow_signed_out_notice"] = True
-            st.rerun()
+    spacer, account = st.columns([8, 1], vertical_alignment="top")
+    with account:
+        with st.popover("Account", icon=":material/account_circle:", use_container_width=True):
+            st.caption(email)
+            if role:
+                st.caption(str(role).replace("_", " ").title())
+            st.divider()
+            if action_button(
+                "Sign out",
+                key="sign_out",
+                cooldown=4.0,
+                type="secondary",
+                use_container_width=True,
+            ):
+                backend.sign_out()
+                st.session_state["_fow_signed_out_notice"] = True
+                st.rerun()

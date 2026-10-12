@@ -1285,6 +1285,8 @@ def render(page):
     st.session_state["_fow_current_page"] = page
     st.markdown(DESIGN_CSS, unsafe_allow_html=True)
     st.sidebar.caption(f"Research workspace · v{VERSION}")
+    from .auth_ui import render_account_menu
+    render_account_menu()
     try:
         if supabase_store.configured() and page in {"Job Data Upload", "Data Quality", "Competency Extraction", "Settings", "Feedback", "PSF Framework"} and not supabase_store.is_admin():
             st.info("This step is managed by the project administrator. Open Review and label phrases to contribute your annotations.")
@@ -1294,6 +1296,4 @@ def render(page):
         st.error(str(exc))
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")
     finally:
-        from .auth_ui import render_account_controls
-        render_account_controls()
         finish_action_run()
