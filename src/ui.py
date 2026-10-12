@@ -30,6 +30,7 @@ from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
                         historical_category_disagreements, research_data_profile)
 from . import supabase_store
+from .action_guard import action_button, action_form_submit_button, finish_action_run
 
 DESIGN_CSS = """
 <style>
@@ -177,7 +178,7 @@ def page_intro(title, description):
     st.caption(description)
 
 def page_button(path, label, *, primary=False, key=None):
-    if st.button(label, type="primary" if primary else "secondary", key=key, use_container_width=True,
+    if action_button(label, type="primary" if primary else "secondary", key=key, use_container_width=True,
                  icon=":material/arrow_forward:"):
         st.switch_page(path)
 
@@ -367,7 +368,7 @@ def upload(kind="jobs"):
         frame = cached_load(content, uploaded.name, sheet, encoding)
         display(frame.head(50))
         st.caption(f"{len(frame):,} rows. Preview shows at most 50.")
-        if st.button("Save raw upload", type="primary"):
+        if action_button("Save raw upload", type="primary"):
             storage.archive_raw(content, uploaded.name, kind)
             storage.save_json(f"read_options_{kind}", {"sheet": sheet, "encoding": encoding})
             st.success("Raw bytes archived without modification. Review the column mapping below.")
@@ -401,7 +402,7 @@ def column_mapping(kind="jobs"):
         display(pd.DataFrame(evidence))
         st.caption("Scores measure header similarity, not validated mapping accuracy. Source content is not sent to an AI service.")
     if any(suggested.get(field) for field in ("job_title", "job_description", "required_skills", "qualifications")):
-        if st.button("Apply automatic mapping", type="primary", help="Save the clear header matches shown above. You can still change them in the form below."):
+        if action_button("Apply automatic mapping", type="primary", help="Save the clear header matches shown above. You can still change them in the form below."):
             mapped = map_columns(frame, suggested, kind, entry["hash"])
             if kind == "psf_aai":
                 validate_taxonomy(mapped)
@@ -415,7 +416,7 @@ def column_mapping(kind="jobs"):
         for field in FIELDS[kind]:
             default = suggested[field]
             mapping[field] = st.selectbox(field.replace("_", " ").title(), options, index=options.index(default) if default in options else 0, key=f"{scope}_{field}")
-        if st.form_submit_button("Save mapping"):
+        if action_form_submit_button("Save mapping"):
             mapped = map_columns(frame, mapping, kind, entry["hash"])
             if kind == "psf_aai":
                 validate_taxonomy(mapped)
@@ -426,7 +427,7 @@ def column_mapping(kind="jobs"):
     def reset_suggestions():
         for field, column in fresh.items():
             st.session_state[f"{scope}_{field}"] = column
-    st.button("Re-detect columns", on_click=reset_suggestions, help="Replace these selections with fresh header-based suggestions; save to apply them.")
+    action_button("Re-detect columns", on_click=reset_suggestions, help="Replace these selections with fresh header-based suggestions; save to apply them.")
 
 def quality():
     page_intro("Review data quality", "Check the uploaded job-ad columns and the cleaned preview, then save the job table used by the analysis.")
@@ -446,7 +447,7 @@ def quality():
     scope_reviewed = st.checkbox("I reviewed source evidence and confirm these advertisements have Philippine provenance and relate to AI or analytics") if kind == "jobs" else True
     reviewer = st.text_input("Framework reviewer ID") if kind == "psf_aai" else ""
     confirmed = st.checkbox("I checked this framework table against its cited source pages") if kind == "psf_aai" else True
-    if st.button("Save cleaned dataset", type="primary"):
+    if action_button("Save cleaned dataset", type="primary"):
         if kind == "jobs" and not scope_reviewed:
             raise ValueError("Review Philippine provenance and AI/analytics relevance before saving the active job-analysis dataset.")
         if kind == "psf_aai":
@@ -472,7 +473,7 @@ def extraction():
     else:
         if training_data_changed():
             st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-    if st.button("Run extraction and classification", type="primary"):
+    if action_button("Run extraction and classification", type="primary"):
         with st.spinner("Processing unique texts and mapping competencies…"):
             cached_nlp()
             result = run_extraction()
@@ -539,7 +540,7 @@ def labeling():
     with st.container(border=True):
         st.subheader("Add a small, free remote-job feed")
         st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
-        if st.button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
+        if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
             from .himalayas_feed import fetch_philippines_jobs
             try:
                 report = fetch_philippines_jobs(storage.ROOT)
@@ -555,7 +556,7 @@ def labeling():
     with st.container(border=True):
         st.subheader("Automate local candidate preparation and suggestions")
         st.caption("Scans posting CSVs already in ./train, prepares Philippine-location candidates, and generates BGE-M3 category and PSF drafts in resumable batches. It does not fetch new websites, save labels, or train a classifier. Keep this app running until the progress bar completes.")
-        if st.button("Run all local suggestions", type="primary", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
+        if action_button("Run all local suggestions", type="primary", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
             from .unattended_suggestions import run_local_suggestions
             progress = st.progress(0.0, text="Starting local candidate scan")
             try:
@@ -591,7 +592,7 @@ def labeling():
         st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
         if posting_files:
             posting_file = st.selectbox("Posting CSV in ./train", posting_files)
-            if st.button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
+            if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
                 with st.spinner("Scanning postings and extracting candidate phrases…"):
                     report = prepare_posting_candidates(storage.ROOT, posting_file)
                     candidate_path = storage.ROOT / "train" / report["candidate_file"]
@@ -609,7 +610,7 @@ def labeling():
                 st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
     if supabase_store.configured():
         st.caption("Your team can review simultaneously. Saves detect changes made by another reviewer. Refresh before starting a new batch; unsaved table edits will be discarded.")
-        if st.button("Refresh shared review table"):
+        if action_button("Refresh shared review table"):
             supabase_store.clear_read_cache()
             for key in list(st.session_state):
                 if str(key).startswith(("review_snapshot", "manual_labels_", "resolve_label_")):
@@ -691,7 +692,7 @@ def labeling():
         if taxonomy.empty:
             st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
         else:
-            if st.button("Generate AI suggestions for this page", key=f"suggest_labels_{page_identity}", disabled=not supabase_store.is_admin()):
+            if action_button("Generate AI suggestions for this page", key=f"suggest_labels_{page_identity}", disabled=not supabase_store.is_admin()):
                 generate_ai_drafts(page_rows)
 
     has_page_suggestions = bool(page_suggestions and any(item.get("category") for item in page_suggestions))
@@ -812,7 +813,7 @@ def labeling():
         st.caption("Choose at least one competency category before saving. PSF-AAI competency is optional.")
     st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
     can_submit = has_category or bool(conflicts)
-    if st.button("Save annotations", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit):
+    if action_button("Save annotations", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit):
         submitted_rows = edited
         versions = None
         if supabase_store.configured():
@@ -836,7 +837,7 @@ def labeling():
     uploaded = None if supabase_store.configured() else st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
     imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
     import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
-    if uploaded and st.button("Import annotations", disabled=not import_conflicts_resolved):
+    if uploaded and action_button("Import annotations", disabled=not import_conflicts_resolved):
         labels = save_annotations(imported, reviewer, conflict_resolutions=import_resolutions, preserve_row_provenance=True)
         st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
         _auto_train_after_review(labels, auto_train)
@@ -859,7 +860,7 @@ def training():
     if len(options) > 1:
         current = str(path.relative_to(storage.ROOT / "train")) if path else ""
         choice = st.selectbox("Labeled training file", options, index=options.index(current) if current in options else 0)
-        if st.button("Use selected training file"):
+        if action_button("Use selected training file"):
             path = select_training_file(storage.ROOT, choice)
     if path is None:
         return
@@ -892,7 +893,7 @@ def training():
     st.caption("Minimum software gate: 30 distinct phrases, two classes, five examples per class, no conflicting labels, complete provenance and a feasible holdout by job-ad source. These minimums do not establish adequate research validation. Cross-validation is grouped by source where each fold can contain all categories. Models are trained only by the button below.")
     if training_data_changed():
         st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-    if st.button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
+    if action_button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
         progress = st.progress(0., text="Validating reviewed annotations")
         try:
             metadata, comparison = train_and_save_models(fraction, include_irrelevant, {"max_features": int(max_features)},
@@ -959,7 +960,7 @@ def evaluation():
     with st.expander("Reproducibility metadata"):
         st.json(metadata)
     phrase = st.text_input("Phrase to classify with the saved selected model")
-    if st.button("Predict competency category", disabled=not phrase.strip()):
+    if action_button("Predict competency category", disabled=not phrase.strip()):
         prediction = predict_competency_category(phrase)
         st.json(prediction)
         st.caption("Confidence is the classifier's uncalibrated probability estimate, not a guarantee of correctness. This preview does not change human annotations.")
@@ -1062,7 +1063,7 @@ def research_page(page):
         summary = export_html(tables, meta)
         st.download_button("Download HTML research summary", summary, "research_summary.html", "text/html")
         st.download_button("Download analysis metadata", json.dumps(meta, indent=2, default=str), "analysis_metadata.json", "application/json")
-        if st.button("Save this report snapshot locally"):
+        if action_button("Save this report snapshot locally"):
             folder = ROOT / "outputs/reports" / timestamp().replace(":", "-")
             folder.mkdir(parents=True, exist_ok=True)
             storage.atomic_bytes(folder / "research_results.xlsx", workbook)
@@ -1100,12 +1101,15 @@ def feedback():
             else:
                 corrected = st.text_input("Corrected value", str(row[field]))
             comment = st.text_area("Reason / comment")
-            if st.button("Save correction"):
+            if action_button("Save correction", key=f"save_correction_{source}_{row_id}"):
                 if field not in ("psf_competency",) and not corrected.strip():
                     raise ValueError("Enter a corrected value.")
                 save_correction(source, row_id, field, row[field], corrected, reviewer, comment)
                 st.success("Correction saved separately from original predictions. Dependent comparisons use the corrected value.")
-            if source == "extraction" and st.button("Add this reviewed phrase to training data"):
+            if source == "extraction" and action_button(
+                "Add this reviewed phrase to training data",
+                key=f"add_reviewed_phrase_{source}_{row_id}",
+            ):
                 save_annotations(pd.DataFrame([{"phrase": row.normalized_phrase, "label": row.competency_category, "psf_competency": row.psf_competency, "source_type": "jobs", "source_id": row.source_id}]), reviewer)
                 st.success("Added to annotations. Retraining requires an explicit action on ML Training.")
     display(corrections())
@@ -1115,7 +1119,7 @@ def feedback():
         respondent_type = st.selectbox("Respondent type", ["industry professionals", "employers", "researchers", "job seekers"])
         responses = {name: st.slider(name.replace("_", " ").title(), cfg["likert_min"], cfg["likert_max"], cfg["likert_min"]) for name in ("ease_of_use", "clarity", "navigation", "usefulness", "visualization_quality", "overall_satisfaction")}
         comment = st.text_area("Evaluation comment")
-        if st.form_submit_button("Save usability evaluation"):
+        if action_form_submit_button("Save usability evaluation"):
             if not reviewer.strip():
                 raise ValueError("Enter a reviewer ID above the form.")
             record = responses | {"reviewer": reviewer, "respondent_type": respondent_type, "comment": comment, "timestamp": timestamp(), "scale_min": cfg["likert_min"], "scale_max": cfg["likert_max"]}
@@ -1233,7 +1237,7 @@ def settings_page():
     if supabase_store.configured():
         st.success("Supabase is connected. Saved tables and settings are shared with signed-in teammates; local CSVs remain as backups.")
         st.caption("To copy this computer's existing processed tables into empty shared slots, use the one-time import below. Existing shared rows are preserved.")
-        if st.button("Copy local workspace to shared database", type="secondary"):
+        if action_button("Copy local workspace to shared database", type="secondary"):
             with st.spinner("Copying local processed tables and annotations to Supabase…"):
                 seeded, skipped = storage.seed_shared_workspace()
             st.success(f"Copied {len(seeded)} tables: {', '.join(seeded) if seeded else 'none needed'}.")
@@ -1255,7 +1259,7 @@ def settings_page():
         emerging = st.number_input("Minimum job ads for an emerging-skill candidate", 1, 100000, cfg["emerging_min_jobs"])
         low = st.number_input("Likert scale minimum", 0, 9, cfg["likert_min"])
         high = st.number_input("Likert scale maximum", 1, 10, cfg["likert_max"])
-        if st.form_submit_button("Save settings"):
+        if action_form_submit_button("Save settings"):
             if partial >= aligned or low >= high:
                 raise ValueError("Partial threshold must be below aligned, and Likert minimum below maximum.")
             if path.strip():
@@ -1278,6 +1282,7 @@ PAGES = {"Home": home, "Job Data Upload": upload, "Data Quality": quality,
 
 def render(page):
     storage.initialize()
+    st.session_state["_fow_current_page"] = page
     st.markdown(DESIGN_CSS, unsafe_allow_html=True)
     st.sidebar.caption(f"Research workspace · v{VERSION}")
     try:
@@ -1288,3 +1293,5 @@ def render(page):
     except (ValueError, OSError, KeyError, TypeError, supabase_store.SupabaseError) as exc:
         st.error(str(exc))
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")
+    finally:
+        finish_action_run()
