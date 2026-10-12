@@ -20,7 +20,9 @@ import streamlit as st
 
 
 class SupabaseError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def clear_read_cache():
@@ -85,10 +87,16 @@ def _request(method: str, endpoint: str, *, token: str, payload=None, params=Non
         except (ValueError, AttributeError):
             detail = response.text
         if response.status_code == 404 and "schema cache" in str(detail):
-            raise SupabaseError("The shared database setup is incomplete. Ask the project owner to apply the Supabase migrations, then retry.")
+            raise SupabaseError(
+                "The shared database setup is incomplete. Ask the project owner to apply the Supabase migrations, then retry.",
+                status_code=response.status_code,
+            )
         if response.status_code in (401, 403):
-            raise SupabaseError("Your session has expired or your account does not have permission for this action. Sign in again or ask the project owner to check your team role.")
-        raise SupabaseError(f"Supabase returned HTTP {response.status_code}: {detail}")
+            raise SupabaseError(
+                "Your session has expired or your account does not have permission for this action. Sign in again or ask the project owner to check your team role.",
+                status_code=response.status_code,
+            )
+        raise SupabaseError(f"Supabase returned HTTP {response.status_code}: {detail}", status_code=response.status_code)
     if not response.content:
         return None
     try:

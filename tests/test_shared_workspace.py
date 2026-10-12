@@ -147,6 +147,33 @@ def test_logged_out_app_only_shows_login(monkeypatch):
     assert not app.sidebar.button
 
 
+def test_expired_workspace_session_returns_to_sign_in(monkeypatch):
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    monkeypatch.setattr(backend, "get_token", lambda: "expired-token")
+    monkeypatch.setattr(
+        backend,
+        "check_connection",
+        lambda _token: (_ for _ in ()).throw(backend.SupabaseError("Expired", status_code=401)),
+    )
+    app = AppTest.from_string(
+        "from src.auth_ui import require_workspace_access\nrequire_workspace_access()"
+    ).run()
+    assert not app.exception
+    assert app.title[0].value == "Research team sign in"
+    assert "session has expired" in app.error[0].value
+
+
+def test_vercel_requires_supabase_configuration(monkeypatch):
+    monkeypatch.setattr(backend, "configured", lambda: False)
+    monkeypatch.setenv("VERCEL", "1")
+    app = AppTest.from_string(
+        "from src.auth_ui import require_workspace_access\nrequire_workspace_access()"
+    ).run()
+    assert not app.exception
+    assert app.title[0].value == "Sign-in configuration required"
+    assert "SUPABASE_URL" in app.error[0].value
+
+
 def test_large_state_compression_roundtrip():
     payload = {"records": [{"text": "synthetic repeated source " * 500}] * 40}
     packed = backend.pack_state(payload)

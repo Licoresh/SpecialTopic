@@ -1,4 +1,5 @@
 """Lightweight login route. No NLP/model modules load before authorization."""
+import os
 import time
 import streamlit as st
 from . import supabase_store as backend
@@ -62,6 +63,14 @@ def login_page():
 
 def require_workspace_access():
     if not backend.configured():
+        if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+            st.title("Sign-in configuration required")
+            st.error(
+                "This deployment requires Supabase sign-in, but SUPABASE_URL or "
+                "SUPABASE_PUBLISHABLE_KEY is missing. Ask the project owner to add "
+                "both variables in Vercel, then redeploy."
+            )
+            st.stop()
         return
     try:
         token = backend.get_token()
@@ -76,6 +85,11 @@ def require_workspace_access():
     try:
         role = backend.check_connection(token)
     except backend.SupabaseError as exc:
+        if exc.status_code == 401:
+            backend.sign_out()
+            st.session_state["_fow_login_error"] = "Your session has expired. Sign in again to continue."
+            st.navigation([st.Page(login_page, title="Sign in", default=True)], position="hidden").run()
+            st.stop()
         st.title("Workspace unavailable")
         st.error(str(exc))
         if action_button("Retry connection"):

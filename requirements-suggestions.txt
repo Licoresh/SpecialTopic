@@ -1,0 +1,3 @@
+# Optional CPU inference runtime for BAAI/bge-m3 suggestion drafts.
+# This is separate from the core research dashboard dependencies.
+sentence-transformers>=5.0,<7
