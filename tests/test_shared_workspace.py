@@ -139,11 +139,11 @@ def test_login_does_not_keep_token_after_schema_failure(monkeypatch):
     assert "supabase_access_token" not in app.session_state
 
 
-def test_sign_in_loading_wireframe_renders_without_error():
-    from src.auth_ui import render_login_skeleton
-
+def test_workspace_page_skeletons_render_without_error():
     app = AppTest.from_string(
-        "from src.auth_ui import render_login_skeleton\nrender_login_skeleton()"
+        "from src.loading_ui import render_workspace_page_skeleton\n"
+        "for page in ['Overview', 'Review data quality', 'Upload job data', 'Methodology']:\n"
+        "    render_workspace_page_skeleton(page)"
     ).run()
     assert not app.exception
 

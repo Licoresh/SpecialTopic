@@ -6,21 +6,6 @@ from . import supabase_store as backend
 from .action_guard import action_button, action_form_submit_button, finish_action_run
 
 
-def render_login_skeleton():
-    """Render a centered wireframe matching the sign-in form while auth waits."""
-    _, center, _ = st.columns([1, 1.6, 1])
-    with center:
-        with st.container(border=True):
-            st.skeleton(height=14, width=190)
-            st.skeleton(height=38, width=300)
-            st.skeleton(height=18, width=350)
-            st.skeleton(height=14, width=90)
-            st.skeleton(height=48)
-            st.skeleton(height=14, width=90)
-            st.skeleton(height=48)
-            st.skeleton(height=44)
-
-
 def login_page():
     view = st.empty()
     with view.container():
@@ -44,30 +29,37 @@ def login_page():
             st.caption("Use your individual research-team account. The project owner creates accounts and grants team access in Supabase.")
 
     if submitted:
-        # Keep all loading elements inside the same placeholder as the form so
-        # no narrow column or stale page content is left behind.
+        # Replace the form in place while the remote authentication checks run.
         view.empty()
         with view.container():
-            render_login_skeleton()
-            try:
-                session = backend.sign_in(email, password)
-                role = backend.check_connection(session["access_token"])
-            except backend.SupabaseError as exc:
-                # No partially authenticated session survives a failed setup check.
-                backend.sign_out()
-                st.session_state["_fow_login_error"] = str(exc)
-                finish_action_run()
-                st.rerun()
-            else:
-                st.session_state.update({
-                    "supabase_access_token": session["access_token"],
-                    "supabase_refresh_token": session["refresh_token"],
-                    "supabase_expires_at": time.time() + int(session.get("expires_in", 3600)) - 60,
-                    "supabase_user_email": session["user"].get("email", email),
-                    "supabase_role": role,
-                })
-                finish_action_run()
-                st.rerun()
+            _, center, _ = st.columns([1, 1.6, 1])
+            with center:
+                st.caption("FUTURE OF WORK · PHILIPPINES")
+                st.title("Signing you in")
+                with st.container(border=True):
+                    st.write("Verifying your account and research-team access…")
+                    with st.spinner("Connecting securely to the shared workspace…"):
+                        try:
+                            session = backend.sign_in(email, password)
+                            role = backend.check_connection(session["access_token"])
+                        except backend.SupabaseError as exc:
+                            # No partially authenticated session survives a failed setup check.
+                            backend.sign_out()
+                            st.session_state["_fow_login_error"] = str(exc)
+                            finish_action_run()
+                            st.rerun()
+                        else:
+                            # A fresh authenticated session should get the first-page wireframe.
+                            st.session_state.pop("_fow_last_navigation_route", None)
+                            st.session_state.update({
+                                "supabase_access_token": session["access_token"],
+                                "supabase_refresh_token": session["refresh_token"],
+                                "supabase_expires_at": time.time() + int(session.get("expires_in", 3600)) - 60,
+                                "supabase_user_email": session["user"].get("email", email),
+                                "supabase_role": role,
+                            })
+                            finish_action_run()
+                            st.rerun()
 
 
 def require_workspace_access():
@@ -96,6 +88,7 @@ def require_workspace_access():
     except backend.SupabaseError as exc:
         if exc.status_code == 401:
             backend.sign_out()
+            st.session_state.pop("_fow_last_navigation_route", None)
             st.session_state["_fow_login_error"] = "Your session has expired. Sign in again to continue."
             st.navigation([st.Page(login_page, title="Sign in", default=True)], position="hidden").run()
             st.stop()
@@ -135,5 +128,6 @@ def render_account_menu():
                 use_container_width=True,
             ):
                 backend.sign_out()
+                st.session_state.pop("_fow_last_navigation_route", None)
                 st.session_state["_fow_signed_out_notice"] = True
                 st.rerun()
