@@ -139,11 +139,18 @@ def test_login_does_not_keep_token_after_schema_failure(monkeypatch):
     assert "supabase_access_token" not in app.session_state
 
 
-def test_workspace_page_skeletons_render_without_error():
+def test_page_loading_skeleton_is_only_used_once_per_route():
     app = AppTest.from_string(
-        "from src.loading_ui import render_workspace_page_skeleton\n"
-        "for page in ['Overview', 'Review data quality', 'Upload job data', 'Methodology']:\n"
-        "    render_workspace_page_skeleton(page)"
+        "from contextlib import nullcontext\n"
+        "from unittest.mock import patch\n"
+        "import streamlit as st\n"
+        "from src.loading_ui import run_page_with_loading\n"
+        "class Page:\n"
+        "    def run(self): st.write('page content')\n"
+        "with patch('src.loading_ui.st.skeleton', return_value=nullcontext()) as skeleton:\n"
+        "    run_page_with_loading(Page(), 'job-market')\n"
+        "    run_page_with_loading(Page(), 'job-market')\n"
+        "    assert skeleton.call_count == 1\n"
     ).run()
     assert not app.exception
 

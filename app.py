@@ -1,6 +1,6 @@
 import streamlit as st
 from src.auth_ui import require_workspace_access
-from src.loading_ui import render_workspace_page_skeleton
+from src.loading_ui import run_page_with_loading
 
 st.set_page_config(page_title="Future of Work | Philippines", page_icon="🇵🇭", layout="wide")
 
@@ -38,16 +38,4 @@ pages = {
 }
 page = st.navigation(pages, position="sidebar", expanded=True)
 route = page.url_path or page.title
-show_skeleton = st.session_state.get("_fow_last_navigation_route") != route
-st.session_state["_fow_last_navigation_route"] = route
-
-if show_skeleton:
-    skeleton = st.empty()
-    with skeleton.container():
-        render_workspace_page_skeleton(page.title)
-    try:
-        page.run()
-    finally:
-        skeleton.empty()
-else:
-    page.run()
+run_page_with_loading(page, route)

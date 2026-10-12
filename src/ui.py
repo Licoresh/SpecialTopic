@@ -271,14 +271,13 @@ def home():
     st.markdown("<div class='fow-eyebrow'>RESEARCH WORKSPACE · PHILIPPINES</div>", unsafe_allow_html=True)
     st.title("The Future of Work in the Philippines")
     st.markdown("Explore the skills employers request in Philippine AI and analytics jobs, then compare them with the TESDA PSF-AAI framework.")
-    with st.skeleton(height=130):
-        jobs = storage.read_frame("cleaned_jobs")
-        taxonomy = storage.read_frame("cleaned_psf_aai")
-        mapped_jobs = storage.read_frame("mapped_jobs")
-        has_extractions = (storage.ROOT / "data/processed/extractions_original.csv").is_file()
-        label_count = reviewed_label_count()
-        model = read_model_metadata()
-        meta = storage.read_json("extraction_metadata", {})
+    jobs = storage.read_frame("cleaned_jobs")
+    taxonomy = storage.read_frame("cleaned_psf_aai")
+    mapped_jobs = storage.read_frame("mapped_jobs")
+    has_extractions = (storage.ROOT / "data/processed/extractions_original.csv").is_file()
+    label_count = reviewed_label_count()
+    model = read_model_metadata()
+    meta = storage.read_json("extraction_metadata", {})
 
     metrics = st.columns(4)
     metrics[0].metric("Clean job ads", f"{len(jobs):,}")
@@ -478,8 +477,7 @@ def extraction():
             cached_nlp()
             result = run_extraction()
         st.success(f"Saved {len(result):,} candidate/match records with evidence.")
-    with st.skeleton(height=160):
-        result = storage.read_frame("extractions_original")
+    result = storage.read_frame("extractions_original")
     if not result.empty:
         approved = result.human_label.fillna("").astype(str).str.strip().ne("") if "human_label" in result else pd.Series(False, index=result.index)
         metrics = st.columns(3)
@@ -631,17 +629,14 @@ def labeling():
                 if str(key).startswith(("review_snapshot", "manual_labels_", "resolve_label_")):
                     del st.session_state[key]
             st.rerun()
-        with st.skeleton(height=100):
-            if "review_snapshot" not in st.session_state:
-                st.session_state["review_snapshot"] = storage.read_frame("labeled_competencies")
-            labels = st.session_state["review_snapshot"].copy()
+        if "review_snapshot" not in st.session_state:
+            st.session_state["review_snapshot"] = storage.read_frame("labeled_competencies")
+        labels = st.session_state["review_snapshot"].copy()
     else:
-        with st.skeleton(height=100):
-            labels = storage.read_frame("labeled_competencies")
+        labels = storage.read_frame("labeled_competencies")
     path = resolve_training_file(storage.ROOT)
     st.caption("Reviewed annotations save to the shared database; a local CSV backup is kept separately." if supabase_store.configured() else f"Reviewed annotations save to `{project_relative_path(path)}`.")
-    with st.skeleton(height=170):
-        candidates, reviewed, taxonomy = _load_manual_review_data(labels)
+    candidates, reviewed, taxonomy = _load_manual_review_data(labels)
     from .cleaning import normalize_text
     st.caption(f"{len(candidates)} candidate occurrences; {candidates.normalized_phrase.nunique()} distinct phrases; {int(candidates.needs_phrase_edit.sum())} likely connector fragments to inspect or edit; {len(labels)} saved review rows. Source-pack descriptions are researcher-provided summaries; check their original URLs before final research use.")
     categories = list(dict.fromkeys(LABELS + (taxonomy.competency_category.tolist() if not taxonomy.empty else []) + (labels.label.tolist() if not labels.empty else [])))
@@ -990,8 +985,7 @@ def research_page(page):
     st.header(page)
     if not current_analysis():
         return
-    with st.skeleton(height=190):
-        tables, meta = filtered_bundle()
+    tables, meta = filtered_bundle()
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
@@ -1095,8 +1089,7 @@ def feedback():
     reviewer = st.text_input("Reviewer ID", key="feedback_reviewer")
     source = st.selectbox("Correction target", ["extraction", "alignment"])
     if current_analysis():
-        with st.skeleton(height=160):
-            tables, _ = filtered_bundle()
+        tables, _ = filtered_bundle()
         frame = tables["all_candidates"] if source == "extraction" else tables["alignment_results"]
         key = "extraction_id" if source == "extraction" else "alignment_id"
         if not frame.empty:

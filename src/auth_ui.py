@@ -50,7 +50,7 @@ def login_page():
                             st.rerun()
                         else:
                             # A fresh authenticated session should get the first-page wireframe.
-                            st.session_state.pop("_fow_last_navigation_route", None)
+                            st.session_state.pop("_fow_loaded_routes", None)
                             st.session_state.update({
                                 "supabase_access_token": session["access_token"],
                                 "supabase_refresh_token": session["refresh_token"],
@@ -88,7 +88,7 @@ def require_workspace_access():
     except backend.SupabaseError as exc:
         if exc.status_code == 401:
             backend.sign_out()
-            st.session_state.pop("_fow_last_navigation_route", None)
+            st.session_state.pop("_fow_loaded_routes", None)
             st.session_state["_fow_login_error"] = "Your session has expired. Sign in again to continue."
             st.navigation([st.Page(login_page, title="Sign in", default=True)], position="hidden").run()
             st.stop()
@@ -128,6 +128,6 @@ def render_account_menu():
                 use_container_width=True,
             ):
                 backend.sign_out()
-                st.session_state.pop("_fow_last_navigation_route", None)
+                st.session_state.pop("_fow_loaded_routes", None)
                 st.session_state["_fow_signed_out_notice"] = True
                 st.rerun()
