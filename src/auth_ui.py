@@ -10,6 +10,8 @@ def login_page():
     with center:
         st.caption("FUTURE OF WORK · PHILIPPINES")
         st.title("Research team sign in")
+        if st.session_state.pop("_fow_signed_out_notice", False):
+            st.success("You’ve been signed out. Sign in again to continue.")
         st.write("Review job-ad skills together in your shared research workspace.")
         with st.form("team_sign_in", clear_on_submit=False, border=True):
             email = st.text_input("Email", autocomplete="email")
@@ -91,4 +93,5 @@ def render_account_controls():
             use_container_width=True,
         ):
             backend.sign_out()
+            st.session_state["_fow_signed_out_notice"] = True
             st.rerun()
