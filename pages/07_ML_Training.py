@@ -1,3 +1,3 @@
-from src.ui import render
+from src.page_entry import render_page
 
-render('ML Training')
+render_page('ML Training')

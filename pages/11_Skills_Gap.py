@@ -1,3 +1,3 @@
-from src.ui import render
+from src.page_entry import render_page
 
-render('Unmapped / Emerging Skills')
+render_page('Unmapped / Emerging Skills')

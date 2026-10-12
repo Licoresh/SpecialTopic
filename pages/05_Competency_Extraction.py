@@ -1,3 +1,3 @@
-from src.ui import render
+from src.page_entry import render_page
 
-render('Competency Extraction')
+render_page('Competency Extraction')

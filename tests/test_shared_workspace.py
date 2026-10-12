@@ -156,6 +156,15 @@ def test_logged_out_app_only_shows_login(monkeypatch):
     assert not app.sidebar.button
 
 
+@pytest.mark.parametrize("page_file", sorted((Path(__file__).resolve().parents[1] / "pages").glob("*.py")))
+def test_logged_out_direct_page_entry_shows_login(monkeypatch, page_file):
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    app = AppTest.from_file(page_file, default_timeout=20).run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert any(item.value == "Research team sign in" for item in app.title)
+    assert not any(item.value in {"Job market", "Review and label phrases", "Train classifier"} for item in app.title)
+
+
 def test_expired_workspace_session_returns_to_sign_in(monkeypatch):
     monkeypatch.setattr(backend, "configured", lambda: True)
     monkeypatch.setattr(backend, "get_token", lambda: "expired-token")
