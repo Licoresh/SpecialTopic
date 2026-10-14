@@ -48,3 +48,16 @@ def test_local_suggestion_run_is_resumable_and_never_saves_labels(workspace, mon
     second = run_local_suggestions(workspace, chunksize=2, batch_size=1)
     assert second["suggestions_generated"] == 0
     assert second["already_suggested"] == 1
+
+
+def test_draft_limit_resumes_without_skipping_unsaved_rows(workspace, monkeypatch):
+    from src import unattended_suggestions as runner
+    candidate = workspace / "train/raw/synthetic_candidates.csv"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"phrase": f"synthetic skill {i}", "source_type": "jobs", "source_id": f"synthetic-{i}"} for i in range(7)]).to_csv(candidate, index=False)
+    monkeypatch.setattr(runner, "training_taxonomy", lambda root: pd.DataFrame([{"competency_name": "Synthetic"}]))
+    monkeypatch.setattr(runner, "read_annotations", lambda root: pd.DataFrame())
+    monkeypatch.setattr(runner, "suggest_labels", lambda rows, taxonomy: [{"label": "Data / Analytics"} for _ in rows])
+    assert runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)["suggestions_generated"] == 3
+    assert runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)["suggestions_generated"] == 3
+    assert runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)["suggestions_generated"] == 1

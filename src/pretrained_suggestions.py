@@ -24,7 +24,7 @@ _TRAILING_FRAGMENTS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", 
 CATEGORY_DESCRIPTIONS = {
     "AI / Machine Learning": "artificial intelligence or machine learning skills, AI tools, machine learning models, or AI system design",
     "Data / Analytics": "data or analytics skills such as data analysis, SQL databases, statistics, reporting, or business intelligence",
-    "Technical / Digital": "technical and digital tool skills such as programming, software, IT, website development, or design software",
+    "Technical / Digital": "general programming, software, IT, website development or digital tools without an explicit AI modeling or data analytics task; a leaf under Technical / Digital",
     "Business / Domain": "business, marketing, operations, finance, or knowledge of a specific industry",
     "Soft / Enabling": "transferable communication and interpersonal skills, including written or spoken English, teamwork, creativity, attention to detail, organization, or time management",
     "Leadership / Management": "leading people or teams, supervising staff, directing work, or setting team goals",
@@ -36,7 +36,7 @@ _TOKEN = re.compile(r"[a-z0-9+#.]+", re.IGNORECASE)
 SUGGESTION_COLUMNS = [
     "suggestion_key", "normalized_phrase", "source_type", "source_id", "phrase",
     "category", "category_score", "category_method", "psf_competency", "psf_score",
-    "category_model", "category_revision", "psf_model", "psf_revision", "generated_at",
+    "category_model", "category_revision", "psf_model", "psf_revision", "generated_at", "context_model", "context_review", "context_reason",
 ]
 
 
@@ -88,7 +88,7 @@ def _default_category_vectors(category_texts):
     )
 
 
-def suggest_categories(records, encoder=None):
+def suggest_categories(records, encoder=None, candidate_vectors=None):
     """Rank the category descriptions against each phrase and its source context.
 
     `records` should contain `phrase` and may contain `original_text`. Cosine
@@ -107,7 +107,7 @@ def suggest_categories(records, encoder=None):
         category_vectors = _default_category_vectors(category_texts)
     else:
         category_vectors = encoder.encode(list(category_texts), normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
-    text_vectors = encoder.encode(texts, normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
+    text_vectors = candidate_vectors if candidate_vectors is not None else encoder.encode(texts, normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
     similarities = text_vectors @ category_vectors.T
     suggestions = []
     for scores in similarities:
@@ -156,7 +156,7 @@ def _default_taxonomy_vectors(competency_texts):
     )
 
 
-def suggest_psf_competencies(records, taxonomy, encoder=None):
+def suggest_psf_competencies(records, taxonomy, encoder=None, candidate_vectors=None):
     """Rank official taxonomy entries against each phrase and source context.
 
     Similarity scores rank entries for review; they are not calibrated
@@ -175,7 +175,8 @@ def suggest_psf_competencies(records, taxonomy, encoder=None):
         competency_vectors = _default_taxonomy_vectors(tuple(competency_texts))
     else:
         competency_vectors = encoder.encode(competency_texts, normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
-    candidate_vectors = encoder.encode(candidate_texts, normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
+    if candidate_vectors is None:
+        candidate_vectors = encoder.encode(candidate_texts, normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
     similarities = candidate_vectors @ competency_vectors.T
     suggestions = []
     for scores in similarities:
@@ -190,11 +191,28 @@ def suggest_psf_competencies(records, taxonomy, encoder=None):
     return suggestions
 
 
+def has_phrase_text(value):
+    """Symbols and invisible characters alone are not skill evidence."""
+    return any(char.isalnum() for char in str(value or ""))
+
+
 def suggest_labels(records, taxonomy, encoder=None):
     """Return an AI category plus a PSF-AAI match suggestion for each phrase."""
     records = list(records)
-    categories = suggest_categories(records, encoder=encoder)
-    competencies = suggest_psf_competencies(records, taxonomy, encoder=encoder)
+    if not records:
+        return []
+    usable = [has_phrase_text(row.get("phrase", "")) for row in records]
+    if not all(usable):
+        valid = iter(suggest_labels([row for row, ok in zip(records, usable) if ok], taxonomy, encoder=encoder))
+        return [next(valid) if ok else {"label": "IRRELEVANT", "score": None,
+                "category_method": "Empty or symbol-only phrase", "psf_competency": "", "psf_score": None,
+                "model": MODEL_ID, "revision": MODEL_REVISION, "psf_model": PSF_MODEL_ID,
+                "psf_revision": PSF_MODEL_REVISION} for ok in usable]
+    active_encoder = encoder if encoder is not None else load_competency_encoder()
+    texts = [source_context(row.get("phrase", ""), row.get("original_text", "")) for row in records]
+    vectors = active_encoder.encode(texts, normalize_embeddings=True, batch_size=_ENCODE_BATCH_SIZE, show_progress_bar=False)
+    categories = suggest_categories(records, encoder=encoder, candidate_vectors=vectors)
+    competencies = suggest_psf_competencies(records, taxonomy, encoder=encoder, candidate_vectors=vectors)
     combined = []
     for category, competency in zip(categories, competencies):
         # IRRELEVANT phrases have no competency assignment by definition.
@@ -202,7 +220,8 @@ def suggest_labels(records, taxonomy, encoder=None):
             competency = {"psf_competency": "", "psf_score": None,
                           "psf_model": PSF_MODEL_ID, "psf_revision": PSF_MODEL_REVISION}
         combined.append({**category, **competency})
-    return combined
+    from .ollama_review import review_ambiguous
+    return review_ambiguous(records, combined)
 
 
 def save_ai_suggestions(root, records, suggestions):
@@ -228,6 +247,9 @@ def save_ai_suggestions(root, records, suggestions):
             "psf_model": str(suggestion.get("psf_model", PSF_MODEL_ID)),
             "psf_revision": str(suggestion.get("psf_revision", PSF_MODEL_REVISION)),
             "generated_at": generated,
+            "context_model": suggestion.get("context_model", ""),
+            "context_review": suggestion.get("context_review", ""),
+            "context_reason": suggestion.get("context_reason", ""),
         })
     path = Path(root) / "data/processed/pretrained_label_suggestions.csv"
     previous = pd.read_csv(path, dtype=str, keep_default_na=False) if path.exists() else pd.DataFrame(columns=SUGGESTION_COLUMNS)
@@ -305,4 +327,9 @@ def load_ai_suggestions(root):
     if frame.empty:
         return {}
     frame = apply_exact_vocabulary_overrides(frame)
+    invalid = ~frame.phrase.map(has_phrase_text)
+    frame.loc[invalid, "category"] = "IRRELEVANT"
+    frame.loc[invalid, "psf_competency"] = ""
+    frame.loc[invalid, "category_method"] = "Empty or symbol-only phrase"
+    frame.loc[invalid, ["category_score", "psf_score"]] = ""
     return frame.drop_duplicates("suggestion_key", keep="last").set_index("suggestion_key").to_dict("index")

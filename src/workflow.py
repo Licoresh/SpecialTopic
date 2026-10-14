@@ -1,3 +1,4 @@
+from .category_schema import requirement_type, category_parent, skill_type
 import importlib.metadata
 import pandas as pd
 from . import storage
@@ -73,10 +74,10 @@ def current_extractions():
         unmapped = extracted.psf_competency.eq("")
         extracted.loc[unmapped, "matched_competency"] = extracted.loc[unmapped, "normalized_phrase"]
         extracted.loc[unmapped, ["competency_id", "psf_category", "job_role", "proficiency_level"]] = ""
-        category = extracted.competency_category.str.casefold()
-        extracted["skill_type"] = "Other / Unclassified"
-        extracted.loc[category.str.contains("technical|digital|data|analytics|machine|ai /", regex=True), "skill_type"] = "Technical"
-        extracted.loc[category.str.contains("soft|enabling|leadership", regex=True), "skill_type"] = "Soft / Enabling"
+    if "competency_category" in extracted:
+        extracted["requirement_type"] = extracted.competency_category.map(requirement_type)
+        extracted["category_parent"] = extracted.competency_category.map(category_parent)
+        extracted["skill_type"] = extracted.competency_category.map(skill_type)
     return extracted
 
 def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, source_snapshot=None):
@@ -102,21 +103,31 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
     # Occurrence-level mappings and distinct-phrase alignment share the same reference evidence.
     mapping = skills.reindex(columns=["extraction_id", "source_id", "original_phrase", "normalized_phrase"])
     mapping = mapping.rename(columns={"original_phrase": "employer_skill", "normalized_phrase": "normalized_skill"})
+    mapping["normalized_skill"] = mapping["normalized_skill"].astype(str)
     mapping = mapping.merge(alignment.drop(columns=["employer_skill", "job_source_ids"]), on="normalized_skill", how="inner")
+    reviewed = storage.read_frame("labeled_competencies")
+    if {"source_id", "source_type"}.issubset(reviewed.columns):
+        reviewed = reviewed[reviewed.source_id.isin(jobs.get("source_id", [])) &
+                            reviewed.source_type.isin(["jobs", "Philippine job advertisement"])].copy()
+    else:
+        reviewed = reviewed.iloc[0:0].copy()
     verified = storage.read_frame("verified_psf_aai")
     tables = {"cleaned_jobs": jobs, "extracted_job_skills": skills,
-              "labeled_competencies": storage.read_frame("labeled_competencies"),
+              "labeled_competencies": reviewed,
               "verified_psf_aai": verified if not verified.empty else taxonomy,
               "ml_predictions": extracted.reindex(columns=["extraction_id", "source_id", "source_type", "original_phrase", "human_label", "model_prediction", "ml_confidence", "model_name", "agreement"]).rename(columns={"ml_confidence": "confidence_score"}),
               "psf_mapping": mapping, "alignment_results": alignment, "employer_skill_demand": demand,
               "unmapped_skills": unmapped, "emerging_skills": emerging,
-              "model_metrics": storage.read_frame("model_metrics"), "all_candidates": extracted,
-              "test_predictions": pd.read_csv(ROOT/"outputs/tables/test_predictions.csv", keep_default_na=False) if (ROOT/"outputs/tables/test_predictions.csv").exists() else pd.DataFrame(),
-              "stakeholder": storage.read_frame("cleaned_stakeholder")}
+              "all_candidates": extracted}
     metadata = {"timestamp": timestamp(), "software_version": VERSION, "settings": cfg,
                 "dataset_counts": {"jobs": len(jobs), "psf_competencies": len(taxonomy)},
+                "research_sample": {"source": "active cleaned job upload", "selected_rows": len(jobs),
+                                    "fingerprint": frame_hash(jobs),
+                                    "source_ids": sorted(jobs.get("source_id", pd.Series(dtype=str)).astype(str).unique().tolist()),
+                                    "training_data_included": False,
+                                    "note": "Training may use other sources. Findings use only selected job records; model evaluation is exported separately from Evaluate models."},
                 "uploads": {k:v for k,v in storage.read_json("uploads", {}).items() if k in ("jobs", "psf_aai")},
-                "model": storage.read_json("selected_model", {}), "extraction": storage.read_json("extraction_metadata", {}),
+                "model": {k: v for k, v in storage.read_json("selected_model", {}).items() if k != "metrics"}, "extraction": storage.read_json("extraction_metadata", {}),
                 "filters": {"jobs": job_filters, "skills": skill_filters, "alignment_status": statuses},
                 "rates_before_status_display_filter": rates,
                 "denominators": "Demand: distinct selected job ads, including ads with no detection. Alignment and partial rates: distinct ALIGNED + PARTIALLY ALIGNED employer phrases. Unmapped rate: all assessed distinct phrases. UNCLASSIFIED is excluded from assessment rates. Rates precede the status display filter.",

@@ -1,3 +1,4 @@
+from .category_schema import category_path
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
@@ -248,8 +249,17 @@ def filtered_bundle():
                  "extracted": current_extractions()},
     )
     jobs, skills = source_snapshot["jobs"], source_snapshot["extracted"]
+    upload = storage.read_json("uploads", {}).get("jobs", {})
+    with st.sidebar.expander("Research sample", expanded=True):
+        st.caption("Results use the active cleaned upload. Other training sources are excluded.")
+        st.write(upload.get("filename") or upload.get("name") or "Active job upload")
+        st.caption(f"{len(jobs):,} cleaned job ads before filters")
+        dataset_hashes = sorted(jobs["_dataset_hash"].dropna().astype(str).unique().tolist()) if "_dataset_hash" in jobs else []
+        selected_dataset = st.selectbox("Dataset", dataset_hashes, key="research_dataset_hash") if len(dataset_hashes) > 1 else None
     with st.sidebar.expander("Job filters"):
         jf = select_filters(jobs, ["job_title", "location", "company", "industry"], "jobs")
+        if selected_dataset:
+            jf["_dataset_hash"] = [selected_dataset]
         if "posting_date_parsed" in jobs:
             years = sorted(v for v in jobs.posting_date_parsed.str[:4].unique() if v)
             chosen = st.multiselect("Posting year", years, key="posting_year")
@@ -561,10 +571,9 @@ def _auto_retraining_control():
 
 def labeling():
     page_intro("Review and label phrases", "Enter each category and PSF-AAI competency yourself. Optional AI drafts stay separate until you explicitly copy a value into a field.")
-    st.info("Nothing from AI fills a label automatically. Typed values and values you explicitly copy are saved only when you click Save, under your reviewer ID and timestamp.")
+    st.caption("Check source context, choose a category, then save. AI drafts are optional and require your review.")
     auto_train = _auto_retraining_control()
-    with st.container(border=True):
-        st.subheader("Add a small, free remote-job feed")
+    with st.expander("Optional: add remote job sources"):
         st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
         if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
             from .himalayas_feed import fetch_philippines_jobs
@@ -578,16 +587,15 @@ def labeling():
                 )
                 st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
                 if report["new_rows_added"]:
-                    st.info("The new postings are saved under `train/remote_feeds`. Run ‘Run all local suggestions’ below to extract phrases and prepare BGE-M3 drafts.")
-    with st.container(border=True):
-        st.subheader("Automate local candidate preparation and suggestions")
-        st.caption("Scans posting CSVs already in ./train, prepares Philippine-location candidates, and generates BGE-M3 category and PSF drafts in resumable batches. It does not fetch new websites, save labels, or train a classifier. Keep this app running until the progress bar completes.")
-        if action_button("Run all local suggestions", type="primary", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
+                    st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
+    with st.expander("Local AI drafts — batch tools"):
+        st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
+        if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
             from .unattended_suggestions import run_local_suggestions
             progress = st.progress(0.0, text="Starting local candidate scan")
             try:
                 report = run_local_suggestions(
-                    storage.ROOT,
+                    storage.ROOT, max_drafts=25, batch_size=5,
                     progress=lambda value, message: progress.progress(value, text=message),
                 )
             except ImportError:
@@ -642,7 +650,7 @@ def labeling():
         if action_button("Refresh shared review table"):
             supabase_store.clear_read_cache()
             for key in list(st.session_state):
-                if str(key).startswith(("review_snapshot", "manual_labels_", "resolve_label_")):
+                if str(key).startswith(("review_snapshot", "manual_labels_", "review_draft_", "resolve_label_")):
                     del st.session_state[key]
             st.rerun()
         if "review_snapshot" not in st.session_state:
@@ -658,13 +666,17 @@ def labeling():
         lambda: _load_manual_review_data(labels), height=220
     )
     from .cleaning import normalize_text
-    st.caption(f"{len(candidates):,} source occurrences across {candidates.normalized_phrase.nunique():,} distinct phrases; {int(candidates.needs_phrase_edit.sum()):,} likely connector fragments to inspect or edit; {len(labels):,} saved review rows. Repeated phrases across different ads are retained for frequency analysis and reviewed once here. Source-pack descriptions are researcher-provided summaries; check their original URLs before final research use.")
+    st.caption(f"{candidates.normalized_phrase.nunique():,} distinct phrases · {len(candidates):,} source occurrences · {len(labels):,} saved review rows")
+    from .pretrained_suggestions import has_phrase_text
+    candidates = candidates[candidates.phrase.map(has_phrase_text)].copy()
     occurrences = candidates.copy()
     reviewed_phrases = labels_by_phrase(labels)
-    categories = list(dict.fromkeys(LABELS + (taxonomy.competency_category.tolist() if not taxonomy.empty else []) + (labels.label.tolist() if not labels.empty else [])))
-    extra = st.text_input("Additional category (optional)")
-    if extra.strip():
-        categories.append(extra.strip())
+    categories = list(dict.fromkeys(LABELS + (labels.label.tolist() if not labels.empty else [])))
+    with st.expander("Category definitions and decision rules"):
+        st.write("Choose one leaf category. Technical / Digital is the parent of AI / Machine Learning, Data / Analytics, and general programming and digital tools. Credentials are recorded separately from competencies.")
+        st.write("Use AI / Machine Learning for explicit model development or AI methods; Data / Analytics for analysis, statistics, SQL and reporting; general programming and digital tools for programming or IT without an explicit AI or analytics task. Leadership covers directing people; other enabling capabilities cover communication and personal effectiveness. Classify the phrase in its source context.")
+        st.write("Examples: Python programming → general programming and digital tools; machine-learning model development → AI / Machine Learning; statistical analysis → Data / Analytics; bachelor’s degree → Credential requirement. Legacy categories require review. PSF-AAI mapping remains a separate decision.")
+        st.caption("Count parent totals from distinct advertisements or occurrences, using the same unit throughout. Do not add parent totals to their child totals.")
     if supabase_store.configured():
         reviewer = st.session_state.get("supabase_user_email", "")
         st.caption(f"Signed-in reviewer: {reviewer}")
@@ -707,8 +719,8 @@ def labeling():
     saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
     page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
     def generate_ai_drafts(rows):
-        progress = st.progress(0, text="Preparing local pretrained models…")
-        batch_size = 25
+        progress = st.progress(0, text="Loading BGE-M3. First use may download about 2.3 GB…")
+        batch_size = 5
         try:
             with st.spinner("Generating category and PSF suggestions. This can take several minutes on the first run."):
                 for start in range(0, len(rows), batch_size):
@@ -729,7 +741,11 @@ def labeling():
             st.rerun()
 
     if not shown.empty:
-        st.caption(f"Local pretrained embedding model: {MODEL_ID} (pinned revision {MODEL_REVISION[:8]}). Its first run downloads about 2.3 GB; inference runs on CPU. It ranks category descriptions and competencies in the active PSF-AAI taxonomy, and each saved draft records the model and similarity scores.")
+        with st.expander("About AI drafts"):
+            from .ollama_review import configured_model
+            context_model = configured_model()
+            st.caption(f"Context checker: {context_model}" if context_model else "Context checker disabled; BGE-M3 drafts only.")
+            st.caption(f"{MODEL_ID} · revision {MODEL_REVISION[:8]} · CPU. First use downloads about 2.3 GB. Similarity scores rank suggestions; they are not accuracy measurements.")
         if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
             st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
         if taxonomy.empty:
@@ -743,7 +759,7 @@ def labeling():
         st.caption("AI drafts are optional. The manual fields remain blank until you enter a value or explicitly check a Copy draft box. Similarity scores rank suggestions; they are not calibrated confidence or research metrics.")
     if not shown.empty:
         st.subheader("Manual review")
-        st.caption("Review one distinct phrase per row. New category and PSF-AAI fields start blank. A checked Copy draft box uses that AI value instead of the manual cell for that field when you save. AI drafts use one representative posting; inspect the source evidence before accepting them.")
+        st.caption("Review one distinct phrase per row. New category and PSF-AAI fields start blank. Check Copy to fill the manual cell, then edit it if needed. Save when ready. AI drafts use one representative posting; inspect the source evidence before accepting them.")
     taxonomy_names = taxonomy.competency_name.astype(str).tolist() if not taxonomy.empty else []
     table_rows = []
     for index, row in enumerate(page_rows):
@@ -758,7 +774,9 @@ def labeling():
         }
         if has_page_suggestions:
             table_row.update({
-                "AI category draft": suggestion.get("category", ""),
+                "Context check": suggestion.get("context_review") or "Not checked",
+                "Context note": suggestion.get("context_reason") or "Regenerate this page to obtain current context checks.",
+                "AI category draft": suggestion.get("category", "") if suggestion.get("category", "") in LABELS else "",
                 "Copy category draft": False,
                 "AI PSF-AAI draft": suggestion.get("psf_competency", ""),
                 "Copy PSF-AAI draft": False,
@@ -768,130 +786,164 @@ def labeling():
     table_config = {
         "Phrase": st.column_config.TextColumn(disabled=True),
         "Source ads": st.column_config.NumberColumn(help="Number of distinct source job ads containing this normalized phrase.", disabled=True),
-        "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), help="Choose one competency category. Leave blank until reviewed."),
+        "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), format_func=lambda value: category_path(value) if value else "", help="Choose one leaf in the hierarchy. Education is a credential requirement, not a competency."),
         "PSF-AAI competency": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(taxonomy_names)), help="Optional: choose an exact competency from the active taxonomy."),
     }
     disabled_columns = ["Phrase", "Source ads"]
     if has_page_suggestions:
         table_config.update({
-            "AI category draft": st.column_config.TextColumn(disabled=True),
-            "Copy category draft": st.column_config.CheckboxColumn(help="Explicitly copy this row's AI category into the label when you save."),
+            "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
+            "Copy category draft": st.column_config.CheckboxColumn(help="Copy the draft into the Category cell."),
             "AI PSF-AAI draft": st.column_config.TextColumn(disabled=True),
-            "Copy PSF-AAI draft": st.column_config.CheckboxColumn(help="Explicitly copy this row's AI PSF-AAI suggestion when you save."),
+            "Copy PSF-AAI draft": st.column_config.CheckboxColumn(help="Copy the draft into the PSF-AAI cell."),
         })
-        disabled_columns.extend(["AI category draft", "AI PSF-AAI draft"])
-    edited_table = st.data_editor(
-        manual_table,
-        hide_index=True,
-        num_rows="fixed",
-        width="stretch",
-        disabled=disabled_columns,
-        column_config=table_config,
-        key=f"manual_labels_{page_identity}",
-    ) if not manual_table.empty else manual_table
-    reviewed_rows = []
-    for index, row in edited_table.iterrows():
-        suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
-        category = suggestion.get("category", "") if row.get("Copy category draft", False) else row.get("Category", "")
-        psf = suggestion.get("psf_competency", "") if row.get("Copy PSF-AAI draft", False) else row.get("PSF-AAI competency", "")
-        source_row = page_rows[index]
-        reviewed_rows.append({
-            "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
-            "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
-            "label": str(category or "").strip(), "psf_competency": str(psf or "").strip(),
-        })
-    edited = pd.DataFrame(reviewed_rows, columns=["phrase", "normalized_phrase", "source_type", "source_id", "label", "psf_competency"])
+        disabled_columns.extend(["AI category draft", "AI PSF-AAI draft", "Context check", "Context note"])
+    @st.fragment
+    def review_editor():
+        nonlocal labels
+        draft_key = f"review_draft_{page_identity}"
+        revision_key = draft_key + "_revision"
+        if draft_key not in st.session_state:
+            st.session_state[draft_key] = manual_table.copy()
+        # Refresh draft values after generation without discarding manual edits.
+        draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competency"], errors="ignore"))
+        if st.session_state.get(draft_key + "_source") != draft_revision:
+            current = st.session_state[draft_key].copy()
+            for column in manual_table.columns:
+                if column not in ("Category", "PSF-AAI competency"):
+                    current[column] = manual_table[column]
+            st.session_state[draft_key] = current
+            st.session_state[draft_key + "_source"] = draft_revision
+            st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
+        edited_table = st.data_editor(
+            st.session_state[draft_key],
+            hide_index=True,
+            num_rows="fixed",
+            width="stretch",
+            disabled=disabled_columns,
+            column_config=table_config,
+            key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
+        ) if not manual_table.empty else manual_table
+        copied = False
+        for index, row in edited_table.iterrows():
+            for checkbox, draft, target in (("Copy category draft", "AI category draft", "Category"),
+                                            ("Copy PSF-AAI draft", "AI PSF-AAI draft", "PSF-AAI competency")):
+                if row.get(checkbox, False):
+                    copied = copied or row.get(target, "") != row.get(draft, "")
+                    edited_table.at[index, target] = row.get(draft, "")
+                    edited_table.at[index, checkbox] = False
+        if copied:
+            st.session_state[draft_key] = edited_table.copy()
+            st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
+            from streamlit.errors import StreamlitAPIException
+            try:
+                st.rerun(scope="fragment")
+            except StreamlitAPIException:
+                st.rerun()
+        reviewed_rows = []
+        for index, row in edited_table.iterrows():
+            suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
+            category = suggestion.get("category", "") if row.get("Copy category draft", False) else row.get("Category", "")
+            psf = suggestion.get("psf_competency", "") if row.get("Copy PSF-AAI draft", False) else row.get("PSF-AAI competency", "")
+            source_row = page_rows[index]
+            reviewed_rows.append({
+                "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
+                "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
+                "label": str(category or "").strip(), "psf_competency": str(psf or "").strip(),
+            })
+        edited = pd.DataFrame(reviewed_rows, columns=["phrase", "normalized_phrase", "source_type", "source_id", "label", "psf_competency"])
 
-    def show_conflict_resolutions(rows, key_prefix):
-        conflicts = annotation_conflicts(rows, labels)
-        saved_conflicts = annotation_conflicts(pd.DataFrame(columns=["phrase", "label"]), labels)
-        for normalized, item in saved_conflicts.items():
-            if normalized not in conflicts:
-                conflicts[normalized] = item
-            else:
-                conflicts[normalized]["labels"] = sorted(
-                    set(conflicts[normalized]["labels"]) | set(item["labels"]), key=str.casefold
-                )
-        resolutions = {}
-        invalid_choices = []
-        if conflicts:
-            st.warning(f"{len(conflicts)} normalized phrase(s) have more than one category across the saved dataset and this page. Choose one category for each; it will be applied to every occurrence, including previously saved rows.")
-            st.caption("One row per phrase. Choose a category from the values shown for that phrase; the choice will be applied to all saved occurrences.")
-            table = pd.DataFrame([
-                {"Phrase": item["phrase"], "Existing categories": " · ".join(item["labels"]), "Choose category": "— Choose a category —"}
-                for item in conflicts.values()
-            ], index=list(conflicts.keys()))
-            choices = ["— Choose a category —"] + sorted(
-                {label for item in conflicts.values() for label in item["labels"]}, key=str.casefold
-            )
-            edited_resolutions = st.data_editor(
-                table,
-                hide_index=True,
-                num_rows="fixed",
-                width="stretch",
-                key=f"{key_prefix}_conflict_table_{frame_hash(table)}",
-                disabled=["Phrase", "Existing categories"],
-                column_config={
-                    "Phrase": st.column_config.TextColumn("Normalized phrase", disabled=True),
-                    "Existing categories": st.column_config.TextColumn(disabled=True),
-                    "Choose category": st.column_config.SelectboxColumn(options=choices, required=True),
-                },
-            )
-            for normalized, row in edited_resolutions.iterrows():
-                choice = row["Choose category"]
-                if choice == "— Choose a category —":
-                    continue
-                if choice in conflicts[normalized]["labels"]:
-                    resolutions[normalized] = choice
+        def show_conflict_resolutions(rows, key_prefix):
+            conflicts = annotation_conflicts(rows, labels)
+            saved_conflicts = annotation_conflicts(pd.DataFrame(columns=["phrase", "label"]), labels)
+            for normalized, item in saved_conflicts.items():
+                if normalized not in conflicts:
+                    conflicts[normalized] = item
                 else:
-                    invalid_choices.append(conflicts[normalized]["phrase"])
-            if invalid_choices:
-                st.warning("Choose only a category already listed for each phrase: " + ", ".join(invalid_choices))
-            st.caption("Saving your choices makes each phrase use one category everywhere. Previous values are retained in annotation history.")
-        resolved = len(resolutions) == len(conflicts) and not invalid_choices
-        return conflicts, resolutions, resolved
+                    conflicts[normalized]["labels"] = sorted(
+                        set(conflicts[normalized]["labels"]) | set(item["labels"]), key=str.casefold
+                    )
+            resolutions = {}
+            invalid_choices = []
+            if conflicts:
+                st.warning(f"{len(conflicts)} normalized phrase(s) have more than one category across the saved dataset and this page. Choose one category for each; it will be applied to every occurrence, including previously saved rows.")
+                st.caption("One row per phrase. Choose a category from the values shown for that phrase; the choice will be applied to all saved occurrences.")
+                table = pd.DataFrame([
+                    {"Phrase": item["phrase"], "Existing categories": " · ".join(item["labels"]), "Choose category": "— Choose a category —"}
+                    for item in conflicts.values()
+                ], index=list(conflicts.keys()))
+                choices = ["— Choose a category —"] + sorted(
+                    {label for item in conflicts.values() for label in item["labels"]}, key=str.casefold
+                )
+                edited_resolutions = st.data_editor(
+                    table,
+                    hide_index=True,
+                    num_rows="fixed",
+                    width="stretch",
+                    key=f"{key_prefix}_conflict_table_{frame_hash(table)}",
+                    disabled=["Phrase", "Existing categories"],
+                    column_config={
+                        "Phrase": st.column_config.TextColumn("Normalized phrase", disabled=True),
+                        "Existing categories": st.column_config.TextColumn(disabled=True),
+                        "Choose category": st.column_config.SelectboxColumn(options=choices, required=True),
+                    },
+                )
+                for normalized, row in edited_resolutions.iterrows():
+                    choice = row["Choose category"]
+                    if choice == "— Choose a category —":
+                        continue
+                    if choice in conflicts[normalized]["labels"]:
+                        resolutions[normalized] = choice
+                    else:
+                        invalid_choices.append(conflicts[normalized]["phrase"])
+                if invalid_choices:
+                    st.warning("Choose only a category already listed for each phrase: " + ", ".join(invalid_choices))
+                st.caption("Saving your choices makes each phrase use one category everywhere. Previous values are retained in annotation history.")
+            resolved = len(resolutions) == len(conflicts) and not invalid_choices
+            return conflicts, resolutions, resolved
 
-    conflicts, conflict_resolutions, conflicts_resolved = show_conflict_resolutions(edited, "resolve_label")
-    if not reviewer.strip():
-        st.caption("Enter your Reviewer ID above before saving.")
-    has_category = bool(not edited.empty and edited.label.astype(str).str.strip().ne("").any())
-    if not has_category:
-        st.caption("Choose at least one competency category before saving. PSF-AAI competency is optional.")
-    st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
-    can_submit = has_category or bool(conflicts)
-    if action_button("Save annotations", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit):
-        submitted_rows = edited
-        versions = None
-        if supabase_store.configured():
-            versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
-            changed = [i for i, row in edited_table.iterrows()
-                       if row.get("Copy category draft", False) or row.get("Copy PSF-AAI draft", False)
-                       or row.get("Category", "") != manual_table.iloc[i].get("Category", "")
-                       or row.get("PSF-AAI competency", "") != manual_table.iloc[i].get("PSF-AAI competency", "")]
-            changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
-            submitted_rows = edited[edited.normalized_phrase.isin(changed_phrases)]
-        submitted_rows = expand_phrase_annotations(submitted_rows, occurrences)
-        labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
-        if supabase_store.configured():
-            st.session_state.pop("review_snapshot", None)
-            for key in list(st.session_state):
-                if str(key).startswith("manual_labels_"):
-                    del st.session_state[key]
-        st.success(f"Saved. The dataset now has {len(labels):,} reviewed rows.")
-        if st.session_state.get("backup_warning"):
-            st.warning(st.session_state.pop("backup_warning"))
-        _auto_train_after_review(labels, auto_train)
-    st.caption("For offline/local work only: to combine work from teammates' own devices, import their downloaded reviewed-label CSV. Reviewer IDs and timestamps are preserved; unresolved phrase conflicts must be resolved in the table above.")
-    uploaded = None if supabase_store.configured() else st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
-    imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
-    import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
-    if uploaded and action_button("Import annotations", disabled=not import_conflicts_resolved):
-        labels = save_annotations(imported, reviewer, conflict_resolutions=import_resolutions, preserve_row_provenance=True)
-        st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
-        _auto_train_after_review(labels, auto_train)
-    if not labels.empty:
-        display(labels)
-    st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
+        conflicts, conflict_resolutions, conflicts_resolved = show_conflict_resolutions(edited, "resolve_label")
+        if not reviewer.strip():
+            st.caption("Enter your Reviewer ID above before saving.")
+        has_category = bool(not edited.empty and edited.label.astype(str).str.strip().ne("").any())
+        if not has_category:
+            st.caption("Choose at least one competency category before saving. PSF-AAI competency is optional.")
+        st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
+        can_submit = has_category or bool(conflicts)
+        if action_button("Save annotations", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit):
+            submitted_rows = edited
+            versions = None
+            if supabase_store.configured():
+                versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
+                changed = [i for i, row in edited_table.iterrows()
+                           if row.get("Copy category draft", False) or row.get("Copy PSF-AAI draft", False)
+                           or row.get("Category", "") != manual_table.iloc[i].get("Category", "")
+                           or row.get("PSF-AAI competency", "") != manual_table.iloc[i].get("PSF-AAI competency", "")]
+                changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
+                submitted_rows = edited[edited.normalized_phrase.isin(changed_phrases)]
+            submitted_rows = expand_phrase_annotations(submitted_rows, occurrences)
+            labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+            if supabase_store.configured():
+                st.session_state.pop("review_snapshot", None)
+                for key in list(st.session_state):
+                    if str(key).startswith(("manual_labels_", "review_draft_")):
+                        del st.session_state[key]
+            st.success(f"Saved. The dataset now has {len(labels):,} reviewed rows.")
+            if st.session_state.get("backup_warning"):
+                st.warning(st.session_state.pop("backup_warning"))
+            _auto_train_after_review(labels, auto_train)
+        st.caption("For offline/local work only: to combine work from teammates' own devices, import their downloaded reviewed-label CSV. Reviewer IDs and timestamps are preserved; unresolved phrase conflicts must be resolved in the table above.")
+        uploaded = None if supabase_store.configured() else st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
+        imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
+        import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
+        if uploaded and action_button("Import annotations", disabled=not import_conflicts_resolved):
+            labels = save_annotations(imported, reviewer, conflict_resolutions=import_resolutions, preserve_row_provenance=True)
+            st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
+            _auto_train_after_review(labels, auto_train)
+        if not labels.empty:
+            display(labels)
+        st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
+    review_editor()
 
 
 def training():

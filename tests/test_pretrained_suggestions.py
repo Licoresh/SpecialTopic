@@ -154,3 +154,36 @@ def test_suggestions_from_a_previous_encoder_are_not_shown_as_current(tmp_path):
     old.to_csv(path, index=False)
 
     assert load_ai_suggestions(tmp_path) == {}
+
+
+def test_combined_drafts_encode_candidate_context_once():
+    from src.pretrained_suggestions import suggest_labels
+    calls = []
+    class Encoder:
+        def encode(self, texts, **kwargs):
+            calls.append(list(texts))
+            return np.ones((len(texts), 2))
+    records = [{"phrase": "synthetic capability", "original_text": "Synthetic test only"}]
+    taxonomy = pd.DataFrame([{"competency_name": "Synthetic competency"}])
+    result = suggest_labels(records, taxonomy, encoder=Encoder())
+    assert len(result) == 1
+    assert sum(any(text.startswith("Candidate phrase:") for text in call) for call in calls) == 1
+
+
+def test_blank_and_symbol_only_phrases_never_load_model(monkeypatch):
+    from src import pretrained_suggestions as module
+    def forbidden():
+        raise AssertionError("Invalid phrases must not invoke the encoder")
+    monkeypatch.setattr(module, "load_competency_encoder", forbidden)
+    rows = [{"phrase": phrase, "original_text": "Team collaboration required"} for phrase in ("", "  ", "\u200b", "🌍", "💻")]
+    results = module.suggest_labels(rows, pd.DataFrame([{"competency_name": "Collaboration"}]))
+    assert all(row["label"] == "IRRELEVANT" and row["psf_competency"] == "" for row in results)
+
+
+def test_context_notes_survive_save_and_reload(tmp_path):
+    records = [{"phrase": "special ability", "source_type": "jobs", "source_id": "synthetic"}]
+    save_ai_suggestions(tmp_path, records, [{"label": "Soft / Enabling", "context_model": "test-model", "context_review": "Needs researcher review", "context_reason": "Vague phrase"}])
+    rows = list(load_ai_suggestions(tmp_path).values())
+    assert rows[0]["context_model"] == "test-model"
+    assert rows[0]["context_review"] == "Needs researcher review"
+    assert rows[0]["context_reason"] == "Vague phrase"

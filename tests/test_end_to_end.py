@@ -54,3 +54,22 @@ def test_unreviewed_job_provenance_blocks_extraction(workspace, jobs):
     storage.save_json("cleaning_jobs", {"source_hash": frame_hash(jobs)})
     with pytest.raises(ValueError, match="Philippine provenance"):
         run_extraction()
+
+
+def test_research_exports_exclude_external_training_sources(workspace, jobs, taxonomy):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    selected_id = jobs.source_id.iloc[0]
+    storage.save_frame("labeled_competencies", pd.DataFrame([
+        {"phrase": "SQL", "normalized_phrase": "sql", "label": "Data / Analytics", "source_type": "jobs", "source_id": selected_id},
+        {"phrase": "external skill", "normalized_phrase": "external skill", "label": "Technical / Digital", "source_type": "jobs", "source_id": "EXTERNAL-TRAINING-ONLY"},
+    ]))
+    tables, metadata = analysis_bundle(source_snapshot={"jobs": jobs.iloc[:1], "taxonomy": taxonomy, "extracted": pd.DataFrame()})
+    assert tables["labeled_competencies"].source_id.tolist() == [selected_id]
+    assert len(storage.read_frame("labeled_competencies")) == 2
+    assert "test_predictions" not in tables
+    assert "model_metrics" not in tables
+    assert metadata["research_sample"]["source_ids"] == [selected_id]
+    book = load_workbook(BytesIO(export_excel(tables, metadata)))
+    assert "test_predictions" not in book.sheetnames
+    assert book["labeled_competencies"].max_row == 2
