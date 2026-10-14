@@ -570,7 +570,7 @@ def _auto_retraining_control():
 
 
 def labeling():
-    page_intro("Review and label phrases", "Enter each category and PSF-AAI competency yourself. Optional AI drafts stay separate until you explicitly copy a value into a field.")
+    page_intro("Review and label phrases", "Enter each category and PSF-AAI competency yourself. Optional AI drafts stay separate until you select and save your reviewed values.")
     st.caption("Check source context, choose a category, then save. AI drafts are optional and require your review.")
     auto_train = _auto_retraining_control()
     with st.expander("Optional: add remote job sources"):
@@ -756,10 +756,10 @@ def labeling():
 
     has_page_suggestions = bool(page_suggestions and any(item.get("category") for item in page_suggestions))
     if has_page_suggestions:
-        st.caption("AI drafts are optional. The manual fields remain blank until you enter a value or explicitly check a Copy draft box. Similarity scores rank suggestions; they are not calibrated confidence or research metrics.")
+        st.caption("AI drafts are optional. The manual fields remain blank until you choose a value. Similarity scores rank suggestions; they are not calibrated confidence or research metrics.")
     if not shown.empty:
         st.subheader("Manual review")
-        st.caption("Review one distinct phrase per row. New category and PSF-AAI fields start blank. Check Copy to fill the manual cell, then edit it if needed. Save when ready. AI drafts use one representative posting; inspect the source evidence before accepting them.")
+        st.caption("Review one distinct phrase per row. New category and PSF-AAI fields start blank. Choose values in the manual columns, then save. AI drafts use one representative posting; inspect the source evidence before accepting them.")
     taxonomy_names = taxonomy.competency_name.astype(str).tolist() if not taxonomy.empty else []
     table_rows = []
     for index, row in enumerate(page_rows):
@@ -777,9 +777,7 @@ def labeling():
                 "Context check": suggestion.get("context_review") or "Not checked",
                 "Context note": suggestion.get("context_reason") or "Regenerate this page to obtain current context checks.",
                 "AI category draft": suggestion.get("category", "") if suggestion.get("category", "") in LABELS else "",
-                "Copy category draft": False,
                 "AI PSF-AAI draft": suggestion.get("psf_competency", ""),
-                "Copy PSF-AAI draft": False,
             })
         table_rows.append(table_row)
     manual_table = pd.DataFrame(table_rows)
@@ -793,9 +791,7 @@ def labeling():
     if has_page_suggestions:
         table_config.update({
             "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
-            "Copy category draft": st.column_config.CheckboxColumn(help="Copy the draft into the Category cell."),
             "AI PSF-AAI draft": st.column_config.TextColumn(disabled=True),
-            "Copy PSF-AAI draft": st.column_config.CheckboxColumn(help="Copy the draft into the PSF-AAI cell."),
         })
         disabled_columns.extend(["AI category draft", "AI PSF-AAI draft", "Context check", "Context note"])
     @st.fragment
@@ -808,7 +804,7 @@ def labeling():
         # Refresh draft values after generation without discarding manual edits.
         draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competency"], errors="ignore"))
         if st.session_state.get(draft_key + "_source") != draft_revision:
-            current = st.session_state[draft_key].copy()
+            current = st.session_state[draft_key].reindex(columns=manual_table.columns).copy()
             for column in manual_table.columns:
                 if column not in ("Category", "PSF-AAI competency"):
                     current[column] = manual_table[column]
@@ -824,27 +820,11 @@ def labeling():
             column_config=table_config,
             key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
         ) if not manual_table.empty else manual_table
-        copied = False
-        for index, row in edited_table.iterrows():
-            for checkbox, draft, target in (("Copy category draft", "AI category draft", "Category"),
-                                            ("Copy PSF-AAI draft", "AI PSF-AAI draft", "PSF-AAI competency")):
-                if row.get(checkbox, False):
-                    copied = copied or row.get(target, "") != row.get(draft, "")
-                    edited_table.at[index, target] = row.get(draft, "")
-                    edited_table.at[index, checkbox] = False
-        if copied:
-            st.session_state[draft_key] = edited_table.copy()
-            st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
-            from streamlit.errors import StreamlitAPIException
-            try:
-                st.rerun(scope="fragment")
-            except StreamlitAPIException:
-                st.rerun()
         reviewed_rows = []
         for index, row in edited_table.iterrows():
             suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
-            category = suggestion.get("category", "") if row.get("Copy category draft", False) else row.get("Category", "")
-            psf = suggestion.get("psf_competency", "") if row.get("Copy PSF-AAI draft", False) else row.get("PSF-AAI competency", "")
+            category = row.get("Category", "")
+            psf = row.get("PSF-AAI competency", "")
             source_row = page_rows[index]
             reviewed_rows.append({
                 "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
@@ -916,8 +896,7 @@ def labeling():
             if supabase_store.configured():
                 versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
                 changed = [i for i, row in edited_table.iterrows()
-                           if row.get("Copy category draft", False) or row.get("Copy PSF-AAI draft", False)
-                           or row.get("Category", "") != manual_table.iloc[i].get("Category", "")
+                           if row.get("Category", "") != manual_table.iloc[i].get("Category", "")
                            or row.get("PSF-AAI competency", "") != manual_table.iloc[i].get("PSF-AAI competency", "")]
                 changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
                 submitted_rows = edited[edited.normalized_phrase.isin(changed_phrases)]

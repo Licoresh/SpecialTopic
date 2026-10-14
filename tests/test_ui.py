@@ -302,8 +302,8 @@ def leave_blank(frame, **kwargs):
     if "AI category draft" in frame.columns:
         assert frame.loc[frame.index[0], "Category"] == ""
         assert frame.loc[frame.index[0], "PSF-AAI competency"] == ""
-        assert not frame.loc[frame.index[0], "Copy category draft"]
-        assert not frame.loc[frame.index[0], "Copy PSF-AAI draft"]
+        assert "Copy category draft" not in frame.columns
+        assert "Copy PSF-AAI draft" not in frame.columns
     return frame
 with patch("src.pretrained_suggestions.suggest_labels", return_value=suggestions), patch("streamlit.data_editor", side_effect=leave_blank):
     render("Manual Labeling")
@@ -319,9 +319,11 @@ with patch("src.pretrained_suggestions.suggest_labels", return_value=suggestions
 from src.ui import render
 def explicitly_copy(frame, **kwargs):
     copied = frame.copy()
-    if "Copy category draft" in copied.columns and len(copied):
-        copied.loc[copied.index[0], "Copy category draft"] = True
-        copied.loc[copied.index[0], "Copy PSF-AAI draft"] = True
+    if "AI category draft" in copied.columns and len(copied):
+        assert "Copy category draft" not in copied.columns
+        copied.loc[copied.index[0], "Category"] = copied.iloc[0]["AI category draft"]
+        assert "Copy PSF-AAI draft" not in copied.columns
+        copied.loc[copied.index[0], "PSF-AAI competency"] = copied.iloc[0]["AI PSF-AAI draft"]
     return copied
 with patch("streamlit.data_editor", side_effect=explicitly_copy):
     render("Manual Labeling")

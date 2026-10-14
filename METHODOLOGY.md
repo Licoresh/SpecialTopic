@@ -38,7 +38,7 @@ Candidate embeddings are reused for category and PSF ranking. Context checks are
 
 ### Researcher review and training observations
 
-Manual category and PSF-AAI fields begin blank for new phrases. Copy fills the corresponding editable cell with an AI draft; researchers can revise it before explicitly saving. Copying alone does not save or verify a label. Saved annotations record the reviewer and timestamp, but the app cannot establish that a reviewer actually checked the evidence or that the decision is correct. PSF assignment is optional and remains a separate field.
+Manual category and PSF-AAI fields begin blank for new phrases. AI drafts are read-only guidance alongside the manual fields. Researchers select values in the manual columns and explicitly save; no Copy controls or automatic draft-to-label transfer are provided. Saved annotations record the reviewer and timestamp, but the app cannot establish that a reviewer actually checked the evidence or that the decision is correct. PSF assignment is optional and remains a separate field.
 
 Only reviewed Philippine job-ad phrases passing provenance and conflict validation qualify for research training. A normalized phrase has one category across occurrences; researchers must resolve disagreements and refine ambiguous phrases using source context. AI drafts alone and synthetic software fixtures do not qualify as research training observations.
 
