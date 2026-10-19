@@ -108,6 +108,10 @@ def read_frame(name):
     from .supabase_store import configured, get_token, SupabaseError
     if configured() and not get_token():
         raise SupabaseError("Sign in to read the shared research workspace.")
+    if name == "psf_mapping_reviews" and configured():
+        from .supabase_store import read_mapping_reviews
+        from .psf_reviews import REVIEW_COLUMNS
+        return pd.DataFrame(read_mapping_reviews(get_token()), columns=REVIEW_COLUMNS, dtype=str).fillna("")
     if name == "team_training_candidates":
         from .supabase_store import configured, get_token, read_candidates
         if configured() and get_token():
@@ -165,7 +169,7 @@ def seed_shared_workspace():
     folder = ROOT / "data/processed"
     for path in sorted(folder.glob("*.csv")):
         name = path.stem
-        if name in {"labeled_competencies", "shared_labeled_competencies", "training_snapshot", "team_training_candidates", "model_metrics", "pretrained_label_suggestions"} or name.startswith("evaluation_"):
+        if name in {"psf_mapping_reviews", "labeled_competencies", "shared_labeled_competencies", "training_snapshot", "team_training_candidates", "model_metrics", "pretrained_label_suggestions"} or name.startswith("evaluation_"):
             continue
         key = f"frame:{name}"
         if read_state(key, get_token()) is not None:

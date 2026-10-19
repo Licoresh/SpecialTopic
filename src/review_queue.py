@@ -74,3 +74,34 @@ def expand_phrase_annotations(rows, occurrences):
     return expanded.reindex(columns=columns).drop_duplicates(
         ["normalized_phrase", "source_type", "source_id"], keep="last"
     ).reset_index(drop=True)
+
+
+def manual_mapping_occurrences(candidates, extracted):
+    """Prefer the exact extracted evidence; retain candidates pending extraction."""
+    from .utils import digest
+    rows = candidates[candidates.source_id.astype(str).str.strip().ne("")].copy()
+    rows = rows[rows.source_type.isin(["jobs", "Philippine job advertisement"])]
+    rows["source_type"] = "jobs"
+    rows["original_phrase"] = rows.phrase
+    rows["extraction_id"] = [digest([row.source_id, row.normalized_phrase])[:24]
+                             for row in rows.itertuples()]
+    rows["pending_extraction"] = True
+    if not extracted.empty:
+        active = extracted[extracted.source_type.eq("jobs")].copy()
+        active["pending_extraction"] = False
+        rows = pd.concat([active, rows], ignore_index=True)
+    return rows.drop_duplicates(["source_id", "normalized_phrase"], keep="first").fillna("")
+
+
+def preserve_occurrence_references(rows, labels):
+    """Category-only saves must neither erase nor spread legacy PSF references."""
+    from .cleaning import normalize_text
+    result = rows.copy()
+    # Annotation storage normalizes surface phrases, whereas extraction can lemmatize.
+    result["normalized_phrase"] = result.phrase.map(normalize_text)
+    keys = ["normalized_phrase", "source_type", "source_id"]
+    result["psf_competency"] = ""
+    if not labels.empty and "psf_competency" in labels:
+        previous = labels.drop_duplicates(keys, keep="last").set_index(keys).psf_competency
+        result["psf_competency"] = pd.MultiIndex.from_frame(result[keys]).map(previous).fillna("")
+    return result

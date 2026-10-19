@@ -26,6 +26,7 @@ from .workflow import run_extraction, analysis_bundle, input_signature, current_
 from .analytics import demand_matrix
 from .job_profile import job_profile_tables
 from .alignment import STATUSES
+from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
 from .visualization import bar, distribution, heatmap
 from .reporting import export_csv, export_excel, export_html, export_research_report
 from .utils import timestamp, frame_hash, digest
@@ -33,47 +34,11 @@ from .readiness import (assess_research_readiness, source_overlap,
                         historical_category_disagreements, research_data_profile)
 from . import supabase_store
 from .action_guard import action_button, action_form_submit_button, finish_action_run
-from .review_queue import group_candidates_by_phrase, labels_by_phrase, expand_phrase_annotations
+from .review_queue import (group_candidates_by_phrase, labels_by_phrase, expand_phrase_annotations,
+                           manual_mapping_occurrences, preserve_occurrence_references)
 from .loading_ui import load_data_with_skeleton
 
-DESIGN_CSS = """
-<style>
-:root {
-  --fow-ink: #17313b;
-  --fow-muted: #60747c;
-  --fow-accent: #137c73;
-  --fow-border: #dce6e8;
-  --fow-surface: #ffffff;
-}
-[data-testid="stAppViewContainer"] { background: #f5f8f9; }
-[data-testid="stHeader"] { background: transparent; }
-.block-container { max-width: 1440px; padding-top: 2.15rem; padding-bottom: 3.5rem; }
-.fow-eyebrow { color: var(--fow-accent); font-size: .76rem; font-weight: 750; letter-spacing: .13em; margin-bottom: .55rem; }
-h1, h2, h3 { color: var(--fow-ink); letter-spacing: -0.025em; }
-h1 { font-weight: 720; }
-p, label, [data-testid="stCaptionContainer"] { color: var(--fow-muted); }
-[data-testid="stMetric"] {
-  background: var(--fow-surface); border: 1px solid var(--fow-border);
-  border-radius: 12px; padding: 1rem 1.1rem;
-}
-[data-testid="stMetricLabel"] { color: var(--fow-muted); }
-[data-testid="stMetricValue"] { color: var(--fow-ink); }
-[data-testid="stSidebar"] { background: #eef4f5; border-right: 1px solid var(--fow-border); }
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: var(--fow-ink); }
-div[data-testid="stVerticalBlockBorderWrapper"] {
-  border-color: var(--fow-border); border-radius: 14px; background: var(--fow-surface);
-}
-[data-testid="stDataFrame"] { border: 1px solid var(--fow-border); border-radius: 10px; }
-.stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {
-  border-radius: 9px; font-weight: 650; min-height: 2.7rem;
-  background: var(--fow-accent) !important; border-color: var(--fow-accent) !important;
-  color: #ffffff !important;
-}
-.stButton button[kind="primary"] p { color: #ffffff !important; }
-.stButton button[kind="secondary"] { border-radius: 9px; font-weight: 600; min-height: 2.5rem; }
-hr { border-color: var(--fow-border); }
-</style>
-"""
+from .design import apply_design, review_workspace_style
 
 
 @st.cache_data(show_spinner=False)
@@ -171,17 +136,26 @@ def workbook_bytes(tables, metadata):
     return export_excel(tables, metadata)
 
 def display(frame):
-    st.dataframe(frame, width="stretch", hide_index=True)
+    if frame.empty:
+        st.caption("No records to display for the current selection.")
+    text_columns = {key: st.column_config.TextColumn(width="large") for key in
+                    ("original_text", "job_description", "rationale", "interpretation", "competency_description") if key in frame}
+    st.dataframe(frame, width="stretch", hide_index=True, row_height=38,
+                 column_config=text_columns, height=min(480, max(100, 40 + 38 * len(frame))),
+                 alt=f"Research data table with {len(frame):,} rows. Use the table toolbar to search or download.")
 
 def chart(fig):
-    st.plotly_chart(fig, width="stretch")
+    from .visualization import style_chart
+    st.plotly_chart(style_chart(fig), width="stretch", config={"displaylogo": False, "scrollZoom": False},
+                    alt=fig.layout.title.text or "Research analysis chart")
 
 def page_intro(title, description):
-    st.title(title)
-    st.caption(description)
+    with st.container(key="page_heading", gap="xsmall"):
+        st.title(title)
+        st.write(description)
 
 def page_button(path, label, *, primary=False, key=None):
-    if action_button(label, type="primary" if primary else "secondary", key=key, use_container_width=True,
+    if action_button(label, type="primary" if primary else "secondary", key=key, width="stretch",
                  icon=":material/arrow_forward:"):
         st.switch_page(path)
 
@@ -240,13 +214,15 @@ def filtered_bundle():
         correction_revision = (corrections_stat.st_mtime_ns, corrections_stat.st_size)
     except OSError:
         correction_revision = None
-    analysis_revision = digest({"inputs": signature, "corrections": correction_revision})
+    mapping_reviews = storage.read_frame(REVIEW_TABLE)
+    analysis_revision = digest({"inputs": signature, "corrections": correction_revision,
+                                "mapping_reviews": frame_hash(mapping_reviews)})
     source_key = f"sources:{analysis_revision}"
     source_snapshot = _session_cached_value(
         "_fow_source_cache", source_key,
         lambda: {"jobs": storage.read_frame("cleaned_jobs"),
                  "taxonomy": storage.read_frame("cleaned_psf_aai"),
-                 "extracted": current_extractions()},
+                 "extracted": current_extractions(), "mapping_reviews": mapping_reviews},
     )
     jobs, skills = source_snapshot["jobs"], source_snapshot["extracted"]
     upload = storage.read_json("uploads", {}).get("jobs", {})
@@ -280,28 +256,34 @@ def filtered_bundle():
 
 
 def home():
-    st.markdown("<div class='fow-eyebrow'>RESEARCH WORKSPACE · PHILIPPINES</div>", unsafe_allow_html=True)
-    st.title("The Future of Work in the Philippines")
-    st.markdown("Explore the skills employers request in Philippine AI and analytics jobs, then compare them with the TESDA PSF-AAI framework.")
+    with st.container(key="overview_heading", gap="xsmall"):
+        st.caption("PHILIPPINES · AI & ANALYTICS")
+        st.title("From job evidence to skills insight.")
+        st.write("Your research workspace for employer demand and PSF-AAI alignment.")
     def load_overview_data():
+        extraction_meta = storage.read_json("extraction_metadata", {})
         return (
             storage.read_frame("cleaned_jobs"),
             storage.read_frame("cleaned_psf_aai"),
             storage.read_frame("mapped_jobs"),
-            (storage.ROOT / "data/processed/extractions_original.csv").is_file(),
+            bool(extraction_meta),
             reviewed_label_count(),
             read_model_metadata(),
-            storage.read_json("extraction_metadata", {}),
+            extraction_meta,
         )
     jobs, taxonomy, mapped_jobs, has_extractions, label_count, model, meta = load_data_with_skeleton(
         load_overview_data, height=120
     )
 
-    metrics = st.columns(4)
-    metrics[0].metric("Clean job ads", f"{len(jobs):,}")
-    metrics[1].metric("Phrase extraction", "Complete" if has_extractions else "Not started")
-    metrics[2].metric("Reviewed labels", f"{label_count:,}")
-    metrics[3].metric("PSF-AAI competencies", f"{len(taxonomy):,}")
+    with st.container(horizontal=True, key="overview_metrics", gap="medium"):
+        for label, value, icon, help_text in [
+            ("Clean job ads", f"{len(jobs):,}", "work", "Advertisements saved after data cleaning."),
+            ("Reviewed labels", f"{label_count:,}", "task_alt", "Saved annotation rows; a phrase can occur in several ads."),
+            ("PSF-AAI competencies", f"{len(taxonomy):,}", "account_tree", "Competencies in the active reviewed reference."),
+            ("Phrase extraction", "Saved" if has_extractions else "Not started", "manage_search", "Analysis pages check that saved extraction inputs are still current."),
+        ]:
+            with st.container(width=240):
+                st.metric(label, value, icon=f":material/{icon}:", help=help_text)
 
     if mapped_jobs.empty:
         next_title, next_copy, next_path, next_label = "Start with your job data", "Upload the job-ad CSV or Excel file you plan to use for the study.", "pages/01_Data_Upload.py", "Upload job data"
@@ -318,14 +300,17 @@ def home():
     else:
         next_title, next_copy, next_path, next_label = "Explore the current analysis", "The extraction is complete. Review Research Readiness before interpreting or reporting its results.", "pages/03_Job_Market.py", "Open exploratory analysis"
 
-    with st.container(border=True):
-        st.markdown("**YOUR NEXT STEP**")
-        st.subheader(next_title)
-        st.write(next_copy)
-        page_button(next_path, next_label, primary=True, key="home_next_step")
+    with st.container(border=True, key="home_next"):
+        with st.container(horizontal=True, vertical_alignment="center", gap="large"):
+            with st.container(width="stretch", gap="xsmall"):
+                st.caption("CONTINUE YOUR RESEARCH")
+                st.subheader(next_title)
+                st.write(next_copy)
+            with st.container(width=260):
+                page_button(next_path, next_label, primary=True, key="home_next_step")
 
-    st.subheader("Research workflow")
-    st.caption("Complete the steps in order. The TESDA PSF-AAI framework is already included as the default reference.")
+    st.subheader("Your research, step by step")
+    st.caption("Keep source evidence, reviewed decisions, and research results connected.")
     steps = [
         ("01", "Upload job ads", "Add the CSV or Excel file for your study.", "pages/01_Data_Upload.py", "Open upload"),
         ("02", "Review data quality", "Check matched columns and save clean data.", "pages/02_Data_Quality.py", "Review data"),
@@ -334,12 +319,16 @@ def home():
         ("05", "Train and evaluate", "Train only after the reviewed labels pass validation.", "pages/07_ML_Training.py", "Train models"),
         ("06", "Explore results", "Review employer demand, PSF mapping and reports.", "pages/03_Job_Market.py", "View results"),
     ]
-    for start in (0, 3):
-        columns = st.columns(3)
-        for column, (number, title, description, path, link) in zip(columns, steps[start:start + 3]):
-            with column:
-                with st.container(border=True):
-                    st.caption(f"STEP {number}")
+    stage_states = ["Data uploaded" if not mapped_jobs.empty else "Start here",
+                    "Clean data saved" if not jobs.empty else "Awaiting clean data",
+                    "Extraction saved" if has_extractions else "No extraction yet",
+                    f"{label_count:,} label rows saved", "Model saved" if model else "No model yet",
+                    "Check research readiness"]
+    for offset in (0, 3):
+        with st.container(horizontal=True, key=f"workflow_{offset}", gap="medium"):
+            for index, (number, title, description, path, link) in enumerate(steps[offset:offset + 3], start=offset):
+                with st.container(width=330, border=True, key=f"workflow_step_{number}"):
+                    st.caption(f"{number} / {stage_states[index]}")
                     st.markdown(f"#### {title}")
                     st.write(description)
                     page_button(path, link, key=f"home_workflow_{number}")
@@ -351,10 +340,10 @@ def home():
     except (ValueError, OSError) as exc:
         readiness_labels, readiness_audit = pd.DataFrame(), {"findings": [{"title": "Training data unavailable", "detail": str(exc)}]}
     if readiness_audit["findings"]:
-        with st.container(border=True):
-            st.subheader("Research readiness needs attention")
+        with st.container(border=True, key="readiness_summary"):
+            st.subheader("Before you report findings")
             blocking = [finding for finding in readiness_audit["findings"] if finding.get("status", "blocking") == "blocking"]
-            st.warning("The current dataset and evaluation are not ready for defensible research findings.")
+            st.write("Research readiness needs attention. Review the outstanding checks before interpreting results.")
             if blocking:
                 st.write(" · ".join(finding["title"] for finding in blocking[:3]))
             page_button("pages/18_Research_Readiness.py", "Review readiness", key="home_readiness")
@@ -371,6 +360,7 @@ def upload(kind="jobs"):
     if template.exists():
         st.download_button("Download blank template", template.read_bytes(), template.name, "text/csv")
     uploaded = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"])
+    st.caption("Accepted formats: CSV and Excel (.xlsx). Preview the file, save the original, then review its column mapping.")
     encoding = st.selectbox("CSV encoding", ["utf-8-sig", "cp1252", "utf-16"])
     if uploaded:
         content = uploaded.getvalue()
@@ -432,10 +422,12 @@ def column_mapping(kind="jobs"):
     options = [""] + list(frame.columns)
     mapping = {}
     with st.form("column_mapping"):
-        for field in FIELDS[kind]:
-            default = suggested[field]
-            mapping[field] = st.selectbox(field.replace("_", " ").title(), options, index=options.index(default) if default in options else 0, key=f"{scope}_{field}")
-        if action_form_submit_button("Save mapping"):
+        for start in range(0, len(FIELDS[kind]), 2):
+            for column, field in zip(st.columns(2), FIELDS[kind][start:start + 2]):
+                with column:
+                    default = suggested[field]
+                    mapping[field] = st.selectbox(field.replace("_", " ").title(), options, index=options.index(default) if default in options else 0, key=f"{scope}_{field}")
+        if action_form_submit_button("Save mapping", type="primary"):
             mapped = map_columns(frame, mapping, kind, entry["hash"])
             if kind == "psf_aai":
                 validate_taxonomy(mapped)
@@ -570,140 +562,161 @@ def _auto_retraining_control():
 
 
 def labeling():
-    page_intro("Review and label phrases", "Enter each category and PSF-AAI competency yourself. Optional AI drafts stay separate until you select and save your reviewed values.")
-    st.caption("Check source context, choose a category, then save. AI drafts are optional and require your review.")
-    auto_train = _auto_retraining_control()
-    with st.expander("Optional: add remote job sources"):
-        st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
-        if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
-            from .himalayas_feed import fetch_philippines_jobs
-            try:
-                report = fetch_philippines_jobs(storage.ROOT)
-            except Exception as exc:
-                st.error(f"The feed request did not complete: {exc}")
-            else:
-                st.success(
-                    f"Checked {report['response_rows']} listings; found {report['explicit_philippines_eligible_rows']} that explicitly allow applicants in the Philippines; added {report['new_rows_added']} new postings. No labels or models were changed."
-                )
-                st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
-                if report["new_rows_added"]:
-                    st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
-    with st.expander("Local AI drafts — batch tools"):
-        st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
-        if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
-            from .unattended_suggestions import run_local_suggestions
-            progress = st.progress(0.0, text="Starting local candidate scan")
-            try:
-                report = run_local_suggestions(
-                    storage.ROOT, max_drafts=25, batch_size=5,
-                    progress=lambda value, message: progress.progress(value, text=message),
-                )
-            except ImportError:
-                progress.empty()
-                if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
-                    st.error("The suggestion package is missing from this Vercel deployment. Redeploy the latest GitHub commit and check the Vercel build logs for dependency installation errors.")
+    page_intro("Review and label phrases", "Choose a category and one or more PSF-AAI competencies together in the manual review table.")
+    review_content = st.container()
+    with st.expander("Sources and batch tools", icon=":material/settings:"):
+        with st.expander("Optional: add remote job sources"):
+            st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
+            if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
+                from .himalayas_feed import fetch_philippines_jobs
+                try:
+                    report = fetch_philippines_jobs(storage.ROOT)
+                except Exception as exc:
+                    st.error(f"The feed request did not complete: {exc}")
                 else:
-                    st.error("Install the optional local models once: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`. The first BGE-M3 run downloads about 2.3 GB.")
-            except Exception as exc:
-                progress.empty()
-                st.error(f"The local suggestion run stopped safely. Suggestions saved in earlier batches remain available to resume: {exc}")
-            else:
-                st.success(
-                    f"Finished scanning {report['candidate_rows_scanned']:,} candidate rows. "
-                    f"Created {report['suggestions_generated']:,} new drafts; "
-                    f"skipped {report['already_reviewed']:,} reviewed and {report['already_suggested']:,} already-suggested phrases. "
-                    "No research labels or classifier models were changed."
+                    st.success(
+                        f"Checked {report['response_rows']} listings; found {report['explicit_philippines_eligible_rows']} that explicitly allow applicants in the Philippines; added {report['new_rows_added']} new postings. No labels or models were changed."
+                    )
+                    st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
+                    if report["new_rows_added"]:
+                        st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
+        with st.expander("Local AI drafts — batch tools"):
+            st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
+            if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
+                from .unattended_suggestions import run_local_suggestions
+                progress = st.progress(0.0, text="Starting local candidate scan")
+                try:
+                    report = run_local_suggestions(
+                        storage.ROOT, max_drafts=25, batch_size=5,
+                        progress=lambda value, message: progress.progress(value, text=message),
+                    )
+                except ImportError:
+                    progress.empty()
+                    if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+                        st.error("The suggestion package is missing from this Vercel deployment. Redeploy the latest GitHub commit and check the Vercel build logs for dependency installation errors.")
+                    else:
+                        st.error("Install the optional local models once: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`. The first BGE-M3 run downloads about 2.3 GB.")
+                except Exception as exc:
+                    progress.empty()
+                    st.error(f"The local suggestion run stopped safely. Suggestions saved in earlier batches remain available to resume: {exc}")
+                else:
+                    st.success(
+                        f"Finished scanning {report['candidate_rows_scanned']:,} candidate rows. "
+                        f"Created {report['suggestions_generated']:,} new drafts; "
+                        f"skipped {report['already_reviewed']:,} reviewed and {report['already_suggested']:,} already-suggested phrases. "
+                        "No research labels or classifier models were changed."
+                    )
+                    if report["missing_source_id"]:
+                        st.caption(f"Skipped {report['missing_source_id']:,} candidate rows without a source ID so they cannot enter the review workflow without provenance.")
+                    for skipped in report["preparation_skips"]:
+                        st.caption(f"Posting source skipped: {skipped}")
+                    for error in report["preparation_errors"]:
+                        st.warning(f"Could not prepare one posting file: {error}")
+        with st.expander("Prepare candidates from posting CSVs"):
+            from .posting_import import prepare_posting_candidates, COUNTRY_RULE
+            posting_files = [item["filename"] for item in inspect_training_folder(storage.ROOT)
+                             if item["purpose"] == "job-ad source data" and item["filename"].lower().endswith(".csv")
+                             and "derived" not in Path(item["filename"]).parts]
+            st.caption("Columns are mapped automatically. " + COUNTRY_RULE)
+            st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
+            if posting_files:
+                posting_file = st.selectbox("Posting CSV in ./train", posting_files)
+                if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
+                    with st.skeleton(height=240):
+                        report = prepare_posting_candidates(storage.ROOT, posting_file)
+                        candidate_path = storage.ROOT / "train" / report["candidate_file"]
+                        new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
+                        shared_candidates = storage.read_frame("team_training_candidates")
+                        combined_candidates = pd.concat([shared_candidates, new_candidates], ignore_index=True).drop_duplicates(
+                            [column for column in ("normalized_phrase", "source_type", "source_id") if column in new_candidates], keep="last"
+                        ) if not shared_candidates.empty else new_candidates
+                        storage.save_frame("team_training_candidates", combined_candidates)
+                    st.success(f"Prepared {report['candidate_occurrences']:,} candidates from {report['explicit_philippine_postings']:,} of {report['total_postings']:,} postings. Labels remain blank until reviewed.")
+            for report_path in sorted((storage.ROOT / "train/derived").glob("postings_*/import_report.json")):
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                st.write(f"{report['source_file']}: {report['explicit_philippine_postings']:,} postings with explicit Philippine locations; {report['excluded_without_explicit_philippine_location']:,} excluded; {report['candidate_occurrences']:,} candidate occurrences.")
+                if report["postings_reaching_candidate_limit"]:
+                    st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
+
+    with review_content:
+        review_tools = st.container(horizontal=True, key="review_tools", vertical_alignment="center")
+        with review_tools:
+            with st.popover("Review settings", icon=":material/tune:"):
+                auto_train = _auto_retraining_control()
+        if supabase_store.configured():
+            with review_tools:
+                with st.popover("Team updates", icon=":material/sync:"):
+                    st.caption("Your team can review simultaneously. Saves detect changes made by another reviewer. Refresh before starting a new batch; unsaved table edits will be discarded.")
+                    if action_button("Refresh shared review table"):
+                        supabase_store.clear_read_cache()
+                        for key in list(st.session_state):
+                            if str(key).startswith(("review_snapshot", "manual_labels_", "review_draft_", "resolve_label_")):
+                                del st.session_state[key]
+                        st.rerun()
+            if "review_snapshot" not in st.session_state:
+                st.session_state["review_snapshot"] = load_data_with_skeleton(
+                    lambda: storage.read_frame("labeled_competencies"), height=120
                 )
-                if report["missing_source_id"]:
-                    st.caption(f"Skipped {report['missing_source_id']:,} candidate rows without a source ID so they cannot enter the review workflow without provenance.")
-                for skipped in report["preparation_skips"]:
-                    st.caption(f"Posting source skipped: {skipped}")
-                for error in report["preparation_errors"]:
-                    st.warning(f"Could not prepare one posting file: {error}")
-    with st.expander("Prepare candidates from posting CSVs"):
-        from .posting_import import prepare_posting_candidates, COUNTRY_RULE
-        posting_files = [item["filename"] for item in inspect_training_folder(storage.ROOT)
-                         if item["purpose"] == "job-ad source data" and item["filename"].lower().endswith(".csv")
-                         and "derived" not in Path(item["filename"]).parts]
-        st.caption("Columns are mapped automatically. " + COUNTRY_RULE)
-        st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
-        if posting_files:
-            posting_file = st.selectbox("Posting CSV in ./train", posting_files)
-            if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
-                with st.skeleton(height=240):
-                    report = prepare_posting_candidates(storage.ROOT, posting_file)
-                    candidate_path = storage.ROOT / "train" / report["candidate_file"]
-                    new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
-                    shared_candidates = storage.read_frame("team_training_candidates")
-                    combined_candidates = pd.concat([shared_candidates, new_candidates], ignore_index=True).drop_duplicates(
-                        [column for column in ("normalized_phrase", "source_type", "source_id") if column in new_candidates], keep="last"
-                    ) if not shared_candidates.empty else new_candidates
-                    storage.save_frame("team_training_candidates", combined_candidates)
-                st.success(f"Prepared {report['candidate_occurrences']:,} candidates from {report['explicit_philippine_postings']:,} of {report['total_postings']:,} postings. Labels remain blank until reviewed.")
-        for report_path in sorted((storage.ROOT / "train/derived").glob("postings_*/import_report.json")):
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            st.write(f"{report['source_file']}: {report['explicit_philippine_postings']:,} postings with explicit Philippine locations; {report['excluded_without_explicit_philippine_location']:,} excluded; {report['candidate_occurrences']:,} candidate occurrences.")
-            if report["postings_reaching_candidate_limit"]:
-                st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
-    if supabase_store.configured():
-        st.caption("Your team can review simultaneously. Saves detect changes made by another reviewer. Refresh before starting a new batch; unsaved table edits will be discarded.")
-        if action_button("Refresh shared review table"):
-            supabase_store.clear_read_cache()
-            for key in list(st.session_state):
-                if str(key).startswith(("review_snapshot", "manual_labels_", "review_draft_", "resolve_label_")):
-                    del st.session_state[key]
-            st.rerun()
-        if "review_snapshot" not in st.session_state:
-            st.session_state["review_snapshot"] = load_data_with_skeleton(
-                lambda: storage.read_frame("labeled_competencies"), height=120
-            )
-        labels = st.session_state["review_snapshot"].copy()
-    else:
-        labels = load_data_with_skeleton(lambda: storage.read_frame("labeled_competencies"), height=120)
-    path = resolve_training_file(storage.ROOT)
-    st.caption("Reviewed annotations save to the shared database; a local CSV backup is kept separately." if supabase_store.configured() else f"Reviewed annotations save to `{project_relative_path(path)}`.")
-    candidates, taxonomy = load_data_with_skeleton(
-        lambda: _load_manual_review_data(labels), height=220
-    )
+            labels = st.session_state["review_snapshot"].copy()
+        else:
+            labels = load_data_with_skeleton(lambda: storage.read_frame("labeled_competencies"), height=120)
+        candidates, taxonomy = load_data_with_skeleton(
+            lambda: _load_manual_review_data(labels), height=220
+        )
+        from .cleaning import normalize_text
+        st.caption(f"{candidates.normalized_phrase.nunique():,} distinct phrases · {len(candidates):,} source occurrences · {len(labels):,} saved review rows")
+        from .pretrained_suggestions import has_phrase_text
+        candidates = candidates.loc[candidates.phrase.map(has_phrase_text).astype(bool)].copy()
+        occurrences = candidates.copy()
+        reviewed_phrases = labels_by_phrase(labels)
+        categories = list(dict.fromkeys(LABELS + (labels.label.tolist() if not labels.empty else [])))
+        with review_tools:
+            with st.popover("Review guide", icon=":material/menu_book:"):
+                st.write("Choose one leaf category. Technical / Digital is the parent of AI / Machine Learning, Data / Analytics, and general programming and digital tools. Credentials are recorded separately from competencies.")
+                st.write("Use AI / Machine Learning for explicit model development or AI methods; Data / Analytics for analysis, statistics, SQL and reporting; general programming and digital tools for programming or IT without an explicit AI or analytics task. Leadership covers directing people; other enabling capabilities cover communication and personal effectiveness. Classify the phrase in its source context.")
+                st.write("Examples: Python programming → general programming and digital tools; machine-learning model development → AI / Machine Learning; statistical analysis → Data / Analytics; bachelor’s degree → Credential requirement. Legacy categories require review. PSF-AAI mapping remains a separate decision.")
+                st.caption("Count parent totals from distinct advertisements or occurrences, using the same unit throughout. Do not add parent totals to their child totals.")
+                st.caption("Category decisions apply across a phrase. PSF-AAI decisions apply only to the source advertisement in that row.")
+        with st.container(key="manual_review_workspace"):
+            account_reviewer = str(st.session_state.get("supabase_user_email", "")).strip()
+            if account_reviewer or supabase_store.configured():
+                reviewer = account_reviewer
+                st.caption(f"Signed-in reviewer: {reviewer}")
+            else:
+                with st.expander("Reviewer details"):
+                    reviewer = st.text_input("Reviewer ID", key="label_reviewer")
+            _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train)
+
+
+
+def _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train):
     from .cleaning import normalize_text
-    st.caption(f"{candidates.normalized_phrase.nunique():,} distinct phrases · {len(candidates):,} source occurrences · {len(labels):,} saved review rows")
-    from .pretrained_suggestions import has_phrase_text
-    candidates = candidates[candidates.phrase.map(has_phrase_text)].copy()
-    occurrences = candidates.copy()
-    reviewed_phrases = labels_by_phrase(labels)
-    categories = list(dict.fromkeys(LABELS + (labels.label.tolist() if not labels.empty else [])))
-    with st.expander("Category definitions and decision rules"):
-        st.write("Choose one leaf category. Technical / Digital is the parent of AI / Machine Learning, Data / Analytics, and general programming and digital tools. Credentials are recorded separately from competencies.")
-        st.write("Use AI / Machine Learning for explicit model development or AI methods; Data / Analytics for analysis, statistics, SQL and reporting; general programming and digital tools for programming or IT without an explicit AI or analytics task. Leadership covers directing people; other enabling capabilities cover communication and personal effectiveness. Classify the phrase in its source context.")
-        st.write("Examples: Python programming → general programming and digital tools; machine-learning model development → AI / Machine Learning; statistical analysis → Data / Analytics; bachelor’s degree → Credential requirement. Legacy categories require review. PSF-AAI mapping remains a separate decision.")
-        st.caption("Count parent totals from distinct advertisements or occurrences, using the same unit throughout. Do not add parent totals to their child totals.")
-    if supabase_store.configured():
-        reviewer = st.session_state.get("supabase_user_email", "")
-        st.caption(f"Signed-in reviewer: {reviewer}")
-    else:
-        reviewer = st.text_input("Reviewer ID", key="label_reviewer")
     if not candidates.empty:
         source_filtered = candidates
-        if "candidate_file" in candidates:
-            sources = sorted(candidates.candidate_file.unique())
-            selected_sources = st.multiselect("Candidate source files", sources)
-            if selected_sources:
-                source_filtered = candidates[candidates.candidate_file.isin(selected_sources)]
-        if st.checkbox("Only show phrases awaiting review", value=True):
-            source_filtered = source_filtered.loc[~source_filtered.normalized_phrase.isin(reviewed_phrases)]
-        if st.checkbox("Hide obvious connector fragments", value=True, help="This hides phrases beginning or ending with a common connector, such as ‘with strong’ or ‘written and’. Turn it off to inspect and manually label or correct them."):
-            source_filtered = source_filtered.loc[~source_filtered.needs_phrase_edit]
-        query = st.text_input("Find candidate phrase")
+        review_controls = st.container(horizontal=True, vertical_alignment="bottom", key="review_controls")
+        with review_controls:
+            query = st.text_input("Find candidate phrase", placeholder="Search phrases…", width=300)
+            with st.popover("Filters", icon=":material/filter_list:"):
+                if "candidate_file" in candidates:
+                    sources = sorted(candidates.candidate_file.unique())
+                    selected_sources = st.multiselect("Candidate source files", sources)
+                    if selected_sources:
+                        source_filtered = candidates[candidates.candidate_file.isin(selected_sources)]
+                if st.checkbox("Only show phrases awaiting category review", value=True):
+                    source_filtered = source_filtered.loc[~source_filtered.normalized_phrase.isin(reviewed_phrases)]
+                if st.checkbox("Hide obvious connector fragments", value=True, help="This hides phrases beginning or ending with a common connector, such as ‘with strong’ or ‘written and’. Turn it off to inspect and manually label or correct them."):
+                    source_filtered = source_filtered.loc[~source_filtered.needs_phrase_edit]
         if query:
             source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
-        phrase_rows = group_candidates_by_phrase(source_filtered)
+        phrase_rows = source_filtered.drop_duplicates(["normalized_phrase", "source_id"]).copy()
         phrase_counts = group_candidates_by_phrase(occurrences).set_index("normalized_phrase").source_ads
         if not phrase_rows.empty:
             phrase_rows["source_ads"] = phrase_rows.normalized_phrase.map(phrase_counts).fillna(0).astype(int)
-        st.caption("One table row represents one distinct phrase. Source ads shows how many job ads contain it; saving a label applies it to every occurrence while preserving each ad’s source record.")
-        page = st.number_input("Phrase page (10 per page)", 1, max(1, (len(phrase_rows)+9)//10), 1)
+        with review_controls:
+            page = st.number_input("Review page (10 rows per page)", 1, max(1, (len(phrase_rows)+9)//10), 1, width=200)
         shown = phrase_rows.iloc[(page-1)*10:page*10]
-        with st.expander("Read-only source evidence (open to check context)", expanded=False):
+        detail_tools = st.container(horizontal=True, key="review_detail_tools")
+        with detail_tools, st.popover("Source evidence", icon=":material/article:"):
             evidence = occurrences[occurrences.normalized_phrase.isin(shown.normalized_phrase)]
             st.dataframe(evidence[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
     else:
@@ -712,8 +725,10 @@ def labeling():
         shown = pd.DataFrame(columns=["phrase", "normalized_phrase", "source_type", "source_id", "source_ads", "original_text"])
     from .pretrained_suggestions import (
         MODEL_ID, MODEL_REVISION,
-        save_ai_suggestions, suggest_labels, suggestion_key,
+        save_ai_suggestions, suggest_labels, suggestion_key, psf_draft_candidates, PSF_DRAFT_LIMIT,
     )
+    if shown.empty and not candidates.empty:
+        st.info("No phrases match these filters. Clear the search or turn off awaiting-category review to revisit saved phrases.")
     page_rows = shown.to_dict("records") if not shown.empty else []
     page_identity = frame_hash(shown[["normalized_phrase", "phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
     saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
@@ -741,7 +756,7 @@ def labeling():
             st.rerun()
 
     if not shown.empty:
-        with st.expander("About AI drafts"):
+        with detail_tools, st.popover("AI details", icon=":material/auto_awesome:"):
             from .ollama_review import configured_model
             context_model = configured_model()
             st.caption(f"Context checker: {context_model}" if context_model else "Context checker disabled; BGE-M3 drafts only.")
@@ -750,63 +765,93 @@ def labeling():
             st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
         if taxonomy.empty:
             st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
-        else:
-            if action_button("Generate AI suggestions for this page", key=f"suggest_labels_{page_identity}", disabled=not supabase_store.is_admin()):
-                generate_ai_drafts(page_rows)
 
     has_page_suggestions = bool(page_suggestions and any(item.get("category") for item in page_suggestions))
     if has_page_suggestions:
-        st.caption("AI drafts are optional. The manual fields remain blank until you choose a value. Similarity scores rank suggestions; they are not calibrated confidence or research metrics.")
+        with detail_tools, st.popover("How to use AI drafts", icon=":material/info:"):
+            st.write(f"Up to {PSF_DRAFT_LIMIT} ranked candidates per occurrence. Select only those supported by the source. AI drafts do not fill or save your manual decisions.")
+            st.caption("Similarity ranks alternatives; it is not confidence or accuracy. Regenerate older drafts for multiple candidates.")
     if not shown.empty:
-        st.subheader("Manual review")
-        st.caption("Review one distinct phrase per row. New category and PSF-AAI fields start blank. Choose values in the manual columns, then save. AI drafts use one representative posting; inspect the source evidence before accepting them.")
-    taxonomy_names = taxonomy.competency_name.astype(str).tolist() if not taxonomy.empty else []
+        st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} occurrences · Category applies to the phrase; PSF-AAI applies to this advertisement.")
+    active_taxonomy = storage.read_frame("cleaned_psf_aai")
+    reference = active_taxonomy.set_index("competency_id") if not active_taxonomy.empty else pd.DataFrame()
+    mapping_available = not reference.empty
+    try:
+        mapping_reviews = storage.read_frame(REVIEW_TABLE) if mapping_available else pd.DataFrame()
+    except supabase_store.SupabaseError:
+        mapping_reviews = pd.DataFrame()
+        mapping_available = False
+        st.warning("Competency reviews could not be loaded. Check the shared connection and occurrence-mapping migration. Category review remains available.")
+    if reference.empty:
+        st.caption("Activate the reviewed PSF-AAI reference to enable competency selections.")
+    page_identity = digest([page_identity, frame_hash(active_taxonomy), frame_hash(mapping_reviews)])[:24]
+    mapping_occurrences = manual_mapping_occurrences(occurrences, current_extractions())
+    occurrence_lookup = {(row.source_id, row.normalized_phrase): row._asdict() for row in mapping_occurrences.itertuples(index=False)}
+    page_occurrences, page_reviews = [], []
     table_rows = []
     for index, row in enumerate(page_rows):
         suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
         row_normalized = normalize_text(row.get("normalized_phrase") or row.get("phrase", ""))
         saved = reviewed_phrases.get(row_normalized)
+        occurrence = occurrence_lookup.get((row.get("source_id", ""), row.get("normalized_phrase", "")))
+        existing = mapping_reviews[mapping_reviews.extraction_id.eq(occurrence["extraction_id"])] if occurrence and not mapping_reviews.empty else pd.DataFrame()
+        page_occurrences.append(occurrence)
+        page_reviews.append(existing)
         table_row = {
             "Phrase": row.get("phrase", ""),
             "Source ads": int(row.get("source_ads", 0)),
+            "Source advertisement": row.get("source_id", ""),
             "Category": saved.get("label", "") if saved else "",
-            "PSF-AAI competency": saved.get("psf_competency", "") if saved else "",
+            "PSF-AAI competencies": [key for key in existing.competency_id if key in reference.index] if not existing.empty else [],
         }
         if has_page_suggestions:
             table_row.update({
                 "Context check": suggestion.get("context_review") or "Not checked",
                 "Context note": suggestion.get("context_reason") or "Regenerate this page to obtain current context checks.",
                 "AI category draft": suggestion.get("category", "") if suggestion.get("category", "") in LABELS else "",
-                "AI PSF-AAI draft": suggestion.get("psf_competency", ""),
+                "AI PSF-AAI drafts": [item["competency_name"] for item in psf_draft_candidates(suggestion)],
             })
         table_rows.append(table_row)
     manual_table = pd.DataFrame(table_rows)
     table_config = {
-        "Phrase": st.column_config.TextColumn(disabled=True),
+        "Phrase": st.column_config.TextColumn(disabled=True, width=160, pinned=True),
         "Source ads": st.column_config.NumberColumn(help="Number of distinct source job ads containing this normalized phrase.", disabled=True),
-        "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), format_func=lambda value: category_path(value) if value else "", help="Choose one leaf in the hierarchy. Education is a credential requirement, not a competency."),
-        "PSF-AAI competency": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(taxonomy_names)), help="Optional: choose an exact competency from the active taxonomy."),
+        "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), width=180, format_func=lambda value: category_path(value) if value else "", help="Choose one leaf in the hierarchy. Education is a credential requirement, not a competency."),
     }
-    disabled_columns = ["Phrase", "Source ads"]
+    table_config["Source advertisement"] = st.column_config.TextColumn(disabled=True, width=200)
+    table_config["PSF-AAI competencies"] = st.column_config.MultiselectColumn(
+        options=sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, "competency_name"]).casefold()),
+        format_func=lambda key: str(reference.loc[key, "competency_name"]) if key in reference.index else key,
+        accept_new_options=False, disabled=not mapping_available, width=300,
+        help="Select two or more competencies when this advertisement supports each. Each link requires a separate rationale below.")
+    disabled_columns = ["Phrase", "Source ads", "Source advertisement"]
     if has_page_suggestions:
         table_config.update({
             "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
-            "AI PSF-AAI draft": st.column_config.TextColumn(disabled=True),
+            "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
+            "Context check": st.column_config.TextColumn(width=180, disabled=True),
+            "Context note": st.column_config.TextColumn(width=420, disabled=True, help="AI context assessment. Double-click a cell to read its full note."),
         })
-        disabled_columns.extend(["AI category draft", "AI PSF-AAI draft", "Context check", "Context note"])
+        disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts", "Context check", "Context note"])
     @st.fragment
     def review_editor():
         nonlocal labels
+        with st.container(horizontal=True, vertical_alignment="center", key="manual_review_actions"):
+            save_action = st.container(width="content")
+            generate_action = st.container(width="content")
+            fullscreen = st.toggle("Full-screen review", key="manual_review_fullscreen",
+                                   help="Expand the entire review workspace, including actions and evidence. Turn off to return to the page.")
+        review_workspace_style(fullscreen)
         draft_key = f"review_draft_{page_identity}"
         revision_key = draft_key + "_revision"
         if draft_key not in st.session_state:
             st.session_state[draft_key] = manual_table.copy()
         # Refresh draft values after generation without discarding manual edits.
-        draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competency"], errors="ignore"))
+        draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competencies"], errors="ignore"))
         if st.session_state.get(draft_key + "_source") != draft_revision:
             current = st.session_state[draft_key].reindex(columns=manual_table.columns).copy()
             for column in manual_table.columns:
-                if column not in ("Category", "PSF-AAI competency"):
+                if column not in ("Category", "PSF-AAI competencies"):
                     current[column] = manual_table[column]
             st.session_state[draft_key] = current
             st.session_state[draft_key + "_source"] = draft_revision
@@ -818,18 +863,58 @@ def labeling():
             width="stretch",
             disabled=disabled_columns,
             column_config=table_config,
+            column_order=["Phrase", "Category", "PSF-AAI competencies"] + (["AI category draft", "AI PSF-AAI drafts", "Context check", "Context note"] if has_page_suggestions else []) + ["Source ads", "Source advertisement"],
+            row_height=52,
+            height=min(580, 52 * len(manual_table) + 40),
+            alt="Manual review: phrase, category, selected competencies, AI drafts, context and source advertisement",
             key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
         ) if not manual_table.empty else manual_table
+        st.session_state[draft_key] = edited_table.copy()
+        mapping_updates = []
+        for index, row in edited_table.iterrows():
+            occurrence = page_occurrences[index]
+            saved = page_reviews[index]
+            selected = list(row["PSF-AAI competencies"]) if row["PSF-AAI competencies"] is not None else []
+            original = list(manual_table.iloc[index]["PSF-AAI competencies"])
+            changed = set(selected) != set(original)
+            if not mapping_available or not (selected or not saved.empty or changed):
+                continue
+            with st.expander(f"Evidence: {row['Phrase']} — ad {row['Source advertisement']}", expanded=changed):
+                if not occurrence or not str(occurrence.get("original_text", "")).strip():
+                    st.warning("Source text is missing. Restore the advertisement context before saving competency links.")
+                else:
+                    st.text(str(occurrence["original_text"]))
+                if occurrence and occurrence.get("pending_extraction"):
+                    st.caption("This candidate enters analysis only after the same occurrence is extracted and accepted. Changed evidence requires another review.")
+                stale = bool(occurrence and not saved.empty and (
+                    saved.reference_hash.ne(frame_hash(active_taxonomy)).any() or
+                    saved.occurrence_hash.ne(occurrence_hash(occurrence)).any()))
+                if stale:
+                    st.warning("Saved links are stale. Review the source and selected competencies again.")
+                key = f"table_psf_{page_identity}_{index}"
+                update_evidence = st.checkbox("Update or confirm this occurrence's mapping", value=changed,
+                                              key=key + "_update")
+                old_reasons = dict(zip(saved.competency_id, saved.rationale)) if not saved.empty else {}
+                reasons = {}
+                for competency in selected:
+                    if competency not in reference.index:
+                        continue
+                    st.write(reference.loc[competency, "competency_name"])
+                    st.caption(str(reference.loc[competency].get("competency_description", "")))
+                    reasons[competency] = st.text_area("Source evidence and rationale", value=old_reasons.get(competency, ""), key=key + "_" + competency)
+                no_match = st.text_area("Reason for no mapping", value=old_reasons.get("", ""), key=key + "_none") if not selected else ""
+                confirmed = st.checkbox("I checked the source context and each selected competency; every link is justified.", key=key + "_confirmed_" + digest(selected)[:8])
+                if changed or update_evidence:
+                    mapping_updates.append((occurrence, reasons, confirmed, no_match, saved, selected))
         reviewed_rows = []
         for index, row in edited_table.iterrows():
             suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
             category = row.get("Category", "")
-            psf = row.get("PSF-AAI competency", "")
             source_row = page_rows[index]
             reviewed_rows.append({
                 "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
                 "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
-                "label": str(category or "").strip(), "psf_competency": str(psf or "").strip(),
+                "label": str(category or "").strip(), "psf_competency": "",
             })
         edited = pd.DataFrame(reviewed_rows, columns=["phrase", "normalized_phrase", "source_type", "source_id", "label", "psf_competency"])
 
@@ -883,36 +968,75 @@ def labeling():
             return conflicts, resolutions, resolved
 
         conflicts, conflict_resolutions, conflicts_resolved = show_conflict_resolutions(edited, "resolve_label")
-        if not reviewer.strip():
-            st.caption("Enter your Reviewer ID above before saving.")
+        if supabase_store.configured() and not reviewer.strip():
+            st.warning("Your account session is unavailable. Sign in again to save.")
         has_category = bool(not edited.empty and edited.label.astype(str).str.strip().ne("").any())
         if not has_category:
-            st.caption("Choose at least one competency category before saving. PSF-AAI competency is optional.")
+            st.caption("Choose a category or review competency links before saving.")
         st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
-        can_submit = has_category or bool(conflicts)
-        if action_button("Save annotations", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit):
-            submitted_rows = edited
+        can_submit = has_category or bool(conflicts) or bool(mapping_updates)
+        with generate_action:
+            generate_clicked = action_button("Generate AI suggestions for this page", icon=":material/auto_awesome:", key=f"suggest_labels_{page_identity}", disabled=shown.empty or taxonomy.empty or not supabase_store.is_admin())
+        with save_action:
+            save_clicked = action_button("Save annotations", icon=":material/save:", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit)
+        if generate_clicked:
+            generate_ai_drafts(page_rows)
+        if save_clicked:
+            try:
+                for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
+                    if not occurrence or not str(occurrence.get("original_text", "")).strip():
+                        raise ValueError("Restore the source advertisement text before saving competency links.")
+                    if set(selected) != set(reasons):
+                        raise ValueError("Select competencies from the active PSF-AAI reference.")
+                    prepare_mapping_review(occurrence, active_taxonomy, reasons, reviewer, confirmed, no_match)
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+            submitted_rows = edited[edited.label.str.strip().ne("")]
             versions = None
             if supabase_store.configured():
                 versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
                 changed = [i for i, row in edited_table.iterrows()
-                           if row.get("Category", "") != manual_table.iloc[i].get("Category", "")
-                           or row.get("PSF-AAI competency", "") != manual_table.iloc[i].get("PSF-AAI competency", "")]
+                           if row.get("Category", "") != manual_table.iloc[i].get("Category", "")]
                 changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
-                submitted_rows = edited[edited.normalized_phrase.isin(changed_phrases)]
-            submitted_rows = expand_phrase_annotations(submitted_rows, occurrences)
-            labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+                submitted_rows = submitted_rows[submitted_rows.normalized_phrase.isin(changed_phrases)]
+            submitted_rows = preserve_occurrence_references(expand_phrase_annotations(submitted_rows, occurrences), labels)
+            categories_saved = bool(submitted_rows.label.str.strip().ne("").any() or conflicts)
+            if categories_saved:
+                labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+            saved_links = 0
+            try:
+                for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
+                    save_mapping_review(occurrence, active_taxonomy, reasons, reviewer,
+                                        expected_version=int(saved.version.iloc[0]) if not saved.empty else 0,
+                                        context_confirmed=confirmed, unmapped_reason=no_match)
+                    saved_links += 1
+            except (ValueError, supabase_store.SupabaseError) as exc:
+                supabase_store.clear_read_cache()
+                st.warning(f"Partial save: category annotations {'were saved' if categories_saved else 'were unchanged'}; {saved_links} occurrence mapping(s) saved. Refresh before retrying. {exc}")
+                return
+            if mapping_updates:
+                supabase_store.clear_read_cache()
+                # Refresh these defaults and versions after the successful batch.
+                fresh = storage.read_frame(REVIEW_TABLE)
+                for index, occurrence in enumerate(page_occurrences):
+                    if occurrence:
+                        page_reviews[index] = fresh[fresh.extraction_id.eq(occurrence["extraction_id"])] if not fresh.empty else pd.DataFrame()
+                manual_table["PSF-AAI competencies"] = edited_table["PSF-AAI competencies"].copy()
             if supabase_store.configured():
                 st.session_state.pop("review_snapshot", None)
                 for key in list(st.session_state):
                     if str(key).startswith(("manual_labels_", "review_draft_")):
                         del st.session_state[key]
-            st.success(f"Saved. The dataset now has {len(labels):,} reviewed rows.")
+            st.success(f"Saved. The dataset has {len(labels):,} category review rows; updated competency links for {saved_links} advertisement occurrence(s).")
             if st.session_state.get("backup_warning"):
                 st.warning(st.session_state.pop("backup_warning"))
             _auto_train_after_review(labels, auto_train)
-        st.caption("For offline/local work only: to combine work from teammates' own devices, import their downloaded reviewed-label CSV. Reviewer IDs and timestamps are preserved; unresolved phrase conflicts must be resolved in the table above.")
-        uploaded = None if supabase_store.configured() else st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
+        uploaded = None
+        if not supabase_store.configured():
+            with st.expander("Import team annotations", icon=":material/upload:"):
+                st.caption("Merge reviewed files from teammates. Reviewer IDs and timestamps are preserved; resolve any category conflicts before importing.")
+                uploaded = st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
         imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
         import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
         if uploaded and action_button("Import annotations", disabled=not import_conflicts_resolved):
@@ -920,7 +1044,8 @@ def labeling():
             st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
             _auto_train_after_review(labels, auto_train)
         if not labels.empty:
-            display(labels)
+            with st.expander("Saved category annotations"):
+                display(labels)
         st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
     review_editor()
 
@@ -935,7 +1060,7 @@ def training():
     except ValueError as exc:
         st.warning(str(exc))
         path = None
-    options = [item["filename"] for item in inspect_training_folder(storage.ROOT) if item["purpose"] in ("labeled phrases", "empty label schema") and item["filename"].lower().endswith(".csv")]
+    options = [item["filename"] for item in inventory if item["purpose"] in ("labeled phrases", "empty label schema") and item["filename"].lower().endswith(".csv")]
     if len(options) > 1:
         current = str(path.relative_to(storage.ROOT / "train")) if path else ""
         choice = st.selectbox("Labeled training file", options, index=options.index(current) if current in options else 0)
@@ -1064,8 +1189,88 @@ def evaluation():
     st.download_button("model_metadata.json", json.dumps(metadata, indent=2), "model_metadata.json", "application/json")
 
 
+def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf", reviewer_id=None):
+    if prefix != "manual":
+        st.subheader("Review competency links")
+    st.caption("A skill occurrence is a distinct phrase in one advertisement. Select several competencies only when this source context supports each meaning. Broad wording alone is insufficient. Saving replaces the links for this occurrence only.")
+    if skills.empty or taxonomy.empty:
+        st.info("Accepted skill occurrences and an active PSF-AAI reference are required to review links.")
+        return
+    if st.session_state.pop(f"{prefix}_review_saved", False):
+        st.success("Competency links saved. Other advertisements keep their own mappings.")
+    occurrences = skills.drop_duplicates("extraction_id").set_index("extraction_id")
+    extraction_id = st.selectbox("Source advertisement" if prefix == "manual" else "Skill occurrence", occurrences.index.tolist(),
+                                 format_func=lambda key: f"{occurrences.loc[key, 'original_phrase']} — ad {occurrences.loc[key, 'source_id']}",
+                                 key=f"{prefix}_review_occurrence")
+    occurrence = occurrences.loc[extraction_id].to_dict() | {"extraction_id": extraction_id}
+    source = jobs[jobs.source_id.eq(occurrence["source_id"])] if not jobs.empty else jobs
+    if not source.empty:
+        display(source.reindex(columns=[key for key in ("source_id", "job_title", "company", "url") if key in source]))
+    with st.expander("Source advertisement text", expanded=True):
+        st.text(str(occurrence.get("original_text", "")))
+    if occurrence.get("pending_extraction") is True:
+        st.info("This candidate is not in the current extraction. Saved links enter analysis only after the same occurrence is extracted and accepted. Changed evidence will require another review.")
+    if not str(occurrence.get("original_text", "")).strip():
+        st.warning("Source text is missing. Restore the advertisement context before reviewing competency links.")
+        return
+    saved = reviews[reviews.extraction_id.eq(extraction_id)] if not reviews.empty else reviews
+    current = mapping[mapping.extraction_id.eq(extraction_id)]
+    reference = taxonomy.fillna("").set_index("competency_id")
+    defaults = saved.competency_id.tolist() if not saved.empty else current.competency_id.tolist()
+    defaults = [key for key in defaults if key in reference.index]
+    if not current.empty and current.mapping_review_status.eq("STALE").any():
+        st.warning("The source or reference changed. Check the saved choices and update this review.")
+    from .psf_reviews import occurrence_hash
+    if not saved.empty and (saved.reference_hash.ne(frame_hash(taxonomy)).any()
+                            or saved.occurrence_hash.ne(occurrence_hash(occurrence)).any()):
+        st.warning("Saved links need review because the source or PSF-AAI reference changed. Check each choice and rationale before saving again.")
+    revision = prefix + digest([extraction_id, frame_hash(taxonomy), occurrence_hash(occurrence), frame_hash(saved)])[:16]
+    chosen = st.multiselect("PSF-AAI competencies", sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, 'competency_name']).casefold()), default=defaults,
+                            format_func=lambda key: f"{reference.loc[key, 'competency_name']} ({key})",
+                            key=f"psf_choices_{revision}", placeholder="Search and select one or more competencies",
+                            help="Select another option to add it. Remove a selected tag with its × button. Each link needs its own source-based rationale.")
+    st.caption(f"{len(chosen)} competencies selected. Broad wording alone does not justify multiple links.")
+    old_reasons = dict(zip(saved.competency_id, saved.rationale)) if not saved.empty else {}
+    with st.form(f"psf_review_{revision}"):
+        reviewer = reviewer_id
+        account_reviewer = str(st.session_state.get("supabase_user_email", "")).strip()
+        if account_reviewer or supabase_store.configured():
+            reviewer = account_reviewer
+            if not reviewer:
+                st.warning("Your account session is unavailable. Sign in again to save.")
+        elif reviewer is None:
+            reviewer = st.text_input("Reviewer ID", key=f"psf_reviewer_{revision}")
+        reasons = {}
+        for key in chosen:
+            st.write(reference.loc[key, "competency_name"])
+            st.caption(str(reference.loc[key].get("competency_description", "")) or "No description supplied in the active reference.")
+            reasons[key] = st.text_area("Source evidence and rationale", value=old_reasons.get(key, ""),
+                                        key=f"psf_reason_{revision}_{key}",
+                                        help="Explain how the phrase in this advertisement corresponds to this specific competency.")
+        no_match_reason = st.text_area("Reason for no mapping", value=old_reasons.get("", "")) if not chosen else ""
+        confirmed = st.checkbox("I checked the source context and each selected competency; every link is justified.")
+        if action_form_submit_button("Save competency links", action_id=f"psf_review_{revision}"):
+            try:
+                save_mapping_review(occurrence, taxonomy, reasons, reviewer,
+                                    expected_version=int(saved.version.iloc[0]) if not saved.empty else 0,
+                                    context_confirmed=confirmed, unmapped_reason=no_match_reason)
+            except (ValueError, supabase_store.SupabaseError) as exc:
+                st.error(str(exc))
+            else:
+                supabase_store.clear_read_cache()
+                st.session_state[f"{prefix}_review_saved"] = True
+                st.rerun()
+
+
 def research_page(page):
-    st.header(page)
+    descriptions = {
+        "Job Market Analysis": "Explore employer demand within the selected job-ad sample.",
+        "PSF Mapping": "Review each skill in its advertisement context and justify its framework links.",
+        "Employer–PSF Alignment": "Compare employer phrases with the reviewed framework reference.",
+        "Unmapped / Emerging Skills": "Investigate recurring demand that needs further framework review.",
+        "Reports": "Export the selected evidence, research tables, and analysis metadata.",
+    }
+    page_intro(page, descriptions.get(page, ""))
     if not current_analysis():
         return
     tables, meta = load_data_with_skeleton(filtered_bundle, height=300)
@@ -1115,6 +1320,12 @@ def research_page(page):
         display(jobs)
     elif page == "PSF Mapping":
         st.caption("Employer skill → PSF-AAI competency. Roles and levels are reference metadata, not inferred applicant attainment. Similarity scores are heuristic evidence, not calibrated probabilities.")
+        psf_mapping_review(skills, jobs, storage.read_frame("cleaned_psf_aai"),
+                           tables["psf_mapping"], tables["psf_mapping_reviews"])
+        st.subheader("Competency demand")
+        st.caption("Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
+        display(tables["psf_competency_demand"])
+        st.subheader("Occurrence-level mapping evidence")
         display(tables["psf_mapping"])
     elif page == "Employer–PSF Alignment":
         st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
@@ -1123,7 +1334,7 @@ def research_page(page):
         for col, field in zip(cols, ("alignment_rate", "partially_aligned_rate", "unmapped_rate")):
             if rates.get(field) is not None:
                 col.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%")
-        chart(distribution(alignment, "status", "Alignment Status"))
+        chart(distribution(alignment, "status", "Status of Phrase–Competency Evidence Groups"))
         display(demand)
         st.caption(meta["denominators"])
     elif page == "Unmapped / Emerging Skills":
@@ -1152,11 +1363,15 @@ def research_page(page):
                 extras["quality_"+kind] = storage.read_frame("quality_"+kind)
             return extras
         tables.update(load_data_with_skeleton(load_report_tables, height=220))
-        with st.expander(f"Individual research tables ({len(tables)})"):
-            for name, frame in tables.items():
-                st.download_button(name + ".csv", export_csv(frame), name + ".csv", "text/csv", key="download_"+name)
+        downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports", on_change="rerun")
+        if downloads.open:
+            with downloads:
+                for name, frame in tables.items():
+                    st.download_button(name + ".csv", export_csv(frame), name + ".csv", "text/csv", key="download_"+name)
         workbook = workbook_bytes(tables, meta)
-        st.download_button("Download research_results.xlsx", workbook, "research_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.subheader("Research deliverables")
+        st.caption("Downloads use the current sample and filters. Keep the metadata with the exported evidence.")
+        st.download_button("Download research_results.xlsx", workbook, "research_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", icon=":material/table_view:")
         research_report = export_research_report(tables, meta)
         st.download_button("Download written research report (.md)", research_report, "philippine_job_ads_psf_aai_report.md", "text/markdown")
         summary = export_html(tables, meta)
@@ -1175,7 +1390,7 @@ def research_page(page):
 
 
 def feedback():
-    st.header("Feedback")
+    page_intro("Feedback", "Record corrections and usability feedback while preserving the original predictions.")
     reviewer = st.text_input("Reviewer ID", key="feedback_reviewer")
     source = st.selectbox("Correction target", ["extraction", "alignment"])
     if current_analysis():
@@ -1186,21 +1401,20 @@ def feedback():
             display(frame)
             row_id = st.selectbox("Record ID", frame[key].tolist())
             row = frame.loc[frame[key].eq(row_id)].iloc[0]
-            fields = ["normalized_phrase", "competency_category", "psf_competency", "accepted"] if source == "extraction" else ["status"]
+            if source == "extraction":
+                st.caption("Review one or several competency links for this occurrence on PSF Mapping.")
+            fields = ["normalized_phrase", "competency_category", "accepted"] if source == "extraction" else ["status"]
             field = st.selectbox("Field to correct", fields)
             st.write("Original/current value:", str(row[field]))
             if field == "status":
                 corrected = st.selectbox("Corrected value", STATUSES)
             elif field == "accepted":
                 corrected = st.selectbox("Corrected value", ["True", "False"])
-            elif field == "psf_competency":
-                tax = storage.read_frame("cleaned_psf_aai")
-                corrected = st.selectbox("Corrected value", [""] + (tax.competency_name.tolist() if not tax.empty else []))
             else:
                 corrected = st.text_input("Corrected value", str(row[field]))
             comment = st.text_area("Reason / comment")
             if action_button("Save correction", key=f"save_correction_{source}_{row_id}"):
-                if field not in ("psf_competency",) and not corrected.strip():
+                if not corrected.strip():
                     raise ValueError("Enter a corrected value.")
                 save_correction(source, row_id, field, row[field], corrected, reviewer, comment)
                 st.success("Correction saved separately from original predictions. Dependent comparisons use the corrected value.")
@@ -1238,7 +1452,7 @@ def feedback():
             st.write(f"{field}: {numeric.count()} numeric responses; mean {numeric.mean():.2f}" if numeric.count() else f"{field}: no numeric responses")
 
 def methodology():
-    st.header("Methodology")
+    page_intro("Methodology", "Definitions, analytical decisions, and limits of the study.")
     st.markdown((Path(__file__).resolve().parents[1] / "METHODOLOGY.md").read_text(encoding="utf-8"))
 
 def research_readiness():
@@ -1337,7 +1551,7 @@ def research_readiness():
         st.caption(f"Audited training file: `{project_relative_path(path)}`")
 
 def settings_page():
-    st.header("Settings")
+    page_intro("Settings", "Configure the research workspace and documented analysis parameters.")
     st.subheader("Shared team workspace")
     if supabase_store.configured():
         st.success("Supabase is connected. Saved tables and settings are shared with signed-in teammates; local CSVs remain as backups.")
@@ -1352,19 +1566,22 @@ def settings_page():
         st.info("Supabase is not configured. This app is using local files on this computer.")
         st.caption("For a shared site, configure SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Streamlit secrets, then run the schema in supabase_schema.sql.")
     cfg = storage.settings()
-    with st.form("settings"):
+    with st.form("settings_form"):
+        st.subheader("Matching thresholds")
         aligned = st.slider("Aligned threshold", .01, 1., float(cfg["aligned_threshold"]), .01)
         partial = st.slider("Partially aligned threshold", .0, .99, float(cfg["partial_threshold"]), .01)
         fuzzy = st.slider("Taxonomy fuzzy match threshold", .5, 1., float(cfg["fuzzy_threshold"]), .01)
         semantic = st.slider("Taxonomy semantic match threshold", .5, 1., float(cfg["semantic_threshold"]), .01)
         path = st.text_input("Optional local sentence-transformers model directory", cfg["semantic_model"])
+        st.subheader("Extraction and screening")
         stopwords = st.text_area("Additional stopwords (one per line; phrases retain internal stopwords)", "\n".join(cfg["stopwords"]))
         batch = st.number_input("NLP batch size", 1, 1024, cfg["batch_size"])
         limit = st.number_input("Maximum discovered n-grams per record", 50, 10000, cfg["max_candidates"])
         emerging = st.number_input("Minimum job ads for an emerging-skill candidate", 1, 100000, cfg["emerging_min_jobs"])
+        st.subheader("Usability evaluation")
         low = st.number_input("Likert scale minimum", 0, 9, cfg["likert_min"])
         high = st.number_input("Likert scale maximum", 1, 10, cfg["likert_max"])
-        if action_form_submit_button("Save settings"):
+        if action_form_submit_button("Save settings", type="primary"):
             if partial >= aligned or low >= high:
                 raise ValueError("Partial threshold must be below aligned, and Likert minimum below maximum.")
             if path.strip():
@@ -1388,10 +1605,13 @@ PAGES = {"Home": home, "Job Data Upload": upload, "Data Quality": quality,
 def render(page):
     storage.initialize()
     st.session_state["_fow_current_page"] = page
-    st.markdown(DESIGN_CSS, unsafe_allow_html=True)
+    apply_design()
     st.sidebar.caption(f"Research workspace · v{VERSION}")
     from .auth_ui import render_account_menu
-    render_account_menu()
+    with st.container(horizontal=True, vertical_alignment="center", key="workspace_toolbar"):
+        with st.container(width="stretch"):
+            st.caption("FUTURE OF WORK  /  " + ("OVERVIEW" if page == "Home" else page.upper()))
+        render_account_menu()
     try:
         if supabase_store.configured() and page in {"Job Data Upload", "Data Quality", "Competency Extraction", "Settings", "Feedback", "PSF Framework"} and not supabase_store.is_admin():
             st.info("This step is managed by the project administrator. Open Review and label phrases to contribute your annotations.")

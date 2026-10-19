@@ -8,7 +8,8 @@ from .classification import cached_load_model
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
 from .analytics import accepted_skills, filter_frame
-from .alignment import calculate_alignment
+from .alignment import calculate_mapping, summarize_alignment
+from .psf_reviews import REVIEW_TABLE
 from .gap_analysis import calculate_gaps
 from .labeling import apply_corrections
 
@@ -92,19 +93,27 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
         extracted = filter_frame(extracted, skill_filters or {})
     skills = accepted_skills(extracted)
     cfg = storage.settings()
-    alignment = calculate_alignment(skills, taxonomy, cfg["aligned_threshold"], cfg["partial_threshold"], cfg["semantic_model"], cfg["semantic_threshold"])
+    reviews = source_snapshot["mapping_reviews"] if "mapping_reviews" in source_snapshot else storage.read_frame(REVIEW_TABLE)
+    mapping = calculate_mapping(skills, taxonomy, cfg["aligned_threshold"], cfg["partial_threshold"], cfg["semantic_model"], cfg["semantic_threshold"], reviews)
+    alignment = summarize_alignment(mapping)
     alignment = apply_corrections(alignment, "alignment", "alignment_id")
+    mapping["status"] = mapping.alignment_id.map(alignment.set_index("alignment_id").status)
+    # Advertisement provenance has a separate name from the PSF reference URL.
+    job_columns = [key for key in ("source_id", "job_title", "url") if key in jobs]
+    if "source_id" in job_columns:
+        mapping = mapping.merge(jobs[job_columns].drop_duplicates("source_id").rename(columns={"url": "job_source_url"}), on="source_id", how="left")
     demand, unmapped, emerging, rates = calculate_gaps(skills, jobs, alignment, cfg["emerging_min_jobs"])
     if statuses:
         alignment = alignment[alignment.status.isin(statuses)]
         demand = demand[demand.status.isin(statuses)]
         unmapped = unmapped[unmapped.status.isin(statuses)]
         emerging = emerging[emerging.status.isin(statuses)]
-    # Occurrence-level mappings and distinct-phrase alignment share the same reference evidence.
-    mapping = skills.reindex(columns=["extraction_id", "source_id", "original_phrase", "normalized_phrase"])
-    mapping = mapping.rename(columns={"original_phrase": "employer_skill", "normalized_phrase": "normalized_skill"})
-    mapping["normalized_skill"] = mapping["normalized_skill"].astype(str)
-    mapping = mapping.merge(alignment.drop(columns=["employer_skill", "job_source_ids"]), on="normalized_skill", how="inner")
+    mapping = mapping[mapping.alignment_id.isin(alignment.alignment_id)]
+    linked = mapping[mapping.psf_competency.ne("") & mapping.status.isin(["ALIGNED", "PARTIALLY ALIGNED"])]
+    competency_demand = linked.groupby(["competency_id", "psf_competency"]).agg(
+        job_ad_count=("source_id", "nunique"), skill_phrase_count=("normalized_skill", "nunique"),
+        occurrence_count=("extraction_id", "nunique")).reset_index()
+    selected_reviews = reviews[reviews.extraction_id.isin(skills.get("extraction_id", []))].copy() if not reviews.empty else reviews
     reviewed = storage.read_frame("labeled_competencies")
     if {"source_id", "source_type"}.issubset(reviewed.columns):
         reviewed = reviewed[reviewed.source_id.isin(jobs.get("source_id", [])) &
@@ -116,7 +125,9 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
               "labeled_competencies": reviewed,
               "verified_psf_aai": verified if not verified.empty else taxonomy,
               "ml_predictions": extracted.reindex(columns=["extraction_id", "source_id", "source_type", "original_phrase", "human_label", "model_prediction", "ml_confidence", "model_name", "agreement"]).rename(columns={"ml_confidence": "confidence_score"}),
-              "psf_mapping": mapping, "alignment_results": alignment, "employer_skill_demand": demand,
+              "psf_mapping": mapping, "psf_mapping_reviews": selected_reviews,
+              "psf_competency_demand": competency_demand,
+              "alignment_results": alignment, "employer_skill_demand": demand,
               "unmapped_skills": unmapped, "emerging_skills": emerging,
               "all_candidates": extracted}
     metadata = {"timestamp": timestamp(), "software_version": VERSION, "settings": cfg,
@@ -130,7 +141,7 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
                 "model": {k: v for k, v in storage.read_json("selected_model", {}).items() if k != "metrics"}, "extraction": storage.read_json("extraction_metadata", {}),
                 "filters": {"jobs": job_filters, "skills": skill_filters, "alignment_status": statuses},
                 "rates_before_status_display_filter": rates,
-                "denominators": "Demand: distinct selected job ads, including ads with no detection. Alignment and partial rates: distinct ALIGNED + PARTIALLY ALIGNED employer phrases. Unmapped rate: all assessed distinct phrases. UNCLASSIFIED is excluded from assessment rates. Rates precede the status display filter.",
+                "denominators": "Demand: distinct selected job ads, including ads with no detection. Each phrase is counted once in alignment rates using its strongest observed status (aligned, partial, not mapped, unclassified). Alignment and partial rates divide by mapped phrases; unmapped rate divides by assessed phrases. UNCLASSIFIED is excluded from assessment rates. Competency demand counts each advertisement once per competency, regardless of its number of skills or links. Rates precede the status display filter.",
                 "limitations": "Thresholds are researcher heuristics, not official PSF standards. Not clearly mapped does not establish absence from the framework. Emerging candidates require human and longitudinal review. Reference roles and levels do not establish applicant proficiency.",
                 "libraries": {p: importlib.metadata.version(p) for p in ("pandas", "spacy", "scikit-learn", "streamlit")}}
     return tables, metadata

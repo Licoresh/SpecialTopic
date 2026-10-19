@@ -24,6 +24,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     options.setdefault("priority_phrases", GENERAL.keys())
     processed = extract_candidate_phrases(texts, **options)
     annotation_map = {}
+    psf_annotations = {}
     if annotations is not None and not annotations.empty:
         for row in annotations.fillna("").to_dict("records"):
             if str(row.get("label", "")).strip():
@@ -33,6 +34,12 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
                 original = row.get("phrase") or row.get("normalized_phrase", "")
                 annotation_map[normalize_text(original)] = row
                 annotation_map[normalize_text(row.get("normalized_phrase") or original)] = row
+                # Category training is phrase-based; reviewed PSF meaning is source-specific.
+                if row.get("psf_competency"):
+                    for source_id in str(row.get("source_id", "")).split(";"):
+                        if source_id.strip():
+                            for term in (original, row.get("normalized_phrase") or original):
+                                psf_annotations[(normalize_text(term), source_id.strip())] = row["psf_competency"]
     extracted, diagnostics = [], []
     # NLP and model predictions are reused for repeated text/phrases.
     evidence_by_text = {}
@@ -69,8 +76,10 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
             if annotation:
                 category = annotation["label"]
                 accepted = category != "IRRELEVANT"
-                if annotation.get("psf_competency") and matcher:
-                    mapped = matcher.match(annotation["psf_competency"])
+                assignment = psf_annotations.get((normalize_text(phrase), str(row.source_id)),
+                                                 psf_annotations.get((normal, str(row.source_id))))
+                if assignment and matcher:
+                    mapped = matcher.match(assignment)
                     if mapped:
                         mapped = mapped | {"matching_method": "human_annotation", "confidence": 1.}
             skill = mapped["psf_competency"] if mapped else normal

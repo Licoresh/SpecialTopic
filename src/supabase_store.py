@@ -169,6 +169,27 @@ def save_reviewed_annotations(records, token, expected_versions, resolutions=Non
     return result
 
 
+@session_cached
+def read_mapping_reviews(token):
+    rows, offset = [], 0
+    while True:
+        page = _request("GET", "/rest/v1/psf_mapping_reviews", token=token,
+                        params={"select": "records,version", "order": "extraction_id.asc",
+                                "limit": "1000", "offset": str(offset)}) or []
+        for decision in page:
+            rows.extend(row | {"version": str(decision["version"])} for row in decision["records"])
+        if len(page) < 1000:
+            return rows
+        offset += 1000
+
+
+def save_mapping_review(records, expected_version, token):
+    result = _request("POST", "/rest/v1/rpc/save_psf_mapping_review", token=token,
+                      payload={"rows": records, "expected_version": expected_version})
+    clear_read_cache()
+    return result
+
+
 def upsert_annotations(records: list[dict], token: str, *, preserve_existing: bool = False):
     raise SupabaseError("Use the review table to save annotations. Bulk uploads cannot become verified research labels automatically.")
 

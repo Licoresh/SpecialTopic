@@ -187,3 +187,37 @@ def test_context_notes_survive_save_and_reload(tmp_path):
     assert rows[0]["context_model"] == "test-model"
     assert rows[0]["context_review"] == "Needs researcher review"
     assert rows[0]["context_reason"] == "Vague phrase"
+
+
+def test_multiple_psf_candidates_are_ranked_unique_and_persisted(tmp_path):
+    class Encoder:
+        def encode(self, texts, **kwargs):
+            return np.asarray([[0.3, 0.0], [0.9, 0.0], [0.6, 0.0], [0.8, 0.0], [0.1, 0.0]])
+    taxonomy = pd.DataFrame([
+        {"competency_id": "c", "competency_name": "Third"},
+        {"competency_id": "a", "competency_name": "First"},
+        {"competency_id": "b", "competency_name": "Second"},
+        {"competency_id": "duplicate", "competency_name": "First"},
+        {"competency_id": "d", "competency_name": "Fourth"},
+    ])
+    records = [{"phrase": "synthetic skill", "source_type": "jobs", "source_id": "synthetic"}]
+    draft = suggest_psf_competencies(records, taxonomy, encoder=Encoder(), candidate_vectors=np.asarray([[1.0, 0.0]]))[0]
+    assert [item["competency_id"] for item in draft["psf_candidates"]] == ["a", "b", "c"]
+    assert [item["score"] for item in draft["psf_candidates"]] == [0.9, 0.6, 0.3]
+    save_ai_suggestions(tmp_path, records, [draft | {"label": "Technical / Digital"}])
+    loaded = next(iter(load_ai_suggestions(tmp_path).values()))
+    assert loaded["psf_candidates"] == draft["psf_candidates"]
+    assert not (tmp_path / "data/processed/psf_mapping_reviews.csv").exists()
+
+
+def test_legacy_single_psf_draft_remains_readable_and_irrelevant_has_no_candidates(tmp_path):
+    from src.pretrained_suggestions import psf_draft_candidates
+    records = [{"phrase": "synthetic skill", "source_type": "jobs", "source_id": "synthetic"}]
+    save_ai_suggestions(tmp_path, records, [{"label": "Technical / Digital", "psf_competency": "SQL", "psf_score": 0.7}])
+    path = tmp_path / "data/processed/pretrained_label_suggestions.csv"
+    frame = pd.read_csv(path).drop(columns="psf_candidates_json")
+    frame.to_csv(path, index=False)
+    loaded = next(iter(load_ai_suggestions(tmp_path).values()))
+    assert [item["competency_name"] for item in loaded["psf_candidates"]] == ["SQL"]
+    assert psf_draft_candidates({"label": "IRRELEVANT", "psf_competency": "SQL", "psf_candidates": [{"competency_name": "SQL"}]}) == []
+    assert suggest_psf_competencies(records, pd.DataFrame())[0]["psf_candidates"] == []

@@ -6,9 +6,26 @@ address = "127.0.0.1"
 maxUploadSize = 500
 
 [theme]
-primaryColor = "#137C73"
-backgroundColor = "#F5F8F9"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#17313B"
+base = "light"
+primaryColor = "#11695F"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F6F7"
+textColor = "#203840"
 font = "sans serif"
 headingFont = "sans serif"
+baseFontSize = 16
+headingFontSizes = ["2.25rem", "1.65rem", "1.25rem", "1.1rem", "1rem", ".9rem"]
+headingFontWeights = [650, 600, 600, 600, 600, 600]
+borderColor = "#D8E2E4"
+baseRadius = "8px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+dataframeHeaderBackgroundColor = "#EDF3F3"
+dataframeHeaderTextColor = "#203840"
+chartCategoricalColors = ["#11695F", "#3568A0", "#956432", "#7757A3", "#B34B5E", "#527983", "#716B45"]
+chartSequentialColors = ["#F1F8F6", "#E1F0EC", "#CAE5DE", "#A9D4C9", "#83BFB0", "#5BA593", "#378A77", "#1D705F", "#11584B", "#0B4037"]
+
+[theme.sidebar]
+backgroundColor = "#F3F6F7"
+secondaryBackgroundColor = "#E7EEEE"

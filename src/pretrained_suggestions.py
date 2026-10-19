@@ -6,6 +6,7 @@ researcher-labeled training table by the Manual Labeling workflow.
 from functools import lru_cache
 from pathlib import Path
 import re
+import json
 import pandas as pd
 from .cleaning import normalize_text
 from .utils import digest, timestamp
@@ -17,6 +18,7 @@ MODEL_ID = "BAAI/bge-m3"
 MODEL_REVISION = "5617a9f61b028005a4858fdac845db406aefb181"
 PSF_MODEL_ID = MODEL_ID
 PSF_MODEL_REVISION = MODEL_REVISION
+PSF_DRAFT_LIMIT = 3
 _ENCODE_BATCH_SIZE = 8
 _LEADING_FRAGMENTS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"}
 _TRAILING_FRAGMENTS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"}
@@ -35,7 +37,7 @@ CATEGORY_DESCRIPTIONS = {
 _TOKEN = re.compile(r"[a-z0-9+#.]+", re.IGNORECASE)
 SUGGESTION_COLUMNS = [
     "suggestion_key", "normalized_phrase", "source_type", "source_id", "phrase",
-    "category", "category_score", "category_method", "psf_competency", "psf_score",
+    "category", "category_score", "category_method", "psf_competency", "psf_score", "psf_candidates_json",
     "category_model", "category_revision", "psf_model", "psf_revision", "generated_at", "context_model", "context_review", "context_reason",
 ]
 
@@ -165,7 +167,7 @@ def suggest_psf_competencies(records, taxonomy, encoder=None, candidate_vectors=
     records = list(records)
     taxonomy_rows = taxonomy.fillna("").to_dict("records") if hasattr(taxonomy, "fillna") else list(taxonomy)
     if not records or not taxonomy_rows:
-        return [{"psf_competency": "", "psf_score": None} for _ in records]
+        return [{"psf_competency": "", "psf_score": None, "psf_candidates": []} for _ in records]
     use_default_encoder = encoder is None
     if encoder is None:
         encoder = load_competency_encoder()
@@ -180,11 +182,22 @@ def suggest_psf_competencies(records, taxonomy, encoder=None, candidate_vectors=
     similarities = candidate_vectors @ competency_vectors.T
     suggestions = []
     for scores in similarities:
-        index = int(scores.argmax())
-        entry = taxonomy_rows[index]
+        ranked = sorted(range(len(scores)), key=lambda index: -float(scores[index]))
+        candidates, seen = [], set()
+        for index in ranked:
+            entry = taxonomy_rows[index]
+            name = str(entry.get("competency_name", "")).strip()
+            if not name or name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            candidates.append({"competency_id": str(entry.get("competency_id", "")),
+                               "competency_name": name, "score": float(scores[index])})
+            if len(candidates) == PSF_DRAFT_LIMIT:
+                break
         suggestions.append({
-            "psf_competency": str(entry.get("competency_name", "")),
-            "psf_score": float(scores[index]),
+            "psf_competency": candidates[0]["competency_name"] if candidates else "",
+            "psf_score": candidates[0]["score"] if candidates else None,
+            "psf_candidates": candidates,
             "psf_model": PSF_MODEL_ID,
             "psf_revision": PSF_MODEL_REVISION,
         })
@@ -197,7 +210,7 @@ def has_phrase_text(value):
 
 
 def suggest_labels(records, taxonomy, encoder=None):
-    """Return an AI category plus a PSF-AAI match suggestion for each phrase."""
+    """Return a category and ranked PSF-AAI candidates, never reviewed mappings."""
     records = list(records)
     if not records:
         return []
@@ -205,7 +218,7 @@ def suggest_labels(records, taxonomy, encoder=None):
     if not all(usable):
         valid = iter(suggest_labels([row for row, ok in zip(records, usable) if ok], taxonomy, encoder=encoder))
         return [next(valid) if ok else {"label": "IRRELEVANT", "score": None,
-                "category_method": "Empty or symbol-only phrase", "psf_competency": "", "psf_score": None,
+                "category_method": "Empty or symbol-only phrase", "psf_competency": "", "psf_score": None, "psf_candidates": [],
                 "model": MODEL_ID, "revision": MODEL_REVISION, "psf_model": PSF_MODEL_ID,
                 "psf_revision": PSF_MODEL_REVISION} for ok in usable]
     active_encoder = encoder if encoder is not None else load_competency_encoder()
@@ -217,11 +230,28 @@ def suggest_labels(records, taxonomy, encoder=None):
     for category, competency in zip(categories, competencies):
         # IRRELEVANT phrases have no competency assignment by definition.
         if category.get("label") == "IRRELEVANT":
-            competency = {"psf_competency": "", "psf_score": None,
+            competency = {"psf_competency": "", "psf_score": None, "psf_candidates": [],
                           "psf_model": PSF_MODEL_ID, "psf_revision": PSF_MODEL_REVISION}
         combined.append({**category, **competency})
     from .ollama_review import review_ambiguous
     return review_ambiguous(records, combined)
+
+
+def psf_draft_candidates(suggestion):
+    """Read ranked drafts, including existing files with a single legacy match."""
+    if suggestion.get("category", suggestion.get("label")) == "IRRELEVANT":
+        return []
+    candidates = suggestion.get("psf_candidates")
+    if candidates is None and suggestion.get("psf_candidates_json"):
+        try:
+            candidates = json.loads(suggestion["psf_candidates_json"])
+        except (ValueError, TypeError):
+            candidates = None
+    if isinstance(candidates, list):
+        return [item for item in candidates if isinstance(item, dict)
+                and isinstance(item.get("competency_name"), str) and item["competency_name"].strip()]
+    name = str(suggestion.get("psf_competency", "")).strip()
+    return [{"competency_id": "", "competency_name": name, "score": suggestion.get("psf_score")} ] if name else []
 
 
 def save_ai_suggestions(root, records, suggestions):
@@ -242,6 +272,7 @@ def save_ai_suggestions(root, records, suggestions):
             "category_method": str(suggestion.get("category_method", "BGE-M3 semantic similarity")),
             "psf_competency": str(suggestion.get("psf_competency", "")),
             "psf_score": suggestion.get("psf_score", ""),
+            "psf_candidates_json": json.dumps(psf_draft_candidates(suggestion), ensure_ascii=False),
             "category_model": str(suggestion.get("model", MODEL_ID)),
             "category_revision": str(suggestion.get("revision", MODEL_REVISION)),
             "psf_model": str(suggestion.get("psf_model", PSF_MODEL_ID)),
@@ -332,4 +363,7 @@ def load_ai_suggestions(root):
     frame.loc[invalid, "psf_competency"] = ""
     frame.loc[invalid, "category_method"] = "Empty or symbol-only phrase"
     frame.loc[invalid, ["category_score", "psf_score"]] = ""
-    return frame.drop_duplicates("suggestion_key", keep="last").set_index("suggestion_key").to_dict("index")
+    result = frame.drop_duplicates("suggestion_key", keep="last").set_index("suggestion_key").to_dict("index")
+    for suggestion in result.values():
+        suggestion["psf_candidates"] = psf_draft_candidates(suggestion)
+    return result

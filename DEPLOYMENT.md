@@ -4,6 +4,8 @@ The repository contains a Streamlit app, Supabase-backed shared records, a Docke
 
 ## Before deployment
 
+For an existing workspace upgrading to **2.0.19**, apply the new `supabase/migrations/20261018090000_occurrence_psf_mappings.sql` once before updating the application. It adds occurrence-specific, many-to-many PSF reviews, authenticated reviewer writes, optimistic version checks and audit history. The original annotation tables are retained. This migration needs verification in a Supabase staging environment; local Python tests do not exercise database permissions or SQL execution.
+
 1. In Supabase, apply the files in `supabase/migrations` in filename order if the project has not already been set up. Do not rerun migrations that have already been applied.
 2. Create one Auth account per team member and disable public sign-ups. In the Supabase SQL Editor, grant the coordinator and reviewers explicitly, substituting each account's exact email:
 

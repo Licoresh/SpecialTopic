@@ -18,6 +18,16 @@ def test_annotation_rejection(jobs):
     output, _ = extract_skills(jobs, "jobs", annotations=labels)
     assert "python" not in set(accepted_skills(output).matched_competency)
 
+
+def test_reviewed_psf_assignment_does_not_spread_between_ads(jobs, taxonomy):
+    labels = pd.DataFrame([{"normalized_phrase":"python", "label":"Technical / Digital",
+                            "psf_competency":"SQL", "source_id":jobs.source_id.iloc[0]}])
+    output, _ = extract_skills(jobs, "jobs", TaxonomyMatcher(taxonomy), annotations=labels)
+    python = output[output.normalized_phrase.eq("python")].set_index("source_id")
+    assert python.loc[jobs.source_id.iloc[0], "psf_competency"] == "SQL"
+    assert python.loc[jobs.source_id.iloc[1], "psf_competency"] == "Python"
+    assert python.loc[jobs.source_id.iloc[1], "matching_method"] != "human_annotation"
+
 def test_surface_phrase_annotation_survives_lemmatization(jobs):
     jobs.loc[0, "cleaned_text"] = "Models transform databases."
     labels = pd.DataFrame([{"normalized_phrase":"models", "label":"Research Category", "psf_competency":""}])

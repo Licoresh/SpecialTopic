@@ -50,6 +50,61 @@ def test_training_selection_and_evaluation(ui_workspace, labeled):
     evaluation.button[0].click().run(timeout=60)
     assert not evaluation.exception and not evaluation.error
 
+
+def test_overview_reports_actual_counts_and_keeps_all_workflow_actions(ui_workspace, jobs, taxonomy, labeled):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("mapped_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    save_annotations(labeled, "Synthetic reviewer")
+    app = page_app("Home")
+    assert not app.exception and not app.error
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["Clean job ads"] == f"{len(jobs):,}"
+    assert metrics["PSF-AAI competencies"] == f"{len(taxonomy):,}"
+    assert metrics["Phrase extraction"] == "Not started"
+    assert app.button(key="home_next_step").label == "Open phrase extraction"
+    assert all(app.button(key=f"home_workflow_{index:02d}") for index in range(1, 7))
+
+
+def test_review_no_search_results_keeps_filters_and_disables_saves(ui_workspace, jobs, taxonomy):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = page_app("Manual Labeling")
+    next(item for item in app.text_input if item.label == "Find candidate phrase").set_value("NO-SUCH-SYNTHETIC-PHRASE").run(timeout=60)
+    assert not app.exception and not app.error
+    assert any("No phrases match these filters" in item.value for item in app.info)
+    assert next(item for item in app.button if item.label == "Save annotations").disabled
+    assert next(item for item in app.button if item.label == "Generate AI suggestions for this page").disabled
+
+
+def test_mapping_review_saves_multiple_links_and_no_match(ui_workspace, jobs, taxonomy):
+    from src.psf_reviews import REVIEW_TABLE
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = page_app("PSF Mapping")
+    choice = next(item for item in app.multiselect if item.label == "PSF-AAI competencies")
+    choice.set_value(["TEST-1", "TEST-2"]).run(timeout=60)
+    next(item for item in app.text_input if item.label == "Reviewer ID").set_value("Synthetic reviewer")
+    reasons = [item for item in app.text_area if item.label == "Source evidence and rationale"]
+    assert len(reasons) == 2
+    reasons[0].set_value("Synthetic Python evidence")
+    reasons[1].set_value("Synthetic SQL evidence")
+    next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
+    next(item for item in app.button if item.label == "Save competency links").click().run(timeout=60)
+    assert not app.exception and not app.error
+    saved = storage.read_frame(REVIEW_TABLE)
+    assert set(saved.competency_id) == {"TEST-1", "TEST-2"}
+    assert saved.extraction_id.nunique() == 1
+    next(item for item in app.multiselect if item.label == "PSF-AAI competencies").set_value([]).run(timeout=60)
+    next(item for item in app.text_input if item.label == "Reviewer ID").set_value("Synthetic reviewer")
+    next(item for item in app.text_area if item.label == "Reason for no mapping").set_value("Synthetic rejection after review")
+    next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
+    next(item for item in app.button if item.label == "Save competency links").click().run(timeout=60)
+    assert not app.exception and not app.error
+    assert storage.read_frame(REVIEW_TABLE).competency_id.tolist() == [""]
+
 def test_training_disabled_with_no_or_insufficient_labels(ui_workspace, labeled):
     app = page_app("ML Training")
     assert app.button[0].disabled
@@ -81,7 +136,7 @@ def test_manual_labels_not_invented_from_candidates(ui_workspace, jobs):
     assert storage.read_frame("labeled_competencies").empty
     assert app.checkbox[0].value is False
 
-def test_manual_review_shows_repeated_phrase_once_with_ad_count(ui_workspace):
+def test_manual_review_keeps_source_specific_rows_with_ad_count(ui_workspace):
     import pandas as pd
     storage.save_frame("team_training_candidates", pd.DataFrame([
         {"phrase":"Python", "normalized_phrase":"python", "source_type":"jobs", "source_id":"SYNTH-1", "original_text":"Python used for reporting."},
@@ -90,7 +145,9 @@ def test_manual_review_shows_repeated_phrase_once_with_ad_count(ui_workspace):
     app = page_app("Manual Labeling")
     assert not app.exception and not app.error
     table = next(editor.value for editor in app.dataframe if "Source ads" in editor.value.columns)
-    assert len(table) == 1
+    assert len(table) == 2
+    assert set(table["Source advertisement"]) == {"SYNTH-1", "SYNTH-2"}
+    assert "Category" in table and "PSF-AAI competencies" in table
     assert table.iloc[0]["Phrase"].casefold() == "python"
     assert int(table.iloc[0]["Source ads"]) == 2
 
@@ -297,11 +354,15 @@ import streamlit as st
 suggestions = [{"label":"Soft / Enabling", "score":0.91, "incomplete_phrase":False,
                "model":MODEL_ID, "revision":MODEL_REVISION,
                "psf_competency":"communication skills", "psf_score":0.84,
+               "psf_candidates":[{"competency_id":"TEST-4", "competency_name":"communication skills", "score":0.84}, {"competency_id":"TEST-5", "competency_name":"data analysis", "score":0.72}],
                "psf_model":PSF_MODEL_ID, "psf_revision":PSF_MODEL_REVISION}]
 def leave_blank(frame, **kwargs):
     if "AI category draft" in frame.columns:
         assert frame.loc[frame.index[0], "Category"] == ""
-        assert frame.loc[frame.index[0], "PSF-AAI competency"] == ""
+        assert frame.iloc[0]["PSF-AAI competencies"] == []
+        assert frame.iloc[0]["AI PSF-AAI drafts"] == ["communication skills", "data analysis"]
+        assert "Context check" in frame.columns and "Context note" in frame.columns
+        assert {"Context check", "Context note"}.issubset(kwargs["disabled"])
         assert "Copy category draft" not in frame.columns
         assert "Copy PSF-AAI draft" not in frame.columns
     return frame
@@ -310,8 +371,12 @@ with patch("src.pretrained_suggestions.suggest_labels", return_value=suggestions
 '''
     app = AppTest.from_string(script).run(timeout=60)
     app.text_input(key="label_reviewer").set_value("Synthetic reviewer").run(timeout=60)
+    app.toggle(key="manual_review_fullscreen").set_value(True).run(timeout=60)
     suggest_button = next(button for button in app.button if button.label == "Generate AI suggestions for this page")
     suggest_button.click().run(timeout=60)
+    assert not app.exception
+    assert app.toggle(key="manual_review_fullscreen").value
+    assert not any(item.label == "AI context notes and competency drafts" for item in app.expander)
     assert storage.read_frame("labeled_competencies").empty
     assert (ui_workspace / "data/processed/pretrained_label_suggestions.csv").exists()
     assert next(button for button in app.button if button.label == "Save annotations").disabled
@@ -323,7 +388,6 @@ def explicitly_copy(frame, **kwargs):
         assert "Copy category draft" not in copied.columns
         copied.loc[copied.index[0], "Category"] = copied.iloc[0]["AI category draft"]
         assert "Copy PSF-AAI draft" not in copied.columns
-        copied.loc[copied.index[0], "PSF-AAI competency"] = copied.iloc[0]["AI PSF-AAI draft"]
     return copied
 with patch("streamlit.data_editor", side_effect=explicitly_copy):
     render("Manual Labeling")
@@ -333,7 +397,8 @@ with patch("streamlit.data_editor", side_effect=explicitly_copy):
     next(button for button in copied_app.button if button.label == "Save annotations").click().run(timeout=60)
     saved = storage.read_frame("labeled_competencies")
     assert saved.label.tolist() == ["Soft / Enabling"]
-    assert saved.psf_competency.tolist() == ["communication skills"]
+    assert saved.psf_competency.tolist() == [""]
+    assert storage.read_frame("psf_mapping_reviews").empty
     assert saved.reviewer.tolist() == ["Synthetic reviewer"]
 
 def test_settings_and_usability_save_actions(ui_workspace):
@@ -360,3 +425,153 @@ def test_correction_and_report_save_actions(ui_workspace, jobs, taxonomy):
     reports.button[0].click().run(timeout=60)
     assert not reports.exception and not reports.error
     assert len(list((ui_workspace/"outputs/reports").glob("*/research_results.xlsx"))) == 1
+
+
+def test_individual_csv_exports_are_generated_only_when_opened(ui_workspace, jobs, taxonomy, monkeypatch):
+    from unittest.mock import Mock
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    exporter = Mock(wraps=ui.export_csv)
+    monkeypatch.setattr(ui, "export_csv", exporter)
+    app = page_app("Reports")
+    assert not app.exception and not app.error
+    exporter.assert_not_called()
+    app.session_state["individual_exports"] = True
+    app.run(timeout=60)
+    assert not app.exception and not app.error
+    assert exporter.call_count > 0
+
+
+def test_training_reuses_file_inventory(ui_workspace, labeled, monkeypatch):
+    from unittest.mock import Mock
+    save_annotations(labeled, "Synthetic reviewer")
+    inventory = Mock(wraps=ui.inspect_training_folder)
+    monkeypatch.setattr(ui, "inspect_training_folder", inventory)
+    app = page_app("ML Training")
+    assert not app.exception and not app.error
+    inventory.assert_called_once()
+
+
+def table_mapping_app():
+    return AppTest.from_string('''from unittest.mock import patch
+import streamlit as st
+from src.ui import render
+original_editor = st.data_editor
+def edit(frame, **kwargs):
+    result = original_editor(frame, **kwargs)
+    if "PSF-AAI competencies" in result and not result.empty:
+        indices = result.index[result.Phrase.str.casefold().eq("python")]
+        if len(indices):
+            result.at[indices[0], "PSF-AAI competencies"] = ["TEST-1", "TEST-2"]
+            result.at[indices[0], "Category"] = "Technical / Digital"
+    return result
+with patch("streamlit.data_editor", side_effect=edit):
+    render("Manual Labeling")
+''').run(timeout=60)
+
+
+def test_manual_review_multiple_links_roundtrip_and_source_isolation(ui_workspace, jobs, taxonomy):
+    from src.psf_reviews import REVIEW_TABLE
+    from src.workflow import analysis_bundle
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = table_mapping_app()
+    assert not app.exception and not app.tabs
+    app.text_input(key="label_reviewer").set_value("Synthetic reviewer").run(timeout=60)
+    reasons = [item for item in app.text_area if item.label == "Source evidence and rationale"]
+    assert len(reasons) == 2
+    reasons[0].set_value("Synthetic evidence: Python scripting requirement.")
+    reasons[1].set_value("Synthetic evidence: SQL querying requirement.")
+    next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
+    app.toggle(key="manual_review_fullscreen").set_value(True).run(timeout=60)
+    app.toggle(key="manual_review_fullscreen").set_value(False).run(timeout=60)
+    reasons = [item for item in app.text_area if item.label == "Source evidence and rationale"]
+    assert reasons[0].value == "Synthetic evidence: Python scripting requirement."
+    assert reasons[1].value == "Synthetic evidence: SQL querying requirement."
+    app.toggle(key="manual_review_fullscreen").set_value(True).run(timeout=60)
+    next(item for item in app.button if item.label == "Save annotations").click().run(timeout=60)
+    assert not app.exception and not app.error
+    assert app.toggle(key="manual_review_fullscreen").value
+    saved = storage.read_frame(REVIEW_TABLE)
+    assert set(saved.competency_id) == {"TEST-1", "TEST-2"}
+    assert saved.source_id.nunique() == 1
+    occurrence_id = saved.extraction_id.iloc[0]
+    labels = storage.read_frame("labeled_competencies")
+    assert labels.source_id.nunique() == 2
+    assert labels.label.eq("Technical / Digital").all()
+    assert labels.psf_competency.eq("").all()
+    app = page_app("Manual Labeling")
+    next(item for item in app.checkbox if item.label == "Only show phrases awaiting category review").uncheck()
+    next(item for item in app.text_input if item.label == "Find candidate phrase").set_value("python").run(timeout=60)
+    table = next(editor.value for editor in app.dataframe if "PSF-AAI competencies" in editor.value)
+    reviewed = table[table["Source advertisement"].eq(saved.source_id.iloc[0])]
+    assert set(reviewed.iloc[0]["PSF-AAI competencies"]) == {"TEST-1", "TEST-2"}
+    others = table[~table["Source advertisement"].eq(saved.source_id.iloc[0])]
+    assert all(len(value) == 0 for value in others["PSF-AAI competencies"])
+    tables, _ = analysis_bundle()
+    mapping = tables["psf_mapping"]
+    assert set(mapping.loc[mapping.extraction_id.eq(occurrence_id), "competency_id"]) == {"TEST-1", "TEST-2"}
+    assert mapping.loc[mapping.extraction_id.eq(occurrence_id), "mapping_review_status"].eq("REVIEWED").all()
+    assert not mapping.loc[~mapping.extraction_id.eq(occurrence_id), "mapping_review_status"].eq("REVIEWED").any()
+
+
+def test_manual_review_requires_each_rationale_before_saving_categories(ui_workspace, jobs, taxonomy):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = table_mapping_app()
+    app.text_input(key="label_reviewer").set_value("Synthetic reviewer").run(timeout=60)
+    next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
+    next(item for item in app.button if item.label == "Save annotations").click().run(timeout=60)
+    assert not app.exception
+    assert any("every selected competency" in error.value for error in app.error)
+    assert storage.read_frame("psf_mapping_reviews").empty
+    assert storage.read_frame("labeled_competencies").empty
+
+
+@pytest.mark.parametrize("page", ["Manual Labeling", "PSF Mapping"])
+def test_account_identity_replaces_manual_reviewer_prompt(ui_workspace, jobs, taxonomy, page):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = table_mapping_app() if page == "Manual Labeling" else page_app(page)
+    app.session_state["supabase_user_email"] = "synthetic-reviewer@example.test"
+    app.run(timeout=60)
+    if page == "PSF Mapping":
+        next(item for item in app.multiselect if item.label == "PSF-AAI competencies").set_value(["TEST-1", "TEST-2"]).run(timeout=60)
+    assert not any(item.label == "Reviewer ID" for item in app.text_input)
+    assert not any("Enter your Reviewer ID" in item.value for item in app.caption)
+    reasons = [item for item in app.text_area if item.label == "Source evidence and rationale"]
+    reasons[0].set_value("Synthetic Python scripting evidence.")
+    reasons[1].set_value("Synthetic SQL querying evidence.")
+    next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
+    label = "Save annotations" if page == "Manual Labeling" else "Save competency links"
+    next(item for item in app.button if item.label == label).click().run(timeout=60)
+    assert not app.exception and not app.error
+    saved = storage.read_frame("psf_mapping_reviews")
+    assert len(saved) == 2
+    assert saved.reviewer.eq("synthetic-reviewer@example.test").all()
+    if page == "Manual Labeling":
+        assert storage.read_frame("labeled_competencies").reviewer.eq("synthetic-reviewer@example.test").all()
+
+
+def test_combined_review_reports_partial_storage_failure(ui_workspace, jobs, taxonomy, monkeypatch):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = table_mapping_app()
+    app.text_input(key="label_reviewer").set_value("Synthetic reviewer").run(timeout=60)
+    reasons = [item for item in app.text_area if item.label == "Source evidence and rationale"]
+    reasons[0].set_value("Synthetic Python evidence")
+    reasons[1].set_value("Synthetic SQL evidence")
+    next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
+    def fail_mapping(*args, **kwargs):
+        raise ui.supabase_store.SupabaseError("Synthetic storage failure")
+    monkeypatch.setattr(ui, "save_mapping_review", fail_mapping)
+    next(item for item in app.button if item.label == "Save annotations").click().run(timeout=60)
+    assert not app.exception
+    assert any("Partial save: category annotations were saved; 0" in warning.value for warning in app.warning)
+    assert not storage.read_frame("labeled_competencies").empty
+    assert storage.read_frame("psf_mapping_reviews").empty
