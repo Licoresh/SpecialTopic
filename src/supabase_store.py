@@ -13,10 +13,12 @@ import base64
 import gzip
 import io
 import json
+from pathlib import Path
 from functools import wraps
 
 import requests
 import streamlit as st
+from .config import ROOT
 
 
 class SupabaseError(RuntimeError):
@@ -49,8 +51,36 @@ def session_cached(function):
     return wrapped
 
 
+def _read_dotenv(path: Path) -> dict[str, str]:
+    """Read simple KEY=VALUE entries without overriding process environment."""
+    values = {}
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, separator, value = line.partition("=")
+        if not separator or not key.strip():
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].rstrip()
+        values[key.strip()] = value
+    return values
+
+
 def _setting(name: str) -> str:
     value = os.environ.get(name, "")
+    if value:
+        return value.strip()
+    value = _read_dotenv(ROOT / ".env").get(name, "")
     if value:
         return value.strip()
     try:

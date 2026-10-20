@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 
-VERSION = "2.0.50"
+VERSION = "2.0.52"
 ROOT = Path(os.environ.get("FOW_HOME", Path(__file__).resolve().parents[1]))
 SEED = 42
 FIELDS = {

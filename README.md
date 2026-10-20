@@ -18,9 +18,9 @@ The app uses [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3), pinned to a fixe
 
 ## Shared team workspace with Supabase
 
-The app can use Supabase Auth and a shared Postgres-backed workspace while continuing to keep local CSV backups. Copy `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` into `.streamlit/secrets.toml` for local use, or into the hosting provider's Streamlit secrets when deployed. Do not add secret keys or passwords to Git. The app uses each researcher's Auth session and Row Level Security; it does not need a Supabase secret/service-role key.
+The app can use Supabase Auth and a shared Postgres-backed workspace while continuing to keep local CSV backups. For local use, configure `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` in the ignored project `.env` file or `.streamlit/secrets.toml`; deployed Streamlit hosts use their private secrets settings. The app reads `.env` directly. Do not add secret keys or passwords to Git. The app uses each researcher's Auth session and Row Level Security; it does not need a Supabase secret/service-role key.
 
-Git updates deliver code and the bundled PSF-AAI reference, not ignored job uploads, annotations, `.env` files, or local results. Existing clones must run `git pull origin main`; each teammate must also configure the shared Supabase secrets to see shared job data, or upload the job dataset on their device.
+Git updates deliver code and the bundled PSF-AAI reference, not ignored job uploads, annotations, `.env` files, or local results. Existing clones must run `git pull origin main`; each teammate must configure the same Supabase project and have active workspace membership. The cleaned job dataset is shared after **Save cleaned dataset** succeeds. To share a dataset that was already saved locally before Supabase was configured, an admin must use **Settings → Shared team workspace → Copy local workspace to shared database** once. The original raw CSV stays on the uploader's computer; teammates need it only if they must remap or rebuild the cleaned table.
 
 1. For a new Supabase project, apply `supabase/migrations/*.sql` once in filename order. The connected project already has these migrations.
 2. Disable public sign-ups, create an Auth account for each teammate, and explicitly add their user ID to `research_members` with role `reviewer` (or `admin` for the coordinator).

@@ -6,6 +6,23 @@ from openpyxl import load_workbook
 from .validation import validate_mapping
 from .config import FIELDS
 
+
+def _unique_headers(headers):
+    """Keep every source column while making blank or repeated labels addressable."""
+    names, changes, used = [], [], set()
+    for index, header in enumerate(headers, start=1):
+        original = "" if header is None else str(header).strip()
+        base = original or f"unnamed_column_{index}"
+        candidate, suffix = base, 2
+        while candidate.casefold() in used:
+            candidate = f"{base}__{suffix}"
+            suffix += 1
+        used.add(candidate.casefold())
+        names.append(candidate)
+        if candidate != original:
+            changes.append({"source_header": original or "(blank)", "imported_as": candidate})
+    return names, changes
+
 def load_data(content, filename, sheet=0, encoding="utf-8-sig"):
     if not content:
         raise ValueError("The uploaded file is empty.")
@@ -15,22 +32,26 @@ def load_data(content, filename, sheet=0, encoding="utf-8-sig"):
             text = content.decode(encoding)
             reader = csv.reader(StringIO(text))
             header = next(reader, [])
-            if not header or len(set(header)) != len(header) or any(not x.strip() for x in header):
-                raise ValueError("CSV headers must be nonempty and unique.")
+            if not header:
+                raise ValueError("CSV header row is empty.")
+            headers, header_changes = _unique_headers(header)
             for ordinal, row in enumerate(reader, start=2):
                 if row and len(row) != len(header):
                     raise ValueError(f"CSV record {ordinal} has {len(row)} fields but the header has {len(header)}. Check delimiters and quoting.")
-            frame = pd.read_csv(StringIO(text), dtype=str, keep_default_na=False)
+            frame = pd.read_csv(StringIO(text), dtype=str, keep_default_na=False,
+                                header=0, names=headers)
         elif ext == ".xlsx":
             book = load_workbook(BytesIO(content), read_only=True, data_only=True)
             try:
                 ws = book.worksheets[sheet] if isinstance(sheet, int) else book[sheet]
                 header = next(ws.values, ())
-                if not header or None in header or len(set(header)) != len(header):
-                    raise ValueError("XLSX headers must be nonempty and unique.")
+                if not header:
+                    raise ValueError("XLSX header row is empty.")
+                headers, header_changes = _unique_headers(header)
             finally:
                 book.close()
             frame = pd.read_excel(BytesIO(content), sheet_name=sheet, dtype=str, keep_default_na=False)
+            frame.columns = headers
         else:
             raise ValueError("Use a CSV or XLSX file.")
     except UnicodeDecodeError as exc:
@@ -43,11 +64,7 @@ def load_data(content, filename, sheet=0, encoding="utf-8-sig"):
         raise ValueError("The file is not a readable CSV/XLSX workbook.") from exc
     if frame.empty:
         raise ValueError("The file contains no data rows.")
-    frame.columns = frame.columns.astype(str).str.strip()
-    if any(not col for col in frame.columns):
-        raise ValueError("Column headers must not be blank.")
-    if frame.columns.duplicated().any():
-        raise ValueError("Column names become duplicates after trimming spaces.")
+    frame.attrs["header_changes"] = header_changes
     return frame.fillna("")
 
 def map_columns(frame, mapping, kind, dataset_hash):

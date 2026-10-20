@@ -26,6 +26,20 @@ def test_empty_cloud_annotations_have_schema(shared, monkeypatch):
     assert result.empty and set(ANNOTATION_COLUMNS).issubset(result)
 
 
+def test_local_dotenv_reader_handles_comments_quotes_and_export(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "# local shared-workspace settings\n"
+        "SUPABASE_URL=https://example.test # comment\n"
+        "export SUPABASE_PUBLISHABLE_KEY='public-test-key'\n",
+        encoding="utf-8",
+    )
+    assert backend._read_dotenv(dotenv) == {
+        "SUPABASE_URL": "https://example.test",
+        "SUPABASE_PUBLISHABLE_KEY": "public-test-key",
+    }
+
+
 def test_no_local_fallback_when_shared_is_empty(shared, workspace, monkeypatch):
     (workspace / "data/processed/cleaned_jobs.csv").write_text("job_id\nLOCAL-PRIVATE\n")
     monkeypatch.setattr(backend, "_request", lambda *a, **k: [])

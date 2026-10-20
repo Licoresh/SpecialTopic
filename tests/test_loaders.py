@@ -18,10 +18,21 @@ def test_csv_xlsx_and_column_mapping():
         assert mapped.job_description.iloc[0] == "C++ and SQL"
         assert mapped.source_id.iloc[0] == "jobs:testhash:2"
 
-@pytest.mark.parametrize("content,name", [(b"", "a.csv"), (b"a,a\n1,2", "a.csv"), (b"a\n", "a.csv"), (b"bad", "a.xlsx"), (b"a\n1", "a.txt"), (b" a,a \n1,2", "a.csv"), (b"a,b\n1,2,3", "a.csv")])
+@pytest.mark.parametrize("content,name", [(b"", "a.csv"), (b"a\n", "a.csv"), (b"bad", "a.xlsx"), (b"a\n1", "a.txt"), (b"a,b\n1,2,3", "a.csv")])
 def test_invalid_files(content, name):
     with pytest.raises(ValueError):
         load_data(content, name)
+
+
+def test_duplicate_and_blank_csv_headers_are_kept_as_unique_columns():
+    loaded = load_data(b"job_title,source_name,source_name,\nAnalyst,first,second,extra\n", "ads.csv")
+
+    assert loaded.columns.tolist() == ["job_title", "source_name", "source_name__2", "unnamed_column_4"]
+    assert loaded.iloc[0].tolist() == ["Analyst", "first", "second", "extra"]
+    assert loaded.attrs["header_changes"] == [
+        {"source_header": "source_name", "imported_as": "source_name__2"},
+        {"source_header": "(blank)", "imported_as": "unnamed_column_4"},
+    ]
 
 def test_encoding_and_mapping_errors():
     content = "text\ncafé".encode("cp1252")

@@ -375,6 +375,8 @@ def upload(kind=None):
         "Upload the selected study dataset. The original file is archived unchanged; review its column matches before saving."
     )
     page_intro(title, description)
+    if kind == "jobs":
+        st.caption("The original CSV stays on the computer that uploaded it. After cleaning, the active job dataset is shared through Supabase with signed-in teammates.")
     template = (Path(__file__).resolve().parents[1] / "data/templates" / f"{kind}_template.csv")
     if template.exists():
         st.download_button("Download blank template", template.read_bytes(), template.name, "text/csv")
@@ -415,6 +417,11 @@ def upload(kind=None):
         frame = load_data_with_skeleton(
             lambda: cached_load(content, uploaded.name, sheet, encoding), height=220
         )
+        header_changes = frame.attrs.get("header_changes", [])
+        if header_changes:
+            st.info("Repeated or blank column headers were given unique names for mapping. The uploaded source remains unchanged.")
+            with st.expander(f"Review {len(header_changes)} adjusted column header(s)"):
+                display(pd.DataFrame(header_changes))
         display(frame.head(50))
         st.caption(f"{len(frame):,} rows. Preview shows at most 50.")
         if action_button("Save raw upload", type="primary"):
@@ -579,7 +586,10 @@ def quality():
         storage.save_frame("cleaned_"+kind, cleaned)
         storage.save_frame("quality_"+kind, report)
         storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": frame_hash(frame), "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False})
-        st.success("Cleaned data and quality report saved. Re-run extraction if analysis inputs changed.")
+        if kind == "jobs" and supabase_store.configured():
+            st.success("Cleaned job data and its quality report are saved to the shared workspace. Teammates can refresh to use the same dataset; the original CSV remains on the uploader’s computer.")
+        else:
+            st.success("Cleaned data and its quality report are saved on this computer. Configure Supabase to share them with teammates.")
 
 def extraction():
     page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
@@ -1703,6 +1713,9 @@ def settings_page():
     st.subheader("Shared team workspace")
     if supabase_store.configured():
         st.success("Supabase is connected. Saved tables and settings are shared with signed-in teammates; local CSVs remain as backups.")
+        local_jobs_path = Path(ROOT) / "data/processed/cleaned_jobs.csv"
+        if local_jobs_path.is_file() and storage.read_frame("cleaned_jobs").empty:
+            st.warning("This computer has a cleaned job dataset, but the shared workspace does not yet. An admin can copy it below; teammates will then see it after refreshing.")
         st.caption("To copy this computer's existing processed tables into empty shared slots, use the one-time import below. Existing shared rows are preserved.")
         if action_button("Copy local workspace to shared database", type="secondary"):
             with st.spinner("Copying local processed tables and annotations to Supabase…"):
