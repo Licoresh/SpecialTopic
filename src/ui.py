@@ -139,10 +139,17 @@ def display(frame):
     if frame.empty:
         st.caption("No records to display for the current selection.")
     text_columns = {key: st.column_config.TextColumn(width="large") for key in
-                    ("original_text", "job_description", "rationale", "interpretation", "competency_description") if key in frame}
+                    ("original_text", "job_description", "rationale", "interpretation", "competency_description", "range_of_application") if key in frame}
     st.dataframe(frame, width="stretch", hide_index=True, row_height=38,
                  column_config=text_columns, height=min(480, max(100, 40 + 38 * len(frame))),
                  alt=f"Research data table with {len(frame):,} rows. Use the table toolbar to search or download.")
+
+
+def _paginate_frame(frame, page, page_size=100):
+    total_pages = max(1, (len(frame) + page_size - 1) // page_size)
+    page = min(max(int(page), 1), total_pages)
+    start = (page - 1) * page_size
+    return frame.iloc[start:start + page_size], page, total_pages
 
 def chart(fig):
     from .visualization import style_chart
@@ -190,7 +197,7 @@ def current_analysis():
         st.info("Upload, map and clean data, then run Competency Extraction to create results.")
         return False
     signature = _session_cached_value("_fow_signature_cache", "active", input_signature,
-                                     ttl=4, max_entries=1)
+                                     ttl=15, max_entries=1)
     st.session_state["_current_analysis_signature"] = signature
     if meta.get("signature") != signature:
         st.warning("Inputs, labels, settings or the selected model changed. Run Competency Extraction again before interpreting or exporting results.")
@@ -353,12 +360,45 @@ def home():
         st.caption("No classifier has been trained. AI-generated phrase suggestions are drafts; they do not count as reviewed labels or model results.")
 
 
-def upload(kind="jobs"):
-    page_intro("Upload job data" if kind == "jobs" else "Upload supporting data",
-               "Add the Philippine job-ad dataset for this study. Your original file is archived unchanged; you can review the automatic column matches before saving.")
+def upload(kind=None):
+    if kind is None:
+        kind = st.selectbox(
+            "Dataset to upload",
+            ["jobs", "psf_aai"],
+            format_func=lambda value: {
+                "jobs": "Job advertisements (500-study dataset)",
+                "psf_aai": "TESDA PSF-AAI reference",
+            }[value],
+        )
+    title = "Upload job data" if kind == "jobs" else "Upload PSF-AAI reference"
+    description = (
+        "Upload the selected study dataset. The original file is archived unchanged; review its column matches before saving."
+    )
+    page_intro(title, description)
     template = (Path(__file__).resolve().parents[1] / "data/templates" / f"{kind}_template.csv")
     if template.exists():
         st.download_button("Download blank template", template.read_bytes(), template.name, "text/csv")
+    if kind == "jobs":
+        uploads = storage.read_json("uploads", {})
+        job_entry, psf_entry = uploads.get("jobs", {}), uploads.get("psf_aai", {})
+        if (job_entry.get("filename") == "psf_aai_range_review_draft.csv"
+                and job_entry.get("hash") == psf_entry.get("hash")
+                and psf_entry.get("filename") == "psf_aai_range_review_draft.csv"):
+            with st.container(border=True):
+                st.warning("The PSF-AAI draft was also saved as a job upload. The matching PSF reference copy will be kept.")
+                if action_button("Remove mistaken PSF draft from job uploads", key="remove_misfiled_psf_range"):
+                    storage.remove_misfiled_psf_range_upload()
+                    st.success("Removed the mistaken jobs upload. The PSF-AAI reference copy and job dataset were preserved.")
+    if kind == "psf_aai":
+        draft = Path(__file__).resolve().parents[1] / "data/processed/psf_aai_range_review_draft.csv"
+        if draft.is_file() and action_button(
+            "Load prepared Range of Application draft",
+            help="Imports the prepared TESDA PDF draft as source data. It still needs researcher review before activation.",
+            key="load_psf_range_draft",
+        ):
+            storage.archive_raw(draft.read_bytes(), draft.name, kind)
+            storage.save_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
+            st.success("PSF-AAI draft imported. Review its column mapping below; the active reference is unchanged until researcher review.")
     uploaded = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"])
     st.caption("Accepted formats: CSV and Excel (.xlsx). Preview the file, save the original, then review its column mapping.")
     encoding = st.selectbox("CSV encoding", ["utf-8-sig", "cp1252", "utf-16"])
@@ -410,8 +450,13 @@ def column_mapping(kind="jobs"):
     with st.expander("Automatic matching details"):
         display(pd.DataFrame(evidence))
         st.caption("Scores measure header similarity, not validated mapping accuracy. Source content is not sent to an AI service.")
-    if any(suggested.get(field) for field in ("job_title", "job_description", "required_skills", "qualifications")):
-        if action_button("Apply automatic mapping", type="primary", help="Save the clear header matches shown above. You can still change them in the form below."):
+    mapping_fields = (("competency_id", "competency_name", "range_of_application") if kind == "psf_aai"
+                      else ("job_title", "job_description", "required_skills", "qualifications"))
+    if any(suggested.get(field) for field in mapping_fields):
+        help_text = ("Save the detected PSF-AAI columns, including Range of Application. Review them before activation."
+                     if kind == "psf_aai" else
+                     "Save the clear job-ad header matches shown above. You can still change them in the form below.")
+        if action_button("Apply automatic mapping", type="primary", help=help_text):
             mapped = map_columns(frame, suggested, kind, entry["hash"])
             if kind == "psf_aai":
                 validate_taxonomy(mapped)
@@ -440,6 +485,68 @@ def column_mapping(kind="jobs"):
             st.session_state[f"{scope}_{field}"] = column
     action_button("Re-detect columns", on_click=reset_suggestions, help="Replace these selections with fresh header-based suggestions; save to apply them.")
 
+def _persist_psf_reference_files(verified=None, *, force=False):
+    """Sync an already reviewed local framework and its state to shared storage."""
+    if verified is None:
+        path = Path(storage.ROOT) / "data/processed/verified_psf_aai.csv"
+        verified = pd.read_csv(path, dtype=str, keep_default_na=False)
+    from .psf_source import enrich_verified_profiles
+    official_pdf = Path(storage.ROOT) / "data/reference/psf_aai_official.pdf"
+    refreshed = False
+    if official_pdf.is_file():
+        verified, refreshed = enrich_verified_profiles(verified, official_pdf)
+    if not refreshed and not force:
+        return False
+    processed = Path(storage.ROOT) / "data/processed"
+    if verified.empty:
+        raise ValueError("No saved reviewed PSF-AAI framework is available to sync.")
+    if ("review_status" not in verified or not verified.review_status.eq("Researcher verified").all()
+            or "reviewer" not in verified or verified.reviewer.str.strip().eq("").any()
+            or "review_timestamp" not in verified or verified.review_timestamp.str.strip().eq("").any()):
+        raise ValueError("The saved PSF-AAI table is missing researcher verification details; review and save it again first.")
+    if any(column not in verified or verified[column].astype(str).str.strip().eq("").any()
+           for column in ("source_page", "source_url")):
+        raise ValueError("The saved PSF-AAI table is missing source page or URL provenance; review and save it again first.")
+    validate_taxonomy(verified)
+    mapped = map_columns(verified, {column: column for column in FIELDS["psf_aai"] if column in verified},
+                         "psf_aai", frame_hash(verified))
+    cleaned, _ = clean_dataset(mapped, "psf_aai")
+    storage.save_frame("verified_psf_aai", verified)
+    storage.save_frame("mapped_psf_aai", mapped)
+    storage.save_frame("cleaned_psf_aai", cleaned)
+    storage.save_json("mapping_psf_aai", {column: column for column in FIELDS["psf_aai"] if column in mapped})
+    storage.save_json("cleaning_psf_aai", {
+        "timestamp": timestamp(), "source_hash": frame_hash(mapped),
+        "reviewer": "; ".join(sorted(verified.reviewer.astype(str).str.strip().unique())), "verified": True,
+    })
+    # Keep uploaded bytes archived; the verified table replaces its pending draft.
+    uploads = storage.read_json("uploads", {})
+    uploads.pop("psf_aai", None)
+    storage.save_json("uploads", uploads)
+    return refreshed
+
+
+def activate_psf_reference(frame, reviewer):
+    """Activate a reviewed PSF table in both local and shared storage."""
+    from .psf_source import activate_framework
+    activate_framework(frame, reviewer, storage.ROOT)
+    _persist_psf_reference_files(force=True)
+
+
+def _local_verified_psf_available():
+    path = Path(storage.ROOT) / "data/processed/verified_psf_aai.csv"
+    if not path.is_file():
+        return False
+    try:
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        return bool(not frame.empty and frame.review_status.eq("Researcher verified").all()
+                    and frame.reviewer.str.strip().ne("").all()
+                    and frame.review_timestamp.str.strip().ne("").all())
+    except (OSError, ValueError, KeyError):
+        return False
+    return verified
+
+
 def quality():
     page_intro("Review data quality", "Check the uploaded job-ad columns and the cleaned preview, then save the job table used by the analysis.")
     kind = st.selectbox("Dataset", list(FIELDS), format_func=lambda value: {"jobs": "Job advertisements", "psf_aai": "PSF-AAI reference", "stakeholder": "Stakeholder responses"}.get(value, value))
@@ -466,8 +573,7 @@ def quality():
         if kind == "psf_aai":
             if not confirmed:
                 raise ValueError("Review the framework source pages before activating this table.")
-            from .psf_source import activate_framework
-            activate_framework(frame, reviewer, storage.ROOT)
+            activate_psf_reference(frame, reviewer)
             st.success("Reviewed PSF reference activated. Re-run extraction.")
             return
         storage.save_frame("cleaned_"+kind, cleaned)
@@ -479,6 +585,12 @@ def extraction():
     page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
     with st.expander("How extraction works", expanded=False):
         st.write("Previously approved labels are attached when a normalized phrase matches the reviewed dataset. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
+    if storage.read_json("uploads", {}).get("psf_aai") and _local_verified_psf_available():
+        st.warning("Your reviewed PSF-AAI framework is saved on this computer but has not reached the shared workspace.")
+        if action_button("Sync saved PSF-AAI framework", key="sync_saved_psf_framework", type="secondary"):
+            refreshed = _persist_psf_reference_files(force=True)
+            st.success("Reviewed framework synced" + (" with full competency profiles." if refreshed else ".") + " You can run extraction now.")
+            st.rerun()
     taxonomy = load_data_with_skeleton(lambda: storage.read_frame("cleaned_psf_aai"), height=120)
     if taxonomy.empty:
         st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
@@ -489,10 +601,27 @@ def extraction():
             st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     if action_button("Run extraction and classification", type="primary"):
         with st.skeleton(height=240):
+            uploads = storage.read_json("uploads", {})
+            if uploads.get("psf_aai") and _local_verified_psf_available():
+                _persist_psf_reference_files(force=True)
+            else:
+                verified = storage.read_frame("verified_psf_aai")
+                if not verified.empty:
+                    _persist_psf_reference_files(verified)
             cached_nlp()
             result = run_extraction()
+        st.session_state["_extraction_results_frame"] = result.drop(columns=["original_text"], errors="ignore")
+        st.session_state["_extraction_results_page"] = 1
         st.success(f"Saved {len(result):,} candidate/match records with evidence.")
-    result = load_data_with_skeleton(lambda: storage.read_frame("extractions_original"), height=220)
+    if action_button("Refresh saved results", type="secondary", icon=":material/refresh:", action_id="refresh_extraction_results"):
+        st.session_state.pop("_extraction_results_frame", None)
+        st.session_state["_extraction_results_page"] = 1
+        st.rerun()
+    if "_extraction_results_frame" not in st.session_state:
+        st.session_state["_extraction_results_frame"] = load_data_with_skeleton(
+            lambda: storage.read_frame("extractions_original", include_source_text=False), height=220
+        )
+    result = st.session_state["_extraction_results_frame"]
     if not result.empty:
         approved = result.human_label.fillna("").astype(str).str.strip().ne("") if "human_label" in result else pd.Series(False, index=result.index)
         metrics = st.columns(3)
@@ -507,7 +636,19 @@ def extraction():
         elif choice == "Accepted detections":
             accepted = result.accepted.astype(str).str.casefold().eq("true")
             result = result[accepted]
-        display(result)
+        if result.empty:
+            st.caption("No rows match this view.")
+        else:
+            page_key = "_extraction_results_page"
+            current_page = min(max(int(st.session_state.get(page_key, 1)), 1), (len(result) + 99) // 100)
+            st.session_state[page_key] = current_page
+            page = st.number_input("Results page", min_value=1, max_value=(len(result) + 99) // 100,
+                                   value=current_page, step=1, key=page_key)
+            visible, page, _ = _paginate_frame(result, page)
+            first_row = (page - 1) * 100 + 1
+            last_row = min(page * 100, len(result))
+            st.caption(f"Showing {first_row:,}–{last_row:,} of {len(result):,} rows. Full results stay saved; only this page is sent to your browser.")
+            display(visible)
         diagnostics = load_data_with_skeleton(lambda: storage.read_frame("nlp_processed"), height=140)
         if not diagnostics.empty and diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").any():
             limited = int(diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").sum())
@@ -757,9 +898,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
 
     if not shown.empty:
         with detail_tools, st.popover("AI details", icon=":material/auto_awesome:"):
-            from .ollama_review import configured_model
-            context_model = configured_model()
-            st.caption(f"Context checker: {context_model}" if context_model else "Context checker disabled; BGE-M3 drafts only.")
             st.caption(f"{MODEL_ID} · revision {MODEL_REVISION[:8]} · CPU. First use downloads about 2.3 GB. Similarity scores rank suggestions; they are not accuracy measurements.")
         if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
             st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
@@ -806,8 +944,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         }
         if has_page_suggestions:
             table_row.update({
-                "Context check": suggestion.get("context_review") or "Not checked",
-                "Context note": suggestion.get("context_reason") or "Regenerate this page to obtain current context checks.",
                 "AI category draft": suggestion.get("category", "") if suggestion.get("category", "") in LABELS else "",
                 "AI PSF-AAI drafts": [item["competency_name"] for item in psf_draft_candidates(suggestion)],
             })
@@ -829,10 +965,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         table_config.update({
             "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
             "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
-            "Context check": st.column_config.TextColumn(width=180, disabled=True),
-            "Context note": st.column_config.TextColumn(width=420, disabled=True, help="AI context assessment. Double-click a cell to read its full note."),
         })
-        disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts", "Context check", "Context note"])
+        disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts"])
     @st.fragment
     def review_editor():
         nonlocal labels
@@ -863,10 +997,10 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             width="stretch",
             disabled=disabled_columns,
             column_config=table_config,
-            column_order=["Phrase", "Category", "PSF-AAI competencies"] + (["AI category draft", "AI PSF-AAI drafts", "Context check", "Context note"] if has_page_suggestions else []) + ["Source ads", "Source advertisement"],
+            column_order=["Phrase", "Category", "PSF-AAI competencies"] + (["AI category draft", "AI PSF-AAI drafts"] if has_page_suggestions else []) + ["Source ads", "Source advertisement"],
             row_height=52,
             height=min(580, 52 * len(manual_table) + 40),
-            alt="Manual review: phrase, category, selected competencies, AI drafts, context and source advertisement",
+            alt="Manual review: phrase, category, selected competencies, AI drafts and source advertisement",
             key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
         ) if not manual_table.empty else manual_table
         st.session_state[draft_key] = edited_table.copy()
@@ -901,6 +1035,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                         continue
                     st.write(reference.loc[competency, "competency_name"])
                     st.caption(str(reference.loc[competency].get("competency_description", "")))
+                    if reference.loc[competency].get("range_of_application", ""):
+                        st.caption("Range of application: " + str(reference.loc[competency]["range_of_application"]))
                     reasons[competency] = st.text_area("Source evidence and rationale", value=old_reasons.get(competency, ""), key=key + "_" + competency)
                 no_match = st.text_area("Reason for no mapping", value=old_reasons.get("", ""), key=key + "_none") if not selected else ""
                 confirmed = st.checkbox("I checked the source context and each selected competency; every link is justified.", key=key + "_confirmed_" + digest(selected)[:8])
@@ -1196,6 +1332,8 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
     if skills.empty or taxonomy.empty:
         st.info("Accepted skill occurrences and an active PSF-AAI reference are required to review links.")
         return
+    if "range_of_application" not in taxonomy or taxonomy.range_of_application.fillna("").astype(str).str.strip().eq("").all():
+        st.caption("The active TESDA PDF has no separate Range of Application field; no range text is available to compare.")
     if st.session_state.pop(f"{prefix}_review_saved", False):
         st.success("Competency links saved. Other advertisements keep their own mappings.")
     occurrences = skills.drop_duplicates("extraction_id").set_index("extraction_id")
@@ -1244,6 +1382,8 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
         for key in chosen:
             st.write(reference.loc[key, "competency_name"])
             st.caption(str(reference.loc[key].get("competency_description", "")) or "No description supplied in the active reference.")
+            if reference.loc[key].get("range_of_application", ""):
+                st.caption("Range of application: " + str(reference.loc[key]["range_of_application"]))
             reasons[key] = st.text_area("Source evidence and rationale", value=old_reasons.get(key, ""),
                                         key=f"psf_reason_{revision}_{key}",
                                         help="Explain how the phrase in this advertisement corresponds to this specific competency.")
@@ -1329,12 +1469,18 @@ def research_page(page):
         display(tables["psf_mapping"])
     elif page == "Employer–PSF Alignment":
         st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
+        active_reference = storage.read_frame("cleaned_psf_aai")
+        has_range = ("range_of_application" in active_reference and
+                     active_reference.range_of_application.fillna("").astype(str).str.strip().ne("").any())
+        st.caption("Results show the PSF competency description and verified Range of Application as supporting reference evidence; these fields help researchers inspect the comparison and do not establish equivalence." if has_range else "Results show the PSF competency description as supporting evidence. The active TESDA PDF has no separate Range of Application field, so no range text is available to compare.")
         rates = meta["rates_before_status_display_filter"]
         cols = st.columns(3)
         for col, field in zip(cols, ("alignment_rate", "partially_aligned_rate", "unmapped_rate")):
             if rates.get(field) is not None:
                 col.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%")
         chart(distribution(alignment, "status", "Status of Phrase–Competency Evidence Groups"))
+        st.subheader("Phrase-level results and PSF-AAI basis")
+        display(alignment)
         display(demand)
         st.caption(meta["denominators"])
     elif page == "Unmapped / Emerging Skills":
@@ -1565,6 +1711,27 @@ def settings_page():
     else:
         st.info("Supabase is not configured. This app is using local files on this computer.")
         st.caption("For a shared site, configure SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Streamlit secrets, then run the schema in supabase_schema.sql.")
+    st.subheader("Generated extraction results")
+    st.caption("Clear a full extraction to free active storage. A compressed local archive is created first; uploaded data, labels, mapping reviews, and candidate phrases are kept.")
+    if supabase_store.is_admin():
+        if action_button("Prepare extraction cleanup", type="secondary", icon=":material/delete_sweep:", action_id="prepare_extraction_cleanup"):
+            st.session_state["confirm_clear_extraction_data"] = True
+        if st.session_state.get("confirm_clear_extraction_data"):
+            st.warning("This clears active extracted phrases and NLP diagnostics for the whole team. The generated extraction can be rebuilt later from the saved uploads.")
+            if action_button("Confirm archive and clear", type="primary", icon=":material/delete_forever:", action_id="confirm_extraction_cleanup"):
+                try:
+                    archive = storage.clear_extraction_data()
+                    st.session_state.pop("confirm_clear_extraction_data", None)
+                    backup = archive.relative_to(ROOT) if archive else "no local extraction files were present"
+                    st.success(f"Extraction results cleared. Compressed backup: {backup}.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Cleanup stopped safely: {exc}")
+            if action_button("Cancel cleanup", type="secondary", action_id="cancel_extraction_cleanup"):
+                st.session_state.pop("confirm_clear_extraction_data", None)
+                st.rerun()
+    else:
+        st.info("Sign in with a workspace admin account to clear shared extraction results.")
     cfg = storage.settings()
     with st.form("settings_form"):
         st.subheader("Matching thresholds")

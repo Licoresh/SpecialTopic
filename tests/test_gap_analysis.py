@@ -3,6 +3,16 @@ import pandas as pd
 import pytest
 from src.gap_analysis import calculate_gaps
 from src.alignment import calculate_alignment
+from src.analytics import accepted_skills
+
+
+def test_credentials_are_not_counted_as_skills_or_psf_gaps():
+    extracted = pd.DataFrame({
+        "accepted": [True, True], "competency_category": ["Education / Qualification", "Soft / Enabling"],
+        "source_type": ["jobs", "jobs"], "source_id": ["SYNTHETIC-1", "SYNTHETIC-1"],
+        "normalized_phrase": ["bachelor degree", "communication"],
+    })
+    assert accepted_skills(extracted).normalized_phrase.tolist() == ["communication"]
 
 
 def test_correct_denominators_and_duplicates(jobs, taxonomy):

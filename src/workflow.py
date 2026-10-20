@@ -70,11 +70,11 @@ def current_extractions():
             references = taxonomy.set_index("competency_name")
             known = extracted.psf_competency.isin(references.index)
             extracted.loc[known, "matched_competency"] = extracted.loc[known, "psf_competency"]
-            for target, column in (("competency_id", "competency_id"), ("psf_category", "competency_category"), ("job_role", "job_role"), ("proficiency_level", "proficiency_level"), ("source_page", "source_page"), ("source_url", "source_url"), ("source_hash", "source_hash")):
+            for target, column in (("competency_id", "competency_id"), ("psf_category", "competency_category"), ("job_role", "job_role"), ("proficiency_level", "proficiency_level"), ("psf_competency_description", "competency_description"), ("psf_range_of_application", "range_of_application"), ("source_page", "source_page"), ("source_url", "source_url"), ("source_hash", "source_hash")):
                 extracted.loc[known, target] = extracted.loc[known, "psf_competency"].map(references[column]) if column in references else ""
         unmapped = extracted.psf_competency.eq("")
         extracted.loc[unmapped, "matched_competency"] = extracted.loc[unmapped, "normalized_phrase"]
-        extracted.loc[unmapped, ["competency_id", "psf_category", "job_role", "proficiency_level"]] = ""
+        extracted.loc[unmapped, ["competency_id", "psf_category", "job_role", "proficiency_level", "psf_competency_description", "psf_range_of_application"]] = ""
     if "competency_category" in extracted:
         extracted["requirement_type"] = extracted.competency_category.map(requirement_type)
         extracted["category_parent"] = extracted.competency_category.map(category_parent)

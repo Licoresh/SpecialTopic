@@ -1,4 +1,5 @@
 import pandas as pd
+from .category_schema import requirement_type
 
 def filter_frame(frame, filters):
     mask = pd.Series(True, index=frame.index)
@@ -15,7 +16,9 @@ def filter_frame(frame, filters):
 def accepted_skills(frame):
     if frame.empty:
         return frame
-    return frame[frame.accepted.astype(str).str.casefold().eq("true") & frame.competency_category.ne("IRRELEVANT")].drop_duplicates(["source_type", "source_id", "normalized_phrase"])
+    return frame[frame.accepted.astype(str).str.casefold().eq("true") &
+                 frame.competency_category.ne("IRRELEVANT") &
+                 frame.competency_category.map(requirement_type).ne("Credential requirement")].drop_duplicates(["source_type", "source_id", "normalized_phrase"])
 
 def counts(frame, column, name="count"):
     if column not in frame or frame.empty:

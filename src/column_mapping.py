@@ -31,6 +31,7 @@ ALIASES = {
         "competency_id": ["competency code", "skill id", "skill code"],
         "competency_name": ["competency", "skill name", "skill", "competence"],
         "competency_description": ["description", "skill description", "definition"],
+        "range_of_application": ["range of application", "range/application", "application range", "range of contexts"],
         "competency_category": ["category", "skill category", "domain"],
         "job_role": ["role", "occupation", "job title"],
         "functional_skill": ["functional skills", "technical skill"],

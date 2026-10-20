@@ -12,7 +12,7 @@ pages = {
         st.Page(lambda: render("Home"), title="Overview", icon=":material/dashboard:", default=True),
     ],
     "1 · Prepare and review": [
-        st.Page("pages/01_Data_Upload.py", title="Upload job data", icon=":material/upload_file:"),
+        st.Page("pages/01_Data_Upload.py", title="Upload study data", icon=":material/upload_file:"),
         st.Page("pages/02_Data_Quality.py", title="Review data quality", icon=":material/fact_check:"),
         st.Page("pages/05_Competency_Extraction.py", title="Extract skill phrases", icon=":material/psychology:"),
         st.Page("pages/06_Manual_Labeling.py", title="Review and label phrases", icon=":material/rate_review:"),

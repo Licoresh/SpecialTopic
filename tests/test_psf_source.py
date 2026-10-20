@@ -6,6 +6,12 @@ from src.psf_source import activate_framework, parse_framework
 from src.training_sources import training_taxonomy
 
 
+def test_range_of_application_extraction_stops_before_pdf_footer():
+    from src.psf_source import _range_of_application
+    text = "Range of Application\nCloud services may include: • Python • SQL\nAnalytics & Artifical Intelligence 150 Functional Skills and Competencies (FSC)"
+    assert _range_of_application(text) == "Cloud services may include: • Python • SQL"
+
+
 def test_researcher_activation_requires_traceable_source(workspace):
     frame = pd.DataFrame([{
         "competency_id": "SYNTHETIC-CODE-1", "competency_name": "Synthetic framework competency",
@@ -44,5 +50,15 @@ def test_official_pdf_parser_retains_competency_codes_pages_and_roles():
     assert frame.competency_id.str.startswith(("AAI-", "ESC-")).all()
     assert frame.source_page.astype(int).between(1, 315).all()
     assert frame.source_hash.str.fullmatch(r"[0-9a-f]{64}").all()
+    cloud = frame.loc[frame.competency_name.eq("Cloud Computing"), "range_of_application"].iloc[0]
+    assert "Python" in cloud
+    assert frame.range_of_application.str.contains("SQL", case=False).any()
+    modeling = frame.loc[frame.competency_name.eq("Computational Modeling"), "competency_description"].iloc[0]
+    assert "statistical algorithms" in modeling.casefold()
+    assert "skills application" in modeling.casefold()
+    from src.psf_mapping import TaxonomyMatcher
+    candidates = TaxonomyMatcher(frame).match_candidates("Statistics")
+    assert any(item["psf_competency"] == "Computational Modeling" and
+               item["matching_method"] == "competency_profile" for item in candidates)
     assert len(roles) == 1029 and roles.job_role.nunique() == 28
     assert "Critical Work" not in set(roles.job_role)

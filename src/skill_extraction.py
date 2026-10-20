@@ -15,7 +15,7 @@ VOCABULARY = {
 }
 GENERAL = {normalize_text(term): cat for cat, terms in VOCABULARY.items() for term in terms.split(";")}
 GENERAL_PATTERN = re.compile(r"(?<![\w+#])(?:" + "|".join(re.escape(k) for k in sorted(GENERAL, key=len, reverse=True)) + r")(?![\w+#])", re.I)
-EXTRACTION_COLUMNS = "extraction_id source_type source_id original_text original_phrase normalized_phrase matched_competency competency_category matching_method similarity_score confidence_score psf_competency competency_id psf_category job_role proficiency_level confidence ml_category ml_confidence human_label model_prediction model_name agreement skill_type accepted start_char end_char source_page source_url source_hash".split()
+EXTRACTION_COLUMNS = "extraction_id source_type source_id original_text original_phrase normalized_phrase matched_competency competency_category matching_method similarity_score confidence_score psf_competency competency_id psf_category job_role proficiency_level psf_competency_description psf_range_of_application confidence ml_category ml_confidence human_label model_prediction model_name agreement skill_type accepted start_char end_char source_page source_url source_hash".split()
 
 def extract_skills(frame, source_type, matcher=None, model=None, annotations=None, **options):
     if frame.empty:

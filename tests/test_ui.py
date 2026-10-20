@@ -66,6 +66,49 @@ def test_overview_reports_actual_counts_and_keeps_all_workflow_actions(ui_worksp
     assert all(app.button(key=f"home_workflow_{index:02d}") for index in range(1, 7))
 
 
+def test_upload_page_can_select_psf_reference(ui_workspace):
+    app = page_app("Job Data Upload")
+    selector = next(item for item in app.selectbox if item.label == "Dataset to upload")
+    assert selector.options == ["Job advertisements (500-study dataset)", "TESDA PSF-AAI reference"]
+    selector.set_value("TESDA PSF-AAI reference").run(timeout=60)
+    assert app.title[0].value == "Upload PSF-AAI reference"
+    assert any(item.label == "Load prepared Range of Application draft" for item in app.button)
+    assert not app.exception and not app.error
+
+
+def test_upload_page_removes_only_misfiled_psf_copy(ui_workspace):
+    source = b"competency_name,range_of_application\nSYNTHETIC,Python"
+    storage.archive_raw(source, "psf_aai_range_review_draft.csv", "jobs")
+    storage.archive_raw(source, "psf_aai_range_review_draft.csv", "psf_aai")
+    jobs_path = storage.raw_upload_path(storage.read_json("uploads")["jobs"], "jobs")
+    psf_path = storage.raw_upload_path(storage.read_json("uploads")["psf_aai"], "psf_aai")
+
+    app = page_app("Job Data Upload")
+    next(item for item in app.button if item.label == "Remove mistaken PSF draft from job uploads").click().run(timeout=60)
+
+    assert not app.exception and not app.error
+    assert not jobs_path.exists()
+    assert psf_path.read_bytes() == source
+    assert "jobs" not in storage.read_json("uploads")
+
+
+def test_psf_activation_syncs_verified_reference_and_clears_pending_upload(ui_workspace, taxonomy):
+    from src.ui import activate_psf_reference
+    from src.utils import frame_hash
+    taxonomy = taxonomy.copy()
+    taxonomy["source_page"] = "12"
+    taxonomy["source_url"] = "https://example.test/synthetic-framework.pdf"
+    taxonomy["source_hash"] = "SYNTHETIC-HASH"
+    storage.save_json("uploads", {"psf_aai": {"hash": "stale-upload-hash", "filename": "draft.csv"}})
+
+    activate_psf_reference(taxonomy, "Synthetic reviewer")
+
+    assert storage.read_frame("verified_psf_aai").reviewer.tolist() == ["Synthetic reviewer"] * len(taxonomy)
+    assert len(storage.read_frame("cleaned_psf_aai")) == len(taxonomy)
+    assert storage.read_json("cleaning_psf_aai")["source_hash"] == frame_hash(storage.read_frame("mapped_psf_aai"))
+    assert "psf_aai" not in storage.read_json("uploads")
+
+
 def test_review_no_search_results_keeps_filters_and_disables_saves(ui_workspace, jobs, taxonomy):
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)
@@ -243,6 +286,39 @@ def test_main_app_launch(ui_workspace):
     app = AppTest.from_file(str(Path(__file__).resolve().parents[1]/"app.py")).run(timeout=60)
     assert not app.exception and not app.error
 
+
+def test_extraction_results_are_paginated(ui_workspace):
+    import pandas as pd
+    frame = pd.DataFrame({"row": range(250)})
+    page, number, pages = ui._paginate_frame(frame, 3, 100)
+    assert number == 3 and pages == 3
+    assert page.row.tolist() == list(range(200, 250))
+    page, number, _ = ui._paginate_frame(frame, 99, 100)
+    assert number == 3 and page.row.tolist() == list(range(200, 250))
+
+
+def test_extraction_page_sends_only_100_rows_to_browser(ui_workspace):
+    script = '''
+import pandas as pd
+from unittest.mock import patch
+from src.ui import render
+frame = pd.DataFrame({
+    "extraction_id": [str(i) for i in range(250)],
+    "original_phrase": [f"SYNTHETIC phrase {i}" for i in range(250)],
+    "human_label": [""] * 250,
+    "model_prediction": [""] * 250,
+    "accepted": ["True"] * 250,
+})
+def read_frame(name, **kwargs):
+    return frame if name == "extractions_original" else pd.DataFrame()
+with patch("src.ui.storage.read_frame", side_effect=read_frame):
+    render("Competency Extraction")
+'''
+    app = AppTest.from_string(script).run(timeout=60)
+    assert not app.exception and not app.error
+    assert len(app.dataframe[0].value) == 100
+    assert any("Showing 1–100 of 250 rows" in item.value for item in app.caption)
+
 @pytest.mark.parametrize("kind,content", [
     ("jobs", "role,text\nSynthetic analyst,Python"),
     ("psf_aai", "name,category\nSynthetic competency,Test category"),
@@ -260,7 +336,8 @@ with patch("streamlit.file_uploader", return_value=uploaded):
     upload({kind!r})
 '''
     app = AppTest.from_string(script).run(timeout=60)
-    app.button[0].click().run(timeout=60)
+    save_button = next(button for button in app.button if button.label == "Save raw upload")
+    save_button.click().run(timeout=60)
     assert not app.exception and not app.error
     manifest = storage.read_json("uploads", {})
     assert Path(manifest[kind]["path"]).read_bytes() == content.encode()
@@ -361,8 +438,8 @@ def leave_blank(frame, **kwargs):
         assert frame.loc[frame.index[0], "Category"] == ""
         assert frame.iloc[0]["PSF-AAI competencies"] == []
         assert frame.iloc[0]["AI PSF-AAI drafts"] == ["communication skills", "data analysis"]
-        assert "Context check" in frame.columns and "Context note" in frame.columns
-        assert {"Context check", "Context note"}.issubset(kwargs["disabled"])
+        assert "Context check" not in frame.columns and "Context note" not in frame.columns
+        assert "Context check" not in kwargs["disabled"] and "Context note" not in kwargs["disabled"]
         assert "Copy category draft" not in frame.columns
         assert "Copy PSF-AAI draft" not in frame.columns
     return frame
@@ -403,7 +480,7 @@ with patch("streamlit.data_editor", side_effect=explicitly_copy):
 
 def test_settings_and_usability_save_actions(ui_workspace):
     app = page_app("Settings")
-    app.button[0].click().run(timeout=60)
+    next(button for button in app.button if button.label == "Save settings").click().run(timeout=60)
     assert not app.exception and not app.error
     assert storage.read_json("settings")["aligned_threshold"] == .8
     feedback = page_app("Feedback")

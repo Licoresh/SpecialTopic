@@ -11,6 +11,11 @@ def test_standard_columns_and_formatting(kind):
     mapping, _ = suggest_column_mapping(columns, kind)
     assert list(mapping.values()) == columns
 
+def test_psf_range_of_application_header_maps_when_supplied():
+    mapping, _ = suggest_column_mapping(["Competency", "Range of Application"], "psf_aai")
+    assert mapping["competency_name"] == "Competency"
+    assert mapping["range_of_application"] == "Range of Application"
+
 def test_job_pack_aliases_and_ambiguity():
     columns = ["job_id", "job_title", "company", "posted_date", "source_url", "skills_summary", "education_requirements_summary", "education_level", "experience_summary"]
     mapping, evidence = suggest_column_mapping(columns, "jobs")

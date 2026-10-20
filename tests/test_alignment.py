@@ -38,6 +38,14 @@ def test_reference_traceability_and_human_assignment(taxonomy):
     result = calculate_alignment(skills, taxonomy).iloc[0]
     assert result.psf_competency == "SQL" and result.source_page == "99"
     assert result.match_method == "human_annotation" and result.status == "ALIGNED"
+
+
+def test_verified_range_of_application_is_retained_in_alignment(taxonomy):
+    taxonomy.loc[0, "range_of_application"] = "SYNTHETIC RANGE: code review and deployment"
+    taxonomy.loc[0, "competency_description"] = "SYNTHETIC DESCRIPTION: build and test programs"
+    result = calculate_alignment(detections(["Python"]), taxonomy).iloc[0]
+    assert result.psf_range_of_application == "SYNTHETIC RANGE: code review and deployment"
+    assert result.psf_competency_description == "SYNTHETIC DESCRIPTION: build and test programs"
 def test_skill_phrase_filter_is_case_insensitive_literal_substring():
     frame = pd.DataFrame({"normalized_phrase": ["sql querying", "python programming", "c++"]})
     filtered = filter_frame(frame, {"normalized_phrase_contains": "SQL"})

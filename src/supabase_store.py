@@ -91,9 +91,14 @@ def _request(method: str, endpoint: str, *, token: str, payload=None, params=Non
                 "The shared database setup is incomplete. Ask the project owner to apply the Supabase migrations, then retry.",
                 status_code=response.status_code,
             )
-        if response.status_code in (401, 403):
+        if response.status_code == 401:
             raise SupabaseError(
-                "Your session has expired or your account does not have permission for this action. Sign in again or ask the project owner to check your team role.",
+                "Your session has expired. Sign in again, then retry.",
+                status_code=response.status_code,
+            )
+        if response.status_code == 403:
+            raise SupabaseError(
+                "Supabase denied this operation. Your sign-in may be valid; ask the project owner to check your team role and database permissions.",
                 status_code=response.status_code,
             )
         raise SupabaseError(f"Supabase returned HTTP {response.status_code}: {detail}", status_code=response.status_code)
@@ -136,6 +141,18 @@ def read_state(name: str, token: str):
     return unpack_state(result[0]["payload"]) if result else None
 
 
+def read_states(names: list[str], token: str) -> dict:
+    """Read several chunk rows per request without retaining a second large cache."""
+    found = {}
+    for start in range(0, len(names), 25):
+        batch = names[start:start + 25]
+        values = ",".join('"' + name.replace('"', '\\"') + '"' for name in batch)
+        rows = _request("GET", "/rest/v1/app_state", token=token,
+                        params={"name": f"in.({values})", "select": "name,payload"}) or []
+        found.update({row["name"]: unpack_state(row["payload"]) for row in rows})
+    return found
+
+
 def pack_state(payload):
     """Compress repeated source text in larger tables to reduce network transfer."""
     encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -150,7 +167,7 @@ def unpack_state(payload):
             with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(payload["data"], validate=True))) as source:
                 content = source.read(256 * 1024 * 1024 + 1)
             if len(content) > 256 * 1024 * 1024:
-                raise ValueError("Shared table exceeds the 256 MB decoded limit; split the dataset into smaller batches.")
+                raise ValueError("This older shared snapshot exceeds the decoded-size limit. Update the app, then rerun Competency Extraction to replace it with the compact chunked format.")
             return json.loads(content)
         except (ValueError, KeyError, OSError) as exc:
             raise SupabaseError(f"Could not read this shared table: {exc}") from exc
@@ -256,6 +273,20 @@ def write_state(name: str, payload, token: str, *, preserve_existing=False):
                     prefer=f"resolution={'ignore' if preserve_existing else 'merge'}-duplicates,return=minimal")
     clear_read_cache()
     return result
+
+
+def clear_generated_extractions(token: str):
+    """Clear only generated extraction snapshots through the admin-checked RPC."""
+    try:
+        _request("POST", "/rest/v1/rpc/clear_generated_extractions", token=token, payload={})
+    except SupabaseError as exc:
+        if exc.status_code == 404:
+            raise SupabaseError(
+                "The shared database is missing the extraction-cleanup migration. Apply "
+                "supabase/migrations/20261020143000_admin_clear_generated_extractions.sql in Supabase SQL Editor, then retry."
+            ) from exc
+        raise
+    clear_read_cache()
 
 
 def get_token() -> str:

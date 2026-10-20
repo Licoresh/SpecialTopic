@@ -144,7 +144,7 @@ def suggestion_key(row):
 
 def _competency_text(row):
     parts = [row.get("competency_name", ""), row.get("competency_category", "")]
-    for field in ("keywords", "aliases", "functional_skill", "enabling_skill", "competency_description"):
+    for field in ("keywords", "aliases", "functional_skill", "enabling_skill", "competency_description", "range_of_application"):
         value = str(row.get(field, "") or "").strip()
         if value:
             parts.append(value)

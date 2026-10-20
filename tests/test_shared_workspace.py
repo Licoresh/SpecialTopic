@@ -52,6 +52,65 @@ def test_cache_is_per_session_copied_and_invalidated_on_save(shared, monkeypatch
     assert request.call_count == 4
 
 
+def test_large_shared_frames_are_saved_and_read_in_chunks(shared, monkeypatch):
+    monkeypatch.setattr(storage, "REMOTE_FRAME_CHUNK_BYTES", 200)
+    saved = {}
+    monkeypatch.setattr(storage, "_remote_write", lambda kind, name, payload: saved.__setitem__(name, payload))
+    monkeypatch.setattr(storage, "_remote_payload", lambda kind, name: saved.get(name))
+    monkeypatch.setattr(storage, "_remote_payloads", lambda kind, names: {name: saved.get(name) for name in names if name in saved})
+    frame = pd.DataFrame({"source_id": [f"SYNTHETIC-{i}" for i in range(8)],
+                          "text": ["x" * 70 for _ in range(8)]})
+
+    storage._save_remote_frame("nlp_processed", frame)
+    manifest = saved["nlp_processed"]
+    assert manifest["_storage_codec"] == "frame-chunks-v1"
+    assert manifest["chunk_count"] > 1
+    result = storage._read_remote_frame("nlp_processed", manifest)
+    assert result["records"] == frame.to_dict(orient="records")
+
+
+def test_shared_extractions_omit_duplicated_job_context(shared, monkeypatch):
+    saved = {}
+    monkeypatch.setattr(storage, "REMOTE_FRAME_CHUNK_BYTES", 2000)
+    monkeypatch.setattr(storage, "_remote_write", lambda kind, name, payload: saved.__setitem__(name, payload))
+    frame = pd.DataFrame({"source_id": ["SYNTHETIC-1"], "original_text": ["long job description"]})
+
+    storage._save_remote_frame("extractions_original", frame)
+
+    assert saved["extractions_original"]["records"][0]["original_text"] == ""
+
+
+def test_read_shared_extractions_restores_context_from_job_record(shared, monkeypatch):
+    manifest = {"_storage_codec": "frame-chunks-v1", "generation": "test-generation",
+                "chunk_count": 1, "record_count": 1,
+                "columns": ["source_id", "original_text", "original_phrase"],
+                "elided_columns": ["original_text"]}
+    payloads = {
+        "extractions_original": manifest,
+        "cleaned_jobs": {"columns": ["source_id", "original_text"],
+                         "records": [{"source_id": "SYNTHETIC-1", "original_text": "Source ad context"}]},
+    }
+    monkeypatch.setattr(storage, "_remote_payload", lambda kind, name: payloads.get(name))
+    monkeypatch.setattr(storage, "_remote_payloads", lambda kind, names: {
+        name: {"records": [{"source_id": "SYNTHETIC-1", "original_text": "", "original_phrase": "SQL"}]}
+        for name in names})
+
+    result = storage.read_frame("extractions_original")
+
+    assert result.original_text.tolist() == ["Source ad context"]
+
+
+def test_batched_state_read_uses_one_request_for_chunk_group(shared, monkeypatch):
+    request = Mock(return_value=[{"name": "frame:part:0", "payload": {"value": 0}},
+                                 {"name": "frame:part:1", "payload": {"value": 1}}])
+    monkeypatch.setattr(backend, "_request", request)
+
+    assert backend.read_states(["frame:part:0", "frame:part:1"], "test-token") == {
+        "frame:part:0": {"value": 0}, "frame:part:1": {"value": 1}}
+    assert request.call_count == 1
+    assert request.call_args.kwargs["params"]["name"] == 'in.("frame:part:0","frame:part:1")'
+
+
 def test_save_uses_one_atomic_rpc_and_preserves_versions(shared, monkeypatch):
     request = Mock(return_value=2)
     monkeypatch.setattr(backend, "_request", request)
@@ -252,6 +311,23 @@ def test_refresh_network_failure_preserves_unsaved_draft(shared, monkeypatch):
     with pytest.raises(backend.SupabaseError, match="unsaved work is retained"):
         backend.get_token()
     assert shared["review_snapshot"] == "unsaved"
+
+
+def test_extraction_cleanup_uses_scoped_database_rpc(monkeypatch):
+    request = Mock()
+    monkeypatch.setattr(backend, "_request", request)
+    monkeypatch.setattr(backend, "clear_read_cache", Mock())
+    backend.clear_generated_extractions("admin-token")
+    request.assert_called_once_with("POST", "/rest/v1/rpc/clear_generated_extractions",
+                                    token="admin-token", payload={})
+
+
+def test_extraction_results_can_skip_repeated_source_text(workspace):
+    path = workspace / "data/processed/extractions_original.csv"
+    pd.DataFrame({"original_phrase": ["Python"], "original_text": ["Large source text"]}).to_csv(path, index=False)
+    result = storage.read_frame("extractions_original", include_source_text=False)
+    assert result.original_phrase.tolist() == ["Python"]
+    assert "original_text" not in result.columns
 
 
 def test_shared_review_table_save_as_reviewer(workspace, monkeypatch):

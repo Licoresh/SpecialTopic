@@ -89,7 +89,8 @@ def test_pretrained_psf_ranking_uses_taxonomy_text_and_records_similarity():
             return np.asarray([[1.0, 0.0] if "communication" in text.casefold() else [0.0, 1.0] for text in texts])
 
     taxonomy = pd.DataFrame([
-        {"competency_name": "Communication", "competency_description": "Communicate with teams"},
+        {"competency_name": "Communication", "competency_description": "Communicate with teams",
+         "range_of_application": "SYNTHETIC RANGE: meetings, email and team briefings"},
         {"competency_name": "Data analysis", "competency_description": "Analyze data"},
     ])
     result = suggest_psf_competencies(
@@ -102,6 +103,7 @@ def test_pretrained_psf_ranking_uses_taxonomy_text_and_records_similarity():
     assert result["psf_model"] == PSF_MODEL_ID
     assert result["psf_revision"] == PSF_MODEL_REVISION
     assert "Analyze data" in " ".join(observed["inputs"])
+    assert "SYNTHETIC RANGE" in " ".join(observed["inputs"])
 
 
 def test_ai_suggestions_persist_separately_from_reviewed_labels(tmp_path):

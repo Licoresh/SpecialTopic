@@ -7,6 +7,7 @@ from .utils import digest, frame_hash
 STATUSES = ["ALIGNED", "PARTIALLY ALIGNED", "NOT MAPPED", "UNCLASSIFIED"]
 ALIGNMENT_COLUMNS = ["alignment_id", "employer_skill", "normalized_skill", "competency_id",
                      "psf_competency", "psf_job_role", "psf_category", "proficiency_level",
+                     "psf_competency_description", "psf_range_of_application",
                      "source_page", "source_url", "source_hash", "match_method", "similarity_score",
                      "confidence", "status", "job_source_ids", "interpretation"]
 OCCURRENCE_COLUMNS = ["extraction_id", "source_id", "source_type", "original_text", "start_char", "end_char",
@@ -43,20 +44,25 @@ def calculate_mapping(skills, taxonomy, aligned_threshold=.8, partial_threshold=
                     decisions.append((match, link))
         else:
             rejected = str(occurrence.get("psf_assignment_reviewed", False)).casefold() == "true"
-            match = None
             if matcher:
                 if occurrence.get("matching_method") == "human_annotation" and occurrence.get("psf_competency"):
                     match = matcher.match(occurrence["psf_competency"])
                     if match:
                         match = match | {"matching_method": "human_annotation"}
+                    decisions = [(match, {})]
                 elif not rejected:
-                    match = matcher.match(occurrence["original_phrase"], phrase)
-            decisions.append((match, {}))
+                    matches = matcher.match_candidates(occurrence["original_phrase"], phrase)
+                    decisions = [(match, {}) for match in matches] or [(None, {})]
+                else:
+                    decisions = [(None, {})]
+            else:
+                decisions = [(None, {})]
         if stale:
             decisions = [(None, {})]
         for match, link in decisions:
             score = float(match["similarity_score"]) if match else 0. if matcher else None
             status = ("UNCLASSIFIED" if matcher is None or stale else
+                      "PARTIALLY ALIGNED" if match and match["matching_method"] in {"range_of_application", "competency_profile"} else
                       "ALIGNED" if score >= aligned_threshold else
                       "PARTIALLY ALIGNED" if score >= partial_threshold else "NOT MAPPED")
             accepted = status in ("ALIGNED", "PARTIALLY ALIGNED")
@@ -72,10 +78,12 @@ def calculate_mapping(skills, taxonomy, aligned_threshold=.8, partial_threshold=
                           reviewed_at=link.get("timestamp", ""),
                           mapping_review_status="STALE" if stale else "REVIEWED" if link else "LEGACY REVIEW" if method == "human_annotation" else "SUGGESTED",
                           interpretation="Source or reference changed; review this occurrence again." if stale else
+                          "Phrase appears in the PSF-AAI Range of Application. This is supporting evidence, not a direct competency-title match; verify the advertisement context and choose the relevant competency." if method == "range_of_application" else
+                          "Phrase is supported by the PSF-AAI competency profile text. This is a partial match; verify the specific job-ad context and competency before reporting it." if method == "competency_profile" else
                           "Not clearly mapped to PSF-AAI; review terminology, context and reference coverage." if status == "NOT MAPPED" else
                           "PSF reference unavailable; alignment cannot be assessed." if status == "UNCLASSIFIED" else
                           "Observed reference alignment; verify job context. This does not establish proficiency.")
-            for column in ("competency_id", "psf_competency", "psf_category", "proficiency_level", "source_page", "source_url", "source_hash"):
+            for column in ("competency_id", "psf_competency", "psf_category", "proficiency_level", "psf_competency_description", "psf_range_of_application", "source_page", "source_url", "source_hash"):
                 record[column] = evidence.get(column, "")
             record["psf_job_role"] = evidence.get("job_role", "")
             # Group only equal evidence. Different contexts are never cross-joined by phrase.

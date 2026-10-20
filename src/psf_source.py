@@ -11,6 +11,44 @@ from .utils import timestamp
 OFFICIAL_URL = "https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf"
 
 
+def _range_of_application(page_text):
+    text = re.sub(r"\s+", " ", page_text or "")
+    match = re.search(
+        r"Range\s+of\s+Application\s*:?(.*?)(?=Analytics\s*&\s*Artifical\s+Intelligence|"
+        r"Analytics\s*&\s*Artificial\s+Intelligence|Functional\s+Skills\s+and\s+Competencies\s*\(FSC\)|"
+        r"Enabling\s+Skills\s+and\s+Competencies\s*\(ESC\)|$)",
+        text, re.I,
+    )
+    return re.sub(r"\s+", " ", match.group(1)).strip(" •\t") if match else ""
+
+
+def _profile_pages(page_texts, page_number):
+    """Join a competency's continuation pages through its Range of Application."""
+    parts = [page_texts[page_number - 1]]
+    index = page_number
+    while index < len(page_texts) and "Range of Application" not in parts[-1]:
+        following = page_texts[index]
+        first_line = next((line.strip() for line in following.splitlines() if line.strip()), "")
+        continues = ("Continue to next page" in parts[-1] or
+                     re.match(r"(?:FSC|ESC)\s+Proficiency\s+Level\b", first_line, re.I))
+        if not continues:
+            break
+        parts.append(following)
+        index += 1
+    return "\n".join(parts)
+
+
+def _profile_detail(text):
+    match = re.search(r"(?:FSC|ESC)\s+Proficiency\s+Description", text, re.I)
+    if not match:
+        return ""
+    detail = re.split(r"Range\s+of\s+Application", text[match.start():], maxsplit=1, flags=re.I)[0]
+    detail = re.sub(r"Continue to next page", "", detail, flags=re.I)
+    detail = re.sub(r"Analytics\s*&\s*Artifical\s+Intelligence\s+\d+", "", detail, flags=re.I)
+    detail = re.sub(r"(?:Functional|Enabling) Skills and Competencies\s*\((?:FSC|ESC)\)", "", detail, flags=re.I)
+    return re.sub(r"\s+", " ", detail).strip(" •\t")
+
+
 def parse_framework(path):
     """Read competency heading/description blocks, not arbitrary PDF mentions.
 
@@ -43,8 +81,9 @@ def parse_framework(path):
         if not codes:
             raise ValueError(f"No official FSC/ESC code was read for {name} on PDF page {number}; review this page manually.")
         row = {column: "" for column in FIELDS["psf_aai"]}
+        summary = re.sub(r"\s+", " ", " ".join(description)).strip()
         row.update(competency_id="; ".join(codes), competency_name=name,
-                   competency_description=re.sub(r"\s+", " ", " ".join(description)).strip(),
+                   competency_description=summary,
                    competency_category="Functional Skills and Competencies" if functional else "Enabling Skills and Competencies",
                    functional_skill=name if functional else "", enabling_skill=name if enabling else "",
                    proficiency_level="; ".join(levels), source_page=str(number), source_url=OFFICIAL_URL,
@@ -73,7 +112,37 @@ def parse_framework(path):
     if not roles.empty:
         grouped = roles.groupby("competency_name").job_role.agg(lambda values: "; ".join(sorted(set(values))))
         frame["job_role"] = frame.competency_name.map(grouped).fillna("")
+    for index, row in frame.iterrows():
+        profile = _profile_pages(page_texts, int(row["source_page"]))
+        detail = _profile_detail(profile)
+        if detail:
+            frame.at[index, "competency_description"] = f"{row['competency_description']} Profile details: {detail}"
+        frame.at[index, "range_of_application"] = _range_of_application(profile)
     return frame, roles
+
+
+def enrich_verified_profiles(frame, pdf_path):
+    """Refresh profile text only when the reviewed rows cite this exact PDF edition."""
+    pdf_path = Path(pdf_path)
+    source_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+    if frame.empty or "source_hash" not in frame or not frame.source_hash.eq(source_hash).all():
+        return frame.copy(), False
+    if "competency_description" in frame and frame.competency_description.astype(str).str.contains("Profile details:", regex=False).all():
+        return frame.copy(), False
+    parsed, _ = parse_framework(pdf_path)
+    if set(frame.competency_name) != set(parsed.competency_name):
+        raise ValueError("The reviewed PSF-AAI competency list differs from the cited PDF; review the new edition before replacing it.")
+    indexed = parsed.set_index("competency_name")
+    refreshed = frame.copy()
+    for column in ("competency_id", "competency_description", "range_of_application"):
+        if column not in refreshed:
+            refreshed[column] = ""
+        values = refreshed.competency_name.map(indexed[column]).fillna("")
+        if column == "competency_id" and not refreshed[column].eq(values).all():
+            raise ValueError("The reviewed PSF-AAI competency codes differ from the cited PDF; review them before replacing the reference.")
+        refreshed[column] = values
+    changed = not refreshed["competency_description"].equals(frame.get("competency_description", pd.Series(index=frame.index, dtype=str))) or not refreshed["range_of_application"].equals(frame.get("range_of_application", pd.Series(index=frame.index, dtype=str)))
+    return refreshed, changed
 
 
 def save_framework_draft(root, pdf_path):
