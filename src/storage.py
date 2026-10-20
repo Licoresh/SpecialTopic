@@ -125,6 +125,16 @@ def _read_remote_frame(name, payload):
     return {"columns": payload.get("columns", []), "records": records,
             "_elided_columns": payload.get("elided_columns", [])}
 
+
+def _bundled_psf_default():
+    path = ROOT / "data/reference/psf_aai_default.csv"
+    if not path.is_file():
+        return pd.DataFrame()
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    frame.attrs["reference_source"] = "bundled_default"
+    return frame
+
+
 def initialize():
     for name in ("data/raw", "data/processed", "data/feedback", "data/templates", "models", "outputs/charts", "outputs/tables", "outputs/reports"):
         (ROOT / name).mkdir(parents=True, exist_ok=True)
@@ -246,19 +256,30 @@ def read_frame(name, *, include_source_text=True):
             if {"source_id", "original_text"}.issubset(jobs.columns):
                 source_text = jobs.drop_duplicates("source_id").set_index("source_id").original_text
                 frame["original_text"] = frame.source_id.map(source_text).fillna("")
+        if name == "cleaned_psf_aai" and frame.empty:
+            frame = _bundled_psf_default()
         return frame if include_source_text else frame.drop(columns=["original_text"], errors="ignore")
     if configured():
+        if name == "cleaned_psf_aai":
+            return _bundled_psf_default()
         return pd.DataFrame()
     if name == "labeled_competencies":
         from .training_sources import read_annotations
         return read_annotations(ROOT)
     path = ROOT / "data/processed" / f"{name}.csv"
     if not path.exists():
+        if name == "cleaned_psf_aai":
+            return _bundled_psf_default()
         return pd.DataFrame()
     try:
-        return pd.read_csv(path, dtype=str, keep_default_na=False,
-                           usecols=None if include_source_text else lambda column: column != "original_text")
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False,
+                            usecols=None if include_source_text else lambda column: column != "original_text")
+        if name == "cleaned_psf_aai" and frame.empty:
+            return _bundled_psf_default()
+        return frame
     except pd.errors.EmptyDataError:
+        if name == "cleaned_psf_aai":
+            return _bundled_psf_default()
         return pd.DataFrame()
 
 def save_json(name, value):

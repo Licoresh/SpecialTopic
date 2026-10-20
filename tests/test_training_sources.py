@@ -34,6 +34,18 @@ def test_content_based_discovery_and_candidate_context(workspace):
     assert candidates.loc[candidates.source_id.eq("TEST-PH-1"), "original_text"].iloc[0] == "SQL; Python"
     assert storage.read_frame("labeled_competencies").empty
 
+
+def test_training_taxonomy_uses_bundled_psf_default_when_no_upload_exists(workspace):
+    from src.training_sources import training_taxonomy
+    reference = workspace / "data/reference/psf_aai_default.csv"
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"competency_id": "SYNTHETIC-PSF-1", "competency_name": "Synthetic framework skill",
+                   "source_page": "1", "source_url": "https://example.test/synthetic-psf.pdf"}]).to_csv(reference, index=False)
+
+    result = training_taxonomy(workspace)
+
+    assert result.competency_name.tolist() == ["Synthetic framework skill"]
+
 def test_reviews_preserve_occurrences_and_source_files(workspace):
     folder = pack(workspace)
     original = {p:p.read_bytes() for p in folder.glob("*.csv")}

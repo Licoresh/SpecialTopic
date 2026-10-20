@@ -1,4 +1,5 @@
 """SYNTHETIC DATA — NOT RESEARCH DATA; framework rows use fictional sources."""
+import hashlib
 import pandas as pd
 import pytest
 from src.config import FIELDS
@@ -62,3 +63,14 @@ def test_official_pdf_parser_retains_competency_codes_pages_and_roles():
                item["matching_method"] == "competency_profile" for item in candidates)
     assert len(roles) == 1029 and roles.job_role.nunique() == 28
     assert "Critical Work" not in set(roles.job_role)
+
+
+def test_bundled_default_reference_matches_the_included_official_pdf():
+    from src.config import ROOT
+    reference = pd.read_csv(ROOT / "data/reference/psf_aai_default.csv", dtype=str, keep_default_na=False)
+    source_hash = hashlib.sha256((ROOT / "data/reference/psf_aai_official.pdf").read_bytes()).hexdigest()
+
+    assert len(reference) == reference.competency_name.nunique() == 94
+    assert reference.source_hash.eq(source_hash).all()
+    assert reference.review_status.eq("Researcher verified").all()
+    assert reference.range_of_application.str.contains("SQL", case=False).any()

@@ -20,6 +20,8 @@ The app uses [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3), pinned to a fixe
 
 The app can use Supabase Auth and a shared Postgres-backed workspace while continuing to keep local CSV backups. Copy `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` into `.streamlit/secrets.toml` for local use, or into the hosting provider's Streamlit secrets when deployed. Do not add secret keys or passwords to Git. The app uses each researcher's Auth session and Row Level Security; it does not need a Supabase secret/service-role key.
 
+Git updates deliver code and the bundled PSF-AAI reference, not ignored job uploads, annotations, `.env` files, or local results. Existing clones must run `git pull origin main`; each teammate must also configure the shared Supabase secrets to see shared job data, or upload the job dataset on their device.
+
 1. For a new Supabase project, apply `supabase/migrations/*.sql` once in filename order. The connected project already has these migrations.
 2. Disable public sign-ups, create an Auth account for each teammate, and explicitly add their user ID to `research_members` with role `reviewer` (or `admin` for the coordinator).
 3. Add the two app settings above, then restart Streamlit. Teammates sign in with their own accounts.
@@ -44,7 +46,7 @@ The app has a separate sign-in screen and 16 workspace pages: Overview; Upload j
 
 1. Upload Philippine job ads and review automatically suggested column mappings.
 2. Review job source evidence for Philippine provenance and AI/analytics relevance, confirm the scope check, deduplicate and clean the records. Extraction remains blocked until this review is recorded. Original fields and source IDs remain available.
-3. Load the official PSF-AAI PDF or a verified structured table. PDF parsing saves a traceable draft; a researcher must check each definition, official code, page reference and role/level evidence before activating the taxonomy. Aliases and keywords are left blank unless a researcher supplies them.
+3. The bundled TESDA PSF-AAI reference loads by default on a fresh clone and includes source pages, official URL, source hash, competency profiles and Range of Application where available. A reviewed reference saved in the shared workspace takes priority. If the TESDA source edition changes, review the new PDF before replacing the bundled reference.
 4. Extract phrases from job titles, descriptions, required/preferred skills and qualifications. Extraction shows source evidence and can run before a classifier exists.
 5. On **Manual Labeling**, category and PSF-AAI fields start blank for new phrases in the review table. Researchers may generate AI drafts and explicitly check a row's Copy draft box if they want to use one. Unchecked rows use manual cell values; checking a box uses that draft for the field when saving. Only clicking **Save annotations** records the final choices under the reviewer ID and timestamp. AI drafts stay in `data/processed/pretrained_label_suggestions.csv` and never enter the training table automatically. Automatic retraining is off by default; manually train from **ML Training** after the dataset passes validation.
 6. The ML Training page requires at least 30 distinct usable labels, two classes, five examples per class, complete source/reviewer provenance, no conflicting labels and a valid stratified split. These are workflow gates, not proof of adequate statistical validation. The explicit Train / Retrain action compares TF-IDF + Multinomial Naive Bayes with TF-IDF + balanced Logistic Regression; it never trains on refresh.
@@ -66,7 +68,7 @@ An emerging-skill candidate has NOT MAPPED status and appears in a configurable 
 
 ## Official framework and provenance
 
-The official source is [TESDA's PSF-AAI PDF](https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf). The included copy is stored at `data/reference/psf_aai_official.pdf`. Draft definitions, role evidence, source pages, URL and SHA-256 are stored in `data/processed/psf_aai_draft.csv` and `psf_role_links.csv`. These are not active until a researcher reviews and activates them on PSF-AAI Framework. The file `verified_psf_aai.csv` records the active reviewed reference.
+The official source is [TESDA's PSF-AAI PDF](https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf). The included PDF is `data/reference/psf_aai_official.pdf`; its bundled, structured default is `data/reference/psf_aai_default.csv`. The app uses that reference when no active shared or local table exists. A reviewed reference in Supabase or `data/processed/cleaned_psf_aai.csv` overrides the bundled default. The reference is not job data: Git does not include uploaded ads, labels, results, or `.env` secrets. Teammates must pull the latest commit, configure their own `.env`/Streamlit secrets for the shared Supabase workspace, or upload the study job dataset on their own device.
 
 ## Training and model outputs
 

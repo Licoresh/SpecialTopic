@@ -193,4 +193,4 @@ def training_taxonomy(root):
         if "source_page" not in frame or "source_url" not in frame:
             raise ValueError("The PSF-AAI reference needs source_page and source_url fields. Add provenance before mapping.")
         return frame
-    return pd.DataFrame()
+    return storage.read_frame("cleaned_psf_aai")

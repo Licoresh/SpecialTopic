@@ -594,6 +594,8 @@ def extraction():
     taxonomy = load_data_with_skeleton(lambda: storage.read_frame("cleaned_psf_aai"), height=120)
     if taxonomy.empty:
         st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
+    elif taxonomy.attrs.get("reference_source") == "bundled_default":
+        st.caption("Bundled TESDA PSF-AAI reference loaded by default. A reviewed shared reference takes priority when available.")
     if not (ROOT / "models/competency_classifier.joblib").exists():
         st.info("No selected classifier yet. Extract initial phrases for manual labeling, then train both models and select one.")
     else:
