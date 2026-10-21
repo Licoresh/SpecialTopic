@@ -125,7 +125,7 @@ def test_review_no_search_results_keeps_filters_and_disables_saves(ui_workspace,
     assert not app.exception and not app.error
     assert any("No phrases match these filters" in item.value for item in app.info)
     assert next(item for item in app.button if item.label == "Save annotations").disabled
-    assert next(item for item in app.button if item.label == "Generate AI suggestions for this page").disabled
+    assert next(item for item in app.button if item.label == "Generate missing AI drafts").disabled
 
 
 def test_mapping_review_saves_multiple_links_and_no_match(ui_workspace, jobs, taxonomy):
@@ -446,7 +446,11 @@ def leave_blank(frame, **kwargs):
     if "AI category draft" in frame.columns:
         assert frame.loc[frame.index[0], "Category"] == ""
         assert frame.iloc[0]["PSF-AAI competencies"] == []
-        assert frame.iloc[0]["AI PSF-AAI drafts"] == ["communication skills", "data analysis"]
+        if frame.iloc[0]["Draft status"] == "Ready":
+            assert frame.iloc[0]["AI PSF-AAI drafts"] == ["communication skills", "data analysis"]
+        else:
+            assert frame.iloc[0]["AI category draft"] == ""
+            assert frame.iloc[0]["AI PSF-AAI drafts"] == []
         assert "Context check" not in frame.columns and "Context note" not in frame.columns
         assert "Context check" not in kwargs["disabled"] and "Context note" not in kwargs["disabled"]
         assert "Copy category draft" not in frame.columns
@@ -458,8 +462,10 @@ with patch("src.pretrained_suggestions.suggest_labels", return_value=suggestions
     app = AppTest.from_string(script).run(timeout=60)
     app.text_input(key="label_reviewer").set_value("Synthetic reviewer").run(timeout=60)
     app.toggle(key="manual_review_fullscreen").set_value(True).run(timeout=60)
-    suggest_button = next(button for button in app.button if button.label == "Generate AI suggestions for this page")
+    suggest_button = next(button for button in app.button if button.label == "Generate missing AI drafts")
     suggest_button.click().run(timeout=60)
+    wait_processing(app)
+    app.run(timeout=60)
     assert not app.exception
     assert app.toggle(key="manual_review_fullscreen").value
     assert not any(item.label == "AI context notes and competency drafts" for item in app.expander)
@@ -486,6 +492,65 @@ with patch("streamlit.data_editor", side_effect=explicitly_copy):
     assert saved.psf_competency.tolist() == [""]
     assert storage.read_frame("psf_mapping_reviews").empty
     assert saved.reviewer.tolist() == ["Synthetic reviewer"]
+
+
+@pytest.mark.parametrize("page", [3, 4])
+def test_later_review_pages_generate_only_missing_drafts(ui_workspace, taxonomy, monkeypatch, page):
+    import pandas as pd
+    from src import pretrained_suggestions as suggestions, ollama_review
+    rows = [{"phrase": f"Synthetic competency {i}", "normalized_phrase": f"synthetic competency {i}",
+             "source_type": "jobs", "source_id": f"TEST-{i}", "original_text": f"Synthetic competency {i} required."}
+            for i in range(40)]
+    storage.save_frame("team_training_candidates", pd.DataFrame(rows))
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    start = (page - 1) * 10
+    ready = {"label": "Data / Analytics", "psf_competency": "SQL"}
+    suggestions.save_ai_suggestions(ui_workspace, rows[start:start + 3],
+                                    [ready, {"label": "IRRELEVANT"}, {"label": "Data / Analytics"}])
+    predicted_rows = []
+    def predict(batch, taxonomy, **kwargs):
+        predicted_rows.extend(batch)
+        return [dict(ready) for row in batch]
+    monkeypatch.setattr(suggestions, "suggest_labels", predict)
+    monkeypatch.setattr(ollama_review, "configured_model", lambda: "")
+    app = page_app("Manual Labeling")
+    next(item for item in app.number_input if item.label.startswith("Review page")).set_value(page).run(timeout=60)
+    assert not app.exception and not app.error
+    table = next(item.value for item in app.dataframe if "Draft status" in item.value)
+    assert table["Draft status"].tolist() == ["Ready", "No competency (irrelevant)", "Needs PSF draft"] + ["Not generated"] * 7
+    assert table["Category"].eq("").all()
+    next(item for item in app.button if item.label == "Generate missing AI drafts").click().run(timeout=60)
+    wait_processing(app)
+    app.run(timeout=60)
+    assert not app.exception and not app.error
+    assert [row["source_id"] for row in predicted_rows] == [row["source_id"] for row in rows[start + 2:start + 10]]
+    table = next(item.value for item in app.dataframe if "Draft status" in item.value)
+    assert table["Draft status"].tolist() == ["Ready", "No competency (irrelevant)"] + ["Ready"] * 8
+    assert table["Category"].eq("").all()
+    assert all(len(value) == 0 for value in table["PSF-AAI competencies"])
+    assert storage.read_frame("labeled_competencies").empty
+
+
+def test_new_drafts_preserve_pending_browser_edits(ui_workspace, taxonomy):
+    import pandas as pd
+    from src.pretrained_suggestions import save_ai_suggestions
+    row = {"phrase": "Synthetic skill", "normalized_phrase": "synthetic skill",
+           "source_type": "jobs", "source_id": "TEST-A", "original_text": "Synthetic skill required."}
+    storage.save_frame("team_training_candidates", pd.DataFrame([row]))
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    app = page_app("Manual Labeling")
+    # Simulate edits arriving with a fragment poll before the editor is rendered.
+    editor_key = next(key for key in app.session_state if key.startswith("manual_labels_"))
+    app.session_state[editor_key] = {"edited_rows": {0: {"Category": "Business / Domain", "PSF-AAI competencies": ["TEST-1"]}},
+                                   "added_rows": [], "deleted_rows": []}
+    save_ai_suggestions(ui_workspace, [row], [{"label": "Data / Analytics", "psf_competency": "SQL"}])
+    app.run(timeout=60)
+    assert not app.exception and not app.error
+    table = next(item.value for item in app.dataframe if "Draft status" in item.value)
+    assert table.iloc[0]["Category"] == "Business / Domain"
+    assert list(table.iloc[0]["PSF-AAI competencies"]) == ["TEST-1"]
+    assert table.iloc[0]["AI category draft"] == "Data / Analytics"
+    assert storage.read_frame("labeled_competencies").empty
 
 def test_settings_and_usability_save_actions(ui_workspace):
     app = page_app("Settings")

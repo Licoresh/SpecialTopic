@@ -210,14 +210,14 @@ def has_phrase_text(value):
     return any(char.isalnum() for char in str(value or ""))
 
 
-def suggest_labels(records, taxonomy, encoder=None):
+def suggest_labels(records, taxonomy, encoder=None, *, review_context=True):
     """Return a category and ranked PSF-AAI candidates, never reviewed mappings."""
     records = list(records)
     if not records:
         return []
     usable = [has_phrase_text(row.get("phrase", "")) for row in records]
     if not all(usable):
-        valid = iter(suggest_labels([row for row, ok in zip(records, usable) if ok], taxonomy, encoder=encoder))
+        valid = iter(suggest_labels([row for row, ok in zip(records, usable) if ok], taxonomy, encoder=encoder, review_context=review_context))
         return [next(valid) if ok else {"label": "IRRELEVANT", "score": None,
                 "category_method": "Empty or symbol-only phrase", "psf_competency": "", "psf_score": None, "psf_candidates": [],
                 "model": MODEL_ID, "revision": MODEL_REVISION, "psf_model": PSF_MODEL_ID,
@@ -234,8 +234,12 @@ def suggest_labels(records, taxonomy, encoder=None):
             competency = {"psf_competency": "", "psf_score": None, "psf_candidates": [],
                           "psf_model": PSF_MODEL_ID, "psf_revision": PSF_MODEL_REVISION}
         combined.append({**category, **competency})
-    from .ollama_review import review_ambiguous
-    return review_ambiguous(records, combined)
+    if review_context:
+        from .ollama_review import review_ambiguous
+        return review_ambiguous(records, combined)
+    for draft in combined:
+        draft.update(context_review="Pending", context_reason="BGE draft saved before optional context review.")
+    return combined
 
 
 def psf_draft_candidates(suggestion):
@@ -253,6 +257,11 @@ def psf_draft_candidates(suggestion):
                 and isinstance(item.get("competency_name"), str) and item["competency_name"].strip()]
     name = str(suggestion.get("psf_competency", "")).strip()
     return [{"competency_id": "", "competency_name": name, "score": suggestion.get("psf_score")} ] if name else []
+
+
+def draft_complete(suggestion):
+    category = suggestion.get("category", suggestion.get("label", ""))
+    return category in CATEGORY_DESCRIPTIONS and (category == "IRRELEVANT" or bool(psf_draft_candidates(suggestion)))
 
 
 def save_ai_suggestions(root, records, suggestions):
@@ -345,11 +354,14 @@ def refresh_saved_exact_vocabulary_overrides(root):
     return changed_rows
 
 
-def load_ai_suggestions(root):
+def load_ai_suggestions(root, *, lock_timeout=15):
     path = Path(root) / "data/processed/pretrained_label_suggestions.csv"
     if not path.exists():
         return {}
-    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    # Windows can deny opening the target during replacement. Use the same
+    # lock as the writer, releasing it before parsing/normalizing suggestions.
+    with FileLock(str(path) + ".lock", timeout=lock_timeout):
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
     required = {"category_model", "category_revision", "psf_model", "psf_revision", "suggestion_key"}
     if not required.issubset(frame.columns):
         return {}

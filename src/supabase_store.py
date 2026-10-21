@@ -62,7 +62,7 @@ class SupabaseError(RuntimeError):
 def clear_read_cache(*, frames=False):
     session_state().pop("supabase_reads", None)
     # Shared saves and explicit refreshes should invalidate per-user derived views too.
-    for key in ("_fow_source_cache", "_fow_analysis_cache", "_fow_signature_cache"):
+    for key in ("_fow_source_cache", "_fow_analysis_cache", "_fow_signature_cache", "_manual_review_queue"):
         session_state().pop(key, None)
     # Decoded generations remain valid after annotation saves. Every frame read
     # still checks its manifest/file revision; logout removes the entire session.

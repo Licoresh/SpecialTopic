@@ -135,7 +135,7 @@ def test_draft_cancellation_retains_completed_batches_only(worker, monkeypatch):
     from src import pretrained_suggestions
     entered, release = Event(), Event()
     saved = []
-    def predict(batch, taxonomy):
+    def predict(batch, taxonomy, **kwargs):
         if batch[0]["phrase"] == "5":
             entered.set()
             assert release.wait(5)
@@ -165,6 +165,31 @@ def test_concurrent_draft_saves_preserve_all_records(workspace):
     assert len(result) == 12
     assert result.source_id.nunique() == 12
     assert not (workspace / "train/labeled_competencies.csv").exists()
+
+
+def test_bge_drafts_are_saved_before_optional_context_checks(worker, workspace, monkeypatch):
+    from src import pretrained_suggestions as suggestions, ollama_review
+    entered, release = Event(), Event()
+    rows = [{"phrase": "Synthetic skill", "source_type": "jobs", "source_id": "TEST-A"}]
+    def predict(batch, taxonomy, *, review_context):
+        assert review_context is False
+        return [{"label": "Data / Analytics", "psf_competency": "SQL"} for row in batch]
+    def check_context(rows, drafts):
+        entered.set()
+        assert release.wait(10)
+        return drafts
+    monkeypatch.setattr(suggestions, "suggest_labels", predict)
+    monkeypatch.setattr(ollama_review, "review_ambiguous", check_context)
+    job = tasks.start("Generate AI drafts", tasks.suggest, rows, pd.DataFrame(), workspace)
+    try:
+        assert entered.wait(5)
+        assert not job.done.is_set()
+        saved = suggestions.load_ai_suggestions(workspace)
+        assert saved[suggestions.suggestion_key(rows[0])]["psf_competency"] == "SQL"
+        assert storage.read_frame("labeled_competencies").empty
+    finally:
+        release.set()
+    assert finished(job)["status"] == "complete"
 
 
 def test_progress_completion_does_not_reset_unsaved_ui(worker):

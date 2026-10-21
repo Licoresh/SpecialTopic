@@ -1,5 +1,14 @@
 # Validation record
 
+## 2026-10-22 — Review-page drafts and queue reuse, v2.0.55
+
+- Both draft columns remain visible, including pages without predictions. Draft status distinguishes missing, incomplete, ready and intentionally irrelevant rows. Generation processes only missing/incomplete visible rows unless the researcher explicitly regenerates a complete page. Tests cover pages 3 and 4, partial drafts and unchanged manual fields.
+- Page BGE-M3 batches are saved before optional Ollama context checks. The editor polls saved drafts while the job runs and preserves manual category/competency cells, including browser edits arriving with an update. Completion does not refresh away pending decisions or evidence. Readers and writers share a file lock; a busy Windows replacement leaves displayed drafts intact until the next poll.
+- Prepared queues, fragment flags and source-ad counts are cached within the authenticated session. Local file revisions invalidate the cache; shared mode uses revision checks, a 15-second lifetime and explicit Team updates invalidation. Source evidence, save conflict checks, extraction semantics, reviewed-label gates and exports are unchanged.
+- Read-only local check on 93,582 usable occurrences and 94 reference entries: cold queue preparation **2.3698s**, repeated cached preparation **0.0128s**. This excludes local source-pack inventory scans and is not whole-page or school-network timing. No research data was modified.
+- Actual pinned BGE-M3 inference ran offline on one existing SQL occurrence, without saving its prediction: model loading **22.214s**, first inference/reference encoding **13.156s**, repeat inference **0.119s**. Both runs returned an allowed category and three IDs in the active reference. This confirms execution and schema validity, not research accuracy. Ollama was unreachable; its successful live inference was not tested.
+- Full regression suite: **318 passed in 73.45s**, with one existing pandas downcasting FutureWarning in `review_queue.py`; focused suite: **113 passed in 39.80s**. Compilation, diff and localhost health checks passed. Authenticated browser rendering and multi-device school-network performance remain unverified.
+
 ## 2026-10-21 — Background processing and compact review reads, v2.0.54
 
 - Extraction, classifier training (including opt-in after-save training), page AI drafts and bounded local AI batches now run in a session-owned background worker. One heavy job is admitted per app process. A fragment polls only job status, so page navigation remains available and completion does not rerun the page or discard unsaved edits. Cancellation is cooperative; publication disables cancellation. Training retains its existing local lock and shared lease.

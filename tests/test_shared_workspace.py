@@ -372,6 +372,7 @@ def test_shared_review_table_save_as_reviewer(workspace, monkeypatch):
     monkeypatch.setattr(backend, "configured", lambda: True)
     monkeypatch.setattr(backend, "get_token", lambda: "test")
     monkeypatch.setattr(backend, "is_admin", lambda: False)
+    monkeypatch.setattr(storage, "frame_revision", lambda name: "synthetic-revision")
     monkeypatch.setattr(backend, "candidate_contexts", lambda token, keys: {
         key: "Synthetic fixture only" for key in keys})
     candidate = {"phrase": "SYNTHETIC SQL", "normalized_phrase": "synthetic sql", "source_type": "jobs",

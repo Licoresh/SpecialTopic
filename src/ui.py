@@ -132,12 +132,35 @@ def _page_ai_suggestions(path):
     if saved and saved[0] == signature:
         return saved[1]
     from .pretrained_suggestions import load_ai_suggestions
-    result = load_ai_suggestions(path.parents[2])
+    from filelock import Timeout
+    try:
+        result = load_ai_suggestions(path.parents[2], lock_timeout=0)
+    except (Timeout, PermissionError):
+        # A background batch is replacing this file. Keep visible drafts and
+        # retry next poll instead of blocking or clearing the review editor.
+        return saved[1] if saved and saved[0][0] == signature[0] else {}
     st.session_state["_page_ai_suggestions"] = (signature, result)
     return result
 
 
 def _load_manual_review_data(labels):
+    shared = supabase_store.configured()
+    local_files = () if shared else tuple(
+        (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+        for path in sorted((storage.ROOT / "train").rglob("*"))
+        if path.is_file() and path.suffix.lower() in (".csv", ".xlsx")
+    )
+    revision = (str(storage.ROOT), shared, local_files, tuple(
+        storage.frame_revision(name) for name in
+        ("extractions_original", "cleaned_jobs", "cleaned_psf_aai")
+    ), None if shared else storage.frame_revision("team_training_candidates"))
+    # Candidate rows live outside app_state in shared mode. The short TTL and
+    # explicit Team updates refresh also cover additions from other reviewers.
+    return _session_cached_value("_manual_review_queue", revision, _build_manual_review_data,
+                                 ttl=15 if shared else None, max_entries=1)
+
+
+def _build_manual_review_data():
     """Load the real candidate, label, and taxonomy tables for the review page."""
     candidates = pd.DataFrame() if supabase_store.configured() else training_candidates(storage.ROOT)
     shared_candidates = storage.read_frame("team_training_candidates", include_source_text=not supabase_store.configured())
@@ -164,10 +187,15 @@ def _load_manual_review_data(labels):
     missing = candidates.normalized_phrase.eq("")
     candidates.loc[missing, "normalized_phrase"] = candidates.loc[missing, "phrase"].map(normalize_text)
     candidates = candidates[candidates.phrase.str.strip().ne("")].drop_duplicates(["normalized_phrase", "source_type", "source_id"])
-    from .pretrained_suggestions import is_incomplete_phrase
+    from .pretrained_suggestions import is_incomplete_phrase, has_phrase_text
+    candidates = candidates.loc[candidates.phrase.map(has_phrase_text).astype(bool)].copy()
     candidates["needs_phrase_edit"] = candidates.phrase.map(
         {phrase: is_incomplete_phrase(phrase) for phrase in candidates.phrase.unique()}
     )
+    source_pairs = candidates[["normalized_phrase", "source_type", "source_id"]].copy()
+    source_pairs[["source_type", "source_id"]] = source_pairs[["source_type", "source_id"]].apply(lambda values: values.astype(str).str.strip())
+    counts = source_pairs[source_pairs.source_id.ne("")].drop_duplicates().groupby("normalized_phrase").size()
+    candidates["source_ads"] = candidates.normalized_phrase.map(counts).fillna(0).astype(int)
     taxonomy = training_taxonomy(storage.ROOT)
     return candidates, taxonomy
 
@@ -854,9 +882,7 @@ def labeling():
         )
         from .cleaning import normalize_text
         st.caption(f"{candidates.normalized_phrase.nunique():,} distinct phrases · {len(candidates):,} source occurrences · {len(labels):,} saved review rows")
-        from .pretrained_suggestions import has_phrase_text
-        candidates = candidates.loc[candidates.phrase.map(has_phrase_text).astype(bool)].copy()
-        occurrences = candidates.copy()
+        occurrences = candidates
         reviewed_phrases = labels_by_phrase(labels)
         categories = list(dict.fromkeys(LABELS + (labels.label.tolist() if not labels.empty else [])))
         with review_tools:
@@ -898,11 +924,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         if query:
             source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
         phrase_rows = source_filtered.drop_duplicates(["normalized_phrase", "source_id"]).copy()
-        source_pairs = occurrences[["normalized_phrase", "source_type", "source_id"]].copy()
-        source_pairs[["source_type", "source_id"]] = source_pairs[["source_type", "source_id"]].apply(lambda values: values.astype(str).str.strip())
-        phrase_counts = source_pairs[source_pairs.source_id.ne("")].drop_duplicates().groupby("normalized_phrase").size()
-        if not phrase_rows.empty:
-            phrase_rows["source_ads"] = phrase_rows.normalized_phrase.map(phrase_counts).fillna(0).astype(int)
         with review_controls:
             page = st.number_input("Review page (10 rows per page)", 1, max(1, (len(phrase_rows)+9)//10), 1, width=200)
         shown = _review_contexts(phrase_rows.iloc[(page-1)*10:page*10])
@@ -918,14 +939,12 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         shown = pd.DataFrame(columns=["phrase", "normalized_phrase", "source_type", "source_id", "source_ads", "original_text"])
     from .pretrained_suggestions import (
         MODEL_ID, MODEL_REVISION,
-        save_ai_suggestions, suggest_labels, suggestion_key, psf_draft_candidates, PSF_DRAFT_LIMIT,
+        suggestion_key, psf_draft_candidates, draft_complete, PSF_DRAFT_LIMIT,
     )
     if shown.empty and not candidates.empty:
         st.info("No phrases match these filters. Clear the search or turn off awaiting-category review to revisit saved phrases.")
     page_rows = shown.to_dict("records") if not shown.empty else []
     page_identity = frame_hash(shown[["normalized_phrase", "phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
-    saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
-    page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
     def generate_ai_drafts(rows):
         _start_processing("Generate AI drafts", background_tasks.suggest,
                           deepcopy(rows), taxonomy.copy(deep=True), storage.ROOT)
@@ -933,16 +952,13 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
     if not shown.empty:
         with detail_tools, st.popover("AI details", icon=":material/auto_awesome:"):
             st.caption(f"{MODEL_ID} · revision {MODEL_REVISION[:8]} · CPU. First use downloads about 2.3 GB. Similarity scores rank suggestions; they are not accuracy measurements.")
+            st.write(f"Generate drafts for each review page on this host. Up to {PSF_DRAFT_LIMIT} ranked PSF-AAI candidates per occurrence; select only those supported by the source. Manual decisions stay blank until you enter them.")
+            st.caption("IRRELEVANT drafts intentionally have no PSF-AAI candidate. Drafts are local to this host; saved researcher decisions use your configured research storage.")
         if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
             st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
         if taxonomy.empty:
             st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
 
-    has_page_suggestions = bool(page_suggestions and any(item.get("category") for item in page_suggestions))
-    if has_page_suggestions:
-        with detail_tools, st.popover("How to use AI drafts", icon=":material/info:"):
-            st.write(f"Up to {PSF_DRAFT_LIMIT} ranked candidates per occurrence. Select only those supported by the source. AI drafts do not fill or save your manual decisions.")
-            st.caption("Similarity ranks alternatives; it is not confidence or accuracy. Regenerate older drafts for multiple candidates.")
     if not shown.empty:
         st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} occurrences · Category applies to the phrase; PSF-AAI applies to this advertisement.")
     active_taxonomy = storage.read_frame("cleaned_psf_aai")
@@ -962,7 +978,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
     page_occurrences, page_reviews = [], []
     table_rows = []
     for index, row in enumerate(page_rows):
-        suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
         row_normalized = normalize_text(row.get("normalized_phrase") or row.get("phrase", ""))
         saved = reviewed_phrases.get(row_normalized)
         occurrence = occurrence_lookup.get((row.get("source_id", ""), row.get("normalized_phrase", "")))
@@ -976,11 +991,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             "Category": saved.get("label", "") if saved else "",
             "PSF-AAI competencies": [key for key in existing.competency_id if key in reference.index] if not existing.empty else [],
         }
-        if has_page_suggestions:
-            table_row.update({
-                "AI category draft": suggestion.get("category", "") if suggestion.get("category", "") in LABELS else "",
-                "AI PSF-AAI drafts": [item["competency_name"] for item in psf_draft_candidates(suggestion)],
-            })
         table_rows.append(table_row)
     manual_table = pd.DataFrame(table_rows)
     table_config = {
@@ -995,15 +1005,30 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         accept_new_options=False, disabled=not mapping_available, width=300,
         help="Select two or more competencies when this advertisement supports each. Each link requires a separate rationale below.")
     disabled_columns = ["Phrase", "Source ads", "Source advertisement"]
-    if has_page_suggestions:
-        table_config.update({
-            "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
-            "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
-        })
-        disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts"])
-    @st.fragment
+    table_config.update({
+        "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
+        "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
+        "Draft status": st.column_config.TextColumn(disabled=True, width=180),
+    })
+    disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts", "Draft status"])
+    job = st.session_state.get("_background_job")
+    polling_drafts = bool(job and job.title in ("Generate AI drafts", "Generate local drafts")
+                          and job.snapshot()["status"] == "running")
+
+    @st.fragment(run_every=2 if polling_drafts else None)
     def review_editor():
         nonlocal labels
+        saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
+        page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
+        missing_rows = [row for row, draft in zip(page_rows, page_suggestions) if not draft_complete(draft)]
+        manual_table["AI category draft"] = [item.get("category", "") if item.get("category") in LABELS else "" for item in page_suggestions]
+        manual_table["AI PSF-AAI drafts"] = [[item["competency_name"] for item in psf_draft_candidates(draft)] for draft in page_suggestions]
+        manual_table["Draft status"] = [
+            "No competency (irrelevant)" if draft.get("category") == "IRRELEVANT" else
+            "Ready" if draft_complete(draft) else
+            "Needs PSF draft" if draft.get("category") in LABELS else "Not generated"
+            for draft in page_suggestions
+        ]
         with st.container(horizontal=True, vertical_alignment="center", key="manual_review_actions"):
             save_action = st.container(width="content")
             generate_action = st.container(width="content")
@@ -1012,12 +1037,20 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         review_workspace_style(fullscreen)
         draft_key = f"review_draft_{page_identity}"
         revision_key = draft_key + "_revision"
+        editor_key = f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}"
         if draft_key not in st.session_state:
             st.session_state[draft_key] = manual_table.copy()
         # Refresh draft values after generation without discarding manual edits.
         draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competencies"], errors="ignore"))
         if st.session_state.get(draft_key + "_source") != draft_revision:
             current = st.session_state[draft_key].reindex(columns=manual_table.columns).copy()
+            # Apply any just-arrived browser edits before replacing the widget
+            # key for new read-only drafts. Never overwrite a manual selection.
+            for index, changes in st.session_state.get(editor_key, {}).get("edited_rows", {}).items():
+                if int(index) in current.index:
+                    for column in ("Category", "PSF-AAI competencies"):
+                        if column in changes:
+                            current.at[int(index), column] = changes[column]
             for column in manual_table.columns:
                 if column not in ("Category", "PSF-AAI competencies"):
                     current[column] = manual_table[column]
@@ -1031,13 +1064,15 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             width="stretch",
             disabled=disabled_columns,
             column_config=table_config,
-            column_order=["Phrase", "Category", "PSF-AAI competencies"] + (["AI category draft", "AI PSF-AAI drafts"] if has_page_suggestions else []) + ["Source ads", "Source advertisement"],
+            column_order=["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Draft status", "Source ads", "Source advertisement"],
             row_height=52,
             height=min(580, 52 * len(manual_table) + 40),
             alt="Manual review: phrase, category, selected competencies, AI drafts and source advertisement",
             key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
         ) if not manual_table.empty else manual_table
         st.session_state[draft_key] = edited_table.copy()
+        if page_rows:
+            st.caption(f"{len(page_rows) - len(missing_rows)} of {len(page_rows)} drafts ready on this page · {len(missing_rows)} need generation. Drafts update here as batches finish.")
         mapping_updates = []
         for index, row in edited_table.iterrows():
             occurrence = page_occurrences[index]
@@ -1078,7 +1113,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     mapping_updates.append((occurrence, reasons, confirmed, no_match, saved, selected))
         reviewed_rows = []
         for index, row in edited_table.iterrows():
-            suggestion = page_suggestions[index] if index < len(page_suggestions) else {}
             category = row.get("Category", "")
             source_row = page_rows[index]
             reviewed_rows.append({
@@ -1146,11 +1180,11 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
         can_submit = has_category or bool(conflicts) or bool(mapping_updates)
         with generate_action:
-            generate_clicked = action_button("Generate AI suggestions for this page", icon=":material/auto_awesome:", key=f"suggest_labels_{page_identity}", disabled=shown.empty or taxonomy.empty or not supabase_store.is_admin())
+            generate_clicked = action_button("Generate missing AI drafts" if missing_rows or shown.empty else "Regenerate page drafts", icon=":material/auto_awesome:", key=f"suggest_labels_{page_identity}", disabled=shown.empty or taxonomy.empty or not supabase_store.is_admin() or bool(job and job.snapshot()["status"] == "running"))
         with save_action:
             save_clicked = action_button("Save annotations", icon=":material/save:", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit)
         if generate_clicked:
-            generate_ai_drafts(page_rows)
+            generate_ai_drafts(missing_rows or page_rows)
         if save_clicked:
             try:
                 for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
@@ -1217,6 +1251,15 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             with st.expander("Saved category annotations"):
                 display(labels)
         st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
+        # End polling only when it cannot interrupt a manual decision. Otherwise
+        # retain this view and its original conflict versions until navigation.
+        manual_columns = ["Category", "PSF-AAI competencies"]
+        pending_edits = not edited_table.reindex(columns=manual_columns).equals(manual_table.reindex(columns=manual_columns))
+        evidence_visible = bool(mapping_updates) or any(
+            len(value) for value in edited_table.get("PSF-AAI competencies", []) if value is not None
+        ) or any(not saved.empty for saved in page_reviews)
+        if polling_drafts and job.snapshot()["status"] != "running" and not pending_edits and not evidence_visible:
+            st.rerun()
     review_editor()
 
 

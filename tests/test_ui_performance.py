@@ -28,6 +28,43 @@ st.session_state.synthetic_rows = len(value['rows'])
     assert app.session_state["synthetic_rows"] == 1
 
 
+def test_review_queue_reuses_preparation_and_detects_source_updates(workspace, monkeypatch):
+    from src import ui
+    monkeypatch.setattr(ui.st, "session_state", {})
+    build = Mock(return_value=(pd.DataFrame({"phrase": ["SYNTHETIC"]}), pd.DataFrame()))
+    monkeypatch.setattr(ui, "_build_manual_review_data", build)
+    first, _ = ui._load_manual_review_data(pd.DataFrame())
+    first.loc[0, "phrase"] = "unsaved edit"
+    second, _ = ui._load_manual_review_data(pd.DataFrame())
+    assert second.phrase.tolist() == ["SYNTHETIC"]
+    assert build.call_count == 1
+    storage.save_frame("extractions_original", pd.DataFrame({"original_phrase": ["NEW"]}))
+    ui._load_manual_review_data(pd.DataFrame())
+    assert build.call_count == 2
+    (workspace / "train").mkdir(exist_ok=True)
+    (workspace / "train/new_candidates.csv").write_text("phrase\nNEW\n", encoding="utf-8")
+    ui._load_manual_review_data(pd.DataFrame())
+    assert build.call_count == 3
+    backend.clear_read_cache()
+    ui._load_manual_review_data(pd.DataFrame())
+    assert build.call_count == 4
+
+
+def test_draft_poll_retains_previous_values_during_atomic_save(workspace, monkeypatch):
+    from filelock import FileLock
+    from src import ui
+    from src.pretrained_suggestions import save_ai_suggestions, suggestion_key
+    monkeypatch.setattr(ui.st, "session_state", {})
+    path = workspace / "data/processed/pretrained_label_suggestions.csv"
+    row = {"phrase": "Synthetic skill", "source_type": "jobs", "source_id": "TEST-A"}
+    save_ai_suggestions(workspace, [row], [{"label": "Soft / Enabling"}])
+    assert ui._page_ai_suggestions(path)[suggestion_key(row)]["category"] == "Soft / Enabling"
+    save_ai_suggestions(workspace, [row], [{"label": "Data / Analytics"}])
+    with FileLock(str(path) + ".lock"):
+        assert ui._page_ai_suggestions(path)[suggestion_key(row)]["category"] == "Soft / Enabling"
+    assert ui._page_ai_suggestions(path)[suggestion_key(row)]["category"] == "Data / Analytics"
+
+
 def test_local_frame_cache_detects_changes_and_never_leaks_edits(workspace, monkeypatch):
     monkeypatch.setattr(backend.st, "session_state", {})
     path = workspace / "data/processed/test.csv"

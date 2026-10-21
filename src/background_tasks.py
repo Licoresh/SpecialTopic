@@ -100,14 +100,21 @@ def train(test_size=.2, include_irrelevant=False, vectorizer_config=None, *, pro
 
 def suggest(rows, taxonomy, root, *, progress):
     from .pretrained_suggestions import suggest_labels, save_ai_suggestions
+    from .ollama_review import review_ambiguous
+    drafts = []
     for start_row in range(0, len(rows), 5):
         progress(start_row / max(len(rows), 1),
                  f"Preparing drafts {start_row + 1}–{min(start_row + 5, len(rows))}. First use may download/load BGE-M3.")
         batch = rows[start_row:start_row + 5]
-        predicted = suggest_labels(batch, taxonomy)
+        predicted = suggest_labels(batch, taxonomy, review_context=False)
         checkpoint()
         save_ai_suggestions(root, batch, predicted)
-    return f"Saved {len(rows):,} AI drafts. Manual review is still required. Refresh the review table when ready."
+        drafts.extend(predicted)
+    progress(.9, "Drafts are ready in the table. Finishing optional context checks…")
+    reviewed = review_ambiguous(rows, drafts)
+    checkpoint()
+    save_ai_suggestions(root, rows, reviewed)
+    return f"Saved {len(rows):,} AI drafts. Manual review is still required."
 
 
 def suggest_local(root, *, progress):
