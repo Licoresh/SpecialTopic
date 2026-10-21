@@ -8,6 +8,12 @@ from src.workflow import run_extraction
 
 PAGES = list(ui.PAGES)
 
+
+def wait_processing(app):
+    job = app.session_state["_background_job"]
+    assert job.done.wait(45), job.snapshot()
+    assert job.snapshot()["status"] == "complete", job.snapshot()
+
 def page_app(title):
     return AppTest.from_string(f"from src.ui import render\nrender({title!r})").run(timeout=60)
 
@@ -37,6 +43,7 @@ def test_training_selection_and_evaluation(ui_workspace, labeled):
     save_annotations(labeled, "Synthetic reviewer")
     app = page_app("ML Training")
     app.button[0].click().run(timeout=60)
+    wait_processing(app)
     assert not app.exception and not app.error
     assert len(storage.read_frame("model_metrics")) == 2
     assert (ui_workspace/"models/competency_classifier.joblib").exists()
@@ -163,6 +170,7 @@ def test_changed_dataset_warns_without_automatic_retraining(ui_workspace, labele
     save_annotations(labeled, "Synthetic reviewer")
     app = page_app("ML Training")
     app.button[0].click().run(timeout=60)
+    wait_processing(app)
     model = ui_workspace/"models/competency_classifier.joblib"
     before = model.stat().st_mtime_ns
     path = ui_workspace/"train/labeled_competencies.csv"
@@ -279,6 +287,7 @@ def test_mapping_cleaning_extraction_buttons(ui_workspace):
     assert len(storage.read_frame("cleaned_jobs")) == 1
     extraction = page_app("Competency Extraction")
     extraction.button[0].click().run(timeout=60)
+    wait_processing(extraction)
     assert not extraction.error and not extraction.exception
     assert not storage.read_frame("extractions_original").empty
 
@@ -393,7 +402,7 @@ def test_auto_training_runs_only_when_reviewed_dataset_passes_validation(ui_work
     valid_script = '''from unittest.mock import patch
 from src import storage
 from src.ui import _auto_train_after_review
-with patch("src.ui.train_and_save_models", return_value=({"rows_used": 20}, None)) as train:
+with patch("src.ui._start_processing") as train:
     _auto_train_after_review(storage.read_frame("labeled_competencies"), True)
     assert train.called
 '''
@@ -406,7 +415,7 @@ with patch("src.ui.train_and_save_models", return_value=({"rows_used": 20}, None
     invalid_script = '''from unittest.mock import patch
 from src import storage
 from src.ui import _auto_train_after_review
-with patch("src.ui.train_and_save_models") as train:
+with patch("src.ui._start_processing") as train:
     _auto_train_after_review(storage.read_frame("labeled_competencies"), True)
     assert not train.called
 '''
@@ -504,7 +513,7 @@ def test_correction_and_report_save_actions(ui_workspace, jobs, taxonomy):
     assert len(list((ui_workspace/"outputs/reports").glob("*/research_results.xlsx"))) == 1
 
 
-def test_individual_csv_exports_are_generated_only_when_opened(ui_workspace, jobs, taxonomy, monkeypatch):
+def test_individual_csv_exports_are_deferred_until_download(ui_workspace, jobs, taxonomy, monkeypatch):
     from unittest.mock import Mock
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)
@@ -517,7 +526,8 @@ def test_individual_csv_exports_are_generated_only_when_opened(ui_workspace, job
     app.session_state["individual_exports"] = True
     app.run(timeout=60)
     assert not app.exception and not app.error
-    assert exporter.call_count > 0
+    exporter.assert_not_called()
+    assert len(app.get("download_button")) > 4
 
 
 def test_training_reuses_file_inventory(ui_workspace, labeled, monkeypatch):

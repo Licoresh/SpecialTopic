@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import json
 import pandas as pd
+from filelock import FileLock
 from .cleaning import normalize_text
 from .utils import digest, timestamp
 from .storage import atomic_bytes
@@ -283,21 +284,23 @@ def save_ai_suggestions(root, records, suggestions):
             "context_reason": suggestion.get("context_reason", ""),
         })
     path = Path(root) / "data/processed/pretrained_label_suggestions.csv"
-    previous = pd.read_csv(path, dtype=str, keep_default_na=False) if path.exists() else pd.DataFrame(columns=SUGGESTION_COLUMNS)
-    new_rows = pd.DataFrame(rows, columns=SUGGESTION_COLUMNS)
-    if not previous.empty:
-        replaced = {
-            (normalize_text(row.get("phrase", "")), str(row.get("source_type", "")), str(row.get("source_id", "")))
-            for row in records
-        }
-        previous_identity = list(zip(
-            previous.phrase.map(normalize_text), previous.source_type.astype(str), previous.source_id.astype(str)
-        ))
-        previous = previous.loc[[identity not in replaced for identity in previous_identity]]
-    combined = new_rows if previous.empty else pd.concat([previous, new_rows], ignore_index=True).reindex(columns=SUGGESTION_COLUMNS)
-    combined = combined.drop_duplicates("suggestion_key", keep="last")
-    combined = apply_exact_vocabulary_overrides(combined)
-    atomic_bytes(path, combined.to_csv(index=False).encode("utf-8-sig"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path) + ".lock", timeout=15):
+        previous = pd.read_csv(path, dtype=str, keep_default_na=False) if path.exists() else pd.DataFrame(columns=SUGGESTION_COLUMNS)
+        new_rows = pd.DataFrame(rows, columns=SUGGESTION_COLUMNS)
+        if not previous.empty:
+            replaced = {
+                (normalize_text(row.get("phrase", "")), str(row.get("source_type", "")), str(row.get("source_id", "")))
+                for row in records
+            }
+            previous_identity = list(zip(
+                previous.phrase.map(normalize_text), previous.source_type.astype(str), previous.source_id.astype(str)
+            ))
+            previous = previous.loc[[identity not in replaced for identity in previous_identity]]
+        combined = new_rows if previous.empty else pd.concat([previous, new_rows], ignore_index=True).reindex(columns=SUGGESTION_COLUMNS)
+        combined = combined.drop_duplicates("suggestion_key", keep="last")
+        combined = apply_exact_vocabulary_overrides(combined)
+        atomic_bytes(path, combined.to_csv(index=False).encode("utf-8-sig"))
     return combined
 
 

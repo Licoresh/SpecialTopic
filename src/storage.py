@@ -13,6 +13,42 @@ from .utils import digest, timestamp
 MODEL_TABLES = {"model_metrics", "training_snapshot"}
 MODEL_JSON = {"selected_model", "training_details"}
 REMOTE_FRAME_CHUNK_BYTES = 4 * 1024 * 1024
+EXTRACTION_REVIEW_COLUMNS = "extraction_id original_phrase normalized_phrase source_type source_id competency_category human_label model_prediction accepted psf_competency matching_method confidence_score".split()
+
+
+def _cached_frame(key, revision, loader, columns=None, source_ids=None):
+    """Keep decoded frames within this session; callers receive independent cells."""
+    from .supabase_store import session_state
+    cache = session_state().setdefault("_fow_frame_cache", {})
+    entry = cache.get(key)
+    if entry is None or entry[0] != revision:
+        frame = loader()
+        cache.pop(key, None)
+        cache[key] = (revision, frame)
+        while len(cache) > 4:
+            cache.pop(next(iter(cache)))
+    else:
+        frame = entry[1]
+    if source_ids is not None and not frame.empty:
+        frame = frame[frame.source_id.isin(source_ids)]
+    if columns is not None:
+        frame = frame.loc[:, [column for column in columns if column in frame]]
+    return frame.copy(deep=True)
+
+
+def frame_revision(name):
+    """Cheap version check, including extraction reruns with identical inputs."""
+    from . import supabase_store as backend
+    if backend.configured():
+        token = backend.get_token()
+        if not token:
+            raise backend.SupabaseError("Sign in to read the shared research workspace.")
+        return backend.state_version(_shared_key("frame", name), token)
+    path = ROOT / "data/processed" / f"{name}.csv"
+    if not path.is_file():
+        return None
+    stat = path.stat()
+    return (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
 
 
 def _shared_key(kind, name, writing=False):
@@ -20,7 +56,7 @@ def _shared_key(kind, name, writing=False):
     from . import supabase_store as backend
     if not (name in MODEL_TABLES or name.startswith("evaluation_") or name in MODEL_JSON):
         return f"{kind}:{name}"
-    run_id = backend.st.session_state.get("training_run_id") if writing else None
+    run_id = backend.session_state().get("training_run_id") if writing else None
     if not writing:
         metadata = backend.read_state("json:model_metadata", backend.get_token()) or {}
         run_id = metadata.get("shared_run_id")
@@ -91,7 +127,7 @@ def _save_remote_frame(name, frame):
         elided = ["original_text"]
     columns = list(shared.columns)
     records = shared.to_dict(orient="records")
-    payload = {"columns": columns, "records": records}
+    payload = {"columns": columns, "records": records, "_elided_columns": elided}
     encoded_size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     if encoded_size <= REMOTE_FRAME_CHUNK_BYTES:
         _remote_write("frame", name, payload)
@@ -100,19 +136,39 @@ def _save_remote_frame(name, frame):
     chunks = _frame_chunks(columns, records)
     for index, chunk in enumerate(chunks):
         _remote_write("frame", f"{name}:chunk:{generation}:{index}", {"records": chunk})
+    review_projection = None
+    if name == "extractions_original":
+        review = shared.loc[:, [column for column in EXTRACTION_REVIEW_COLUMNS if column in shared]]
+        review_chunks = _frame_chunks(list(review.columns), review.to_dict(orient="records"))
+        for index, chunk in enumerate(review_chunks):
+            _remote_write("frame", f"{name}:chunk:review:{generation}:{index}", {"records": chunk})
+        review_projection = {"_storage_codec": "frame-chunks-v1", "generation": generation,
+                             "chunk_count": len(review_chunks), "record_count": len(review),
+                             "columns": list(review.columns), "chunk_prefix": f"{name}:chunk:review"}
     # Publish only after every chunk is durable; interrupted writes leave the
     # previous snapshot readable.
     _remote_write("frame", name, {"_storage_codec": "frame-chunks-v1", "generation": generation,
                                   "chunk_count": len(chunks), "record_count": len(records),
-                                  "columns": columns, "elided_columns": elided})
+                                  "columns": columns, "elided_columns": elided,
+                                  "review_projection": review_projection,
+                                  "chunk_sources": [sorted({str(row.get("source_id", "")) for row in chunk}) for chunk in chunks]
+                                      if name == "extractions_original" else None,
+                                  "source_counts": shared.source_id.astype(str).value_counts().to_dict()
+                                      if name == "extractions_original" and "source_id" in shared else None})
 
 
-def _read_remote_frame(name, payload):
+def _read_remote_frame(name, payload, source_ids=None):
     if not isinstance(payload, dict) or payload.get("_storage_codec") != "frame-chunks-v1":
         return payload
     generation = payload.get("generation", "")
     count = int(payload.get("chunk_count", 0))
-    names = [f"{name}:chunk:{generation}:{index}" for index in range(count)]
+    indices = list(range(count))
+    source_counts = payload.get("source_counts")
+    partitions = payload.get("chunk_sources")
+    if source_ids is not None and source_counts is not None and partitions is not None and len(partitions) == count:
+        indices = [index for index in indices if set(partitions[index]).intersection(source_ids)]
+    prefix = payload.get("chunk_prefix", f"{name}:chunk")
+    names = [f"{prefix}:{generation}:{index}" for index in indices]
     chunks = _remote_payloads("frame", names)
     records = []
     for index, chunk_name in enumerate(names):
@@ -120,8 +176,12 @@ def _read_remote_frame(name, payload):
         if not isinstance(chunk, dict) or not isinstance(chunk.get("records"), list):
             raise ValueError(f"Shared table {name} is missing chunk {index + 1} of {count}; ask an admin to retry the last save.")
         records.extend(chunk["records"])
-    if len(records) != int(payload.get("record_count", -1)):
+    if len(indices) == count and len(records) != int(payload.get("record_count", -1)):
         raise ValueError(f"Shared table {name} is incomplete; ask an admin to retry the last save.")
+    if source_ids is not None:
+        records = [row for row in records if str(row.get("source_id", "")) in source_ids]
+        if source_counts is not None and len(records) != sum(source_counts.get(source, 0) for source in source_ids):
+            raise ValueError(f"Shared table {name} has incomplete source evidence; retry the last save.")
     return {"columns": payload.get("columns", []), "records": records,
             "_elided_columns": payload.get("elided_columns", [])}
 
@@ -227,10 +287,10 @@ def clear_extraction_data():
     for temporary in folder.glob("extractions_original.csv*.tmp"):
         temporary.unlink(missing_ok=True)
     for key in ("_fow_source_cache", "_fow_analysis_cache", "_fow_signature_cache", "_page_ai_suggestions"):
-        supabase_store.st.session_state.pop(key, None)
+        supabase_store.session_state().pop(key, None)
     return archive if backed_up else None
 
-def read_frame(name, *, include_source_text=True):
+def read_frame(name, *, include_source_text=True, columns=None, source_ids=None):
     from .supabase_store import configured, get_token, SupabaseError
     if configured() and not get_token():
         raise SupabaseError("Sign in to read the shared research workspace.")
@@ -241,17 +301,40 @@ def read_frame(name, *, include_source_text=True):
     if name == "team_training_candidates":
         from .supabase_store import configured, get_token, read_candidates
         if configured() and get_token():
-            return pd.DataFrame(read_candidates(get_token()), dtype=str).fillna("")
+            return pd.DataFrame(read_candidates(get_token(), include_source_text=include_source_text), dtype=str).fillna("")
     if name == "labeled_competencies":
         from .supabase_store import configured, get_token, read_annotations
         if configured() and get_token():
             from .training_sources import ANNOTATION_COLUMNS
             return pd.DataFrame(read_annotations(get_token()), columns=ANNOTATION_COLUMNS + ["version"], dtype=str).fillna("")
     payload = _remote_payload("frame", name)
+    source_ids = tuple(sorted(set(str(source) for source in source_ids))) if source_ids is not None else None
     if payload is not None:
-        payload = _read_remote_frame(name, payload)
-        frame = pd.DataFrame(payload.get("records", []), columns=payload.get("columns", []), dtype=str).fillna("")
-        if include_source_text and "original_text" in payload.get("_elided_columns", []) and not frame.empty:
+        if payload.get("_storage_codec") == "frame-chunks-v1":
+            from .supabase_store import configuration
+            read_name = name
+            projection = payload.get("review_projection")
+            if projection and columns is not None and set(columns).issubset(projection["columns"]):
+                payload = projection
+                read_name = name + ":review"
+            # A published generation is immutable. Check its small manifest on
+            # the usual auth-cache schedule, but download/decode its chunks once.
+            key = ("shared", configuration()[0], digest(get_token()), read_name)
+            if source_ids is not None:
+                key += (source_ids,)
+            def decode():
+                decoded = _read_remote_frame(read_name, payload, source_ids)
+                return pd.DataFrame(decoded["records"], columns=decoded["columns"], dtype=str).fillna("")
+            frame = _cached_frame(key, digest(payload), decode, columns)
+            elided = payload.get("elided_columns", [])
+        else:
+            frame = pd.DataFrame(payload.get("records", []), columns=payload.get("columns", []), dtype=str).fillna("")
+            if source_ids is not None and not frame.empty:
+                frame = frame[frame.source_id.isin(source_ids)]
+            if columns is not None:
+                frame = frame.loc[:, [column for column in columns if column in frame]]
+            elided = payload.get("_elided_columns", [])
+        if include_source_text and (columns is None or "original_text" in columns) and "original_text" in elided and not frame.empty:
             jobs = read_frame("cleaned_jobs")
             if {"source_id", "original_text"}.issubset(jobs.columns):
                 source_text = jobs.drop_duplicates("source_id").set_index("source_id").original_text
@@ -272,11 +355,36 @@ def read_frame(name, *, include_source_text=True):
             return _bundled_psf_default()
         return pd.DataFrame()
     try:
-        frame = pd.read_csv(path, dtype=str, keep_default_na=False,
-                            usecols=None if include_source_text else lambda column: column != "original_text")
+        stat = path.stat()
+        key = ("local", str(path.resolve()))
+        revision = (stat.st_mtime_ns, stat.st_size)
+        from .supabase_store import session_state
+        full = session_state().get("_fow_frame_cache", {}).get(key)
+        requested = tuple(columns) if columns is not None else None
+        usecols = None
+        if not full or full[0] != revision:
+            if requested is not None or not include_source_text:
+                # Skip constructing long context/taxonomy strings when a screen
+                # needs only metadata. A full cached frame can still be reused.
+                key += (requested, include_source_text)
+                usecols = lambda column: (requested is None or column in requested or (source_ids is not None and column == "source_id")) and (include_source_text or column != "original_text")
+            if source_ids is not None:
+                key += (source_ids,)
+        def read_local():
+            if source_ids is not None and stat.st_size > 32 * 1024 * 1024:
+                selected = []
+                with pd.read_csv(path, dtype=str, keep_default_na=False, usecols=usecols, chunksize=2000) as chunks:
+                    for chunk in chunks:
+                        selected.append(chunk[chunk.source_id.isin(source_ids)])
+                return pd.concat(selected, ignore_index=True)
+            return pd.read_csv(path, dtype=str, keep_default_na=False, usecols=usecols)
+        frame = _cached_frame(
+            key, revision,
+            read_local, columns, source_ids,
+        )
         if name == "cleaned_psf_aai" and frame.empty:
             return _bundled_psf_default()
-        return frame
+        return frame if include_source_text else frame.drop(columns=["original_text"], errors="ignore")
     except pd.errors.EmptyDataError:
         if name == "cleaned_psf_aai":
             return _bundled_psf_default()

@@ -58,6 +58,8 @@ def test_draft_limit_resumes_without_skipping_unsaved_rows(workspace, monkeypatc
     monkeypatch.setattr(runner, "training_taxonomy", lambda root: pd.DataFrame([{"competency_name": "Synthetic"}]))
     monkeypatch.setattr(runner, "read_annotations", lambda root: pd.DataFrame())
     monkeypatch.setattr(runner, "suggest_labels", lambda rows, taxonomy: [{"label": "Data / Analytics"} for _ in rows])
-    assert runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)["suggestions_generated"] == 3
+    first = runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)
+    assert first["suggestions_generated"] == 3
+    assert first["candidate_rows_scanned"] == 3
     assert runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)["suggestions_generated"] == 3
     assert runner.run_local_suggestions(workspace, batch_size=2, max_drafts=3)["suggestions_generated"] == 1

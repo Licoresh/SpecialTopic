@@ -1,7 +1,5 @@
 from functools import lru_cache
 import re
-import spacy
-from spacy.symbols import ORTH
 from .cleaning import clean_text, normalize_text
 
 TECH = re.compile(r"(?<!\w)(?:C\+\+|C#|\.NET)(?!\w)", re.I)
@@ -9,6 +7,8 @@ EXTRACTION_VERSION = 2
 
 @lru_cache(maxsize=1)
 def get_nlp():
+    import spacy
+    from spacy.symbols import ORTH
     nlp = spacy.blank("en")
     nlp.add_pipe("sentencizer")
     nlp.add_pipe("lemmatizer", config={"mode": "lookup"})
@@ -47,7 +47,10 @@ def extract_candidate_phrases(texts, stopwords=(), batch_size=64, max_candidates
     unique = list(dict.fromkeys(clean_text(t) for t in texts))
     priorities = {normalize_text(phrase) for phrase in priority_phrases}
     output = {}
+    from .background_tasks import checkpoint
+    checkpoint()
     for text, doc in zip(unique, get_nlp().pipe(unique, batch_size=batch_size)):
+        checkpoint()
         candidates = extract_ngrams(doc, stopwords)
         seen = set()
         retained = []

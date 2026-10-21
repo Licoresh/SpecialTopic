@@ -18,7 +18,7 @@ from .preprocessing import get_nlp
 from .validation import validate_taxonomy
 from .classification import VECTORIZER_CONFIG, predict_competency_category
 from .training_data import load_labeled_data, validate_labeled_data
-from .model_training import train_and_save_models, read_model_metadata, training_data_changed
+from .model_training import read_model_metadata, training_data_changed
 from .training_sources import (resolve_training_file, inspect_training_folder, training_candidates,
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
@@ -34,11 +34,56 @@ from .readiness import (assess_research_readiness, source_overlap,
                         historical_category_disagreements, research_data_profile)
 from . import supabase_store
 from .action_guard import action_button, action_form_submit_button, finish_action_run
-from .review_queue import (group_candidates_by_phrase, labels_by_phrase, expand_phrase_annotations,
+from .review_queue import (labels_by_phrase, expand_phrase_annotations,
                            manual_mapping_occurrences, preserve_occurrence_references)
 from .loading_ui import load_data_with_skeleton
 
 from .design import apply_design, review_workspace_style
+from . import background_tasks
+
+
+def _start_processing(title, function, *args, **kwargs):
+    try:
+        job = background_tasks.start(title, function, *args, **kwargs)
+    except (ValueError, supabase_store.SupabaseError) as exc:
+        st.warning(str(exc))
+        return
+    st.session_state["_background_job"] = job
+    st.session_state.pop("_background_job_seen", None)
+    st.rerun()
+
+
+def _processing_status():
+    job = st.session_state.get("_background_job")
+    if job is None:
+        return
+
+    @st.fragment(run_every=1 if job.snapshot()["status"] == "running" else None)
+    def status_panel():
+        state = job.snapshot()
+        with st.container(border=True):
+            if state["status"] == "running":
+                st.progress(state["value"], text=f"{job.title} · {state['message']}")
+                if state["cancel_requested"]:
+                    st.caption("Stopping after the current processing step…")
+                else:
+                    if st.button("Stop processing", key="cancel_background_job", disabled=not state["cancellable"]):
+                        job.cancel()
+                        st.rerun(scope="fragment")
+                st.caption("You can continue reviewing or open another page. Keep this server running.")
+            else:
+                if st.session_state.get("_background_job_seen") is not job:
+                    supabase_store.clear_read_cache()
+                    st.session_state.pop("_extraction_results_frame", None)
+                    st.session_state["_background_job_seen"] = job
+                show = st.success if state["status"] == "complete" else st.error if state["status"] == "failed" else st.info
+                show(f"{job.title}: {state['message']}")
+                if st.button("Refresh view", key="refresh_after_processing",
+                             help="Save any table edits first. This reloads the page with the latest saved results."):
+                    st.session_state.pop("_background_job", None)
+                    st.session_state.pop("_background_job_seen", None)
+                    st.rerun()
+    status_panel()
 
 
 @st.cache_data(show_spinner=False)
@@ -63,11 +108,11 @@ def _session_cached_value(cache_name, key, loader, *, ttl=12, max_entries=4):
     cache = st.session_state.setdefault(cache_name, {})
     now = time.monotonic()
     entry = cache.get(key)
-    if entry and now - entry[0] < ttl:
+    if entry and (ttl is None or now - entry[0] < ttl):
         return deepcopy(entry[1])
     value = loader()
-    cache[key] = (now, deepcopy(value))
-    for stale_key in [item for item, saved in cache.items() if now - saved[0] >= ttl]:
+    cache[key] = (time.monotonic(), deepcopy(value))
+    for stale_key in [item for item, saved in cache.items() if ttl is not None and now - saved[0] >= ttl]:
         cache.pop(stale_key, None)
     while len(cache) > max_entries:
         oldest = min(cache, key=lambda item: cache[item][0])
@@ -95,12 +140,17 @@ def _page_ai_suggestions(path):
 def _load_manual_review_data(labels):
     """Load the real candidate, label, and taxonomy tables for the review page."""
     candidates = pd.DataFrame() if supabase_store.configured() else training_candidates(storage.ROOT)
-    shared_candidates = storage.read_frame("team_training_candidates")
+    shared_candidates = storage.read_frame("team_training_candidates", include_source_text=not supabase_store.configured())
+    if supabase_store.configured() and not shared_candidates.empty:
+        shared_candidates["_shared_candidate"] = True
     if not shared_candidates.empty:
         candidates = pd.concat([candidates, shared_candidates], ignore_index=True).fillna("")
-    extracted = storage.read_frame("extractions_original")
+    extracted = storage.read_frame("extractions_original", columns=[
+        "original_phrase", "normalized_phrase", "source_type", "source_id",
+    ])
     if not extracted.empty:
         extracted = extracted.rename(columns={"original_phrase": "phrase"})
+        extracted["_job_context"] = "jobs"
         jobs = storage.read_frame("cleaned_jobs")
         if not jobs.empty:
             source = jobs.drop_duplicates("source_id").set_index("source_id")
@@ -110,18 +160,39 @@ def _load_manual_review_data(labels):
     for column in ("phrase", "normalized_phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"):
         if column not in candidates:
             candidates[column] = ""
-    if supabase_store.configured() and not candidates.empty:
-        jobs = storage.read_frame("cleaned_jobs")
-        if not jobs.empty and {"source_id", "job_description"}.issubset(jobs):
-            contexts = jobs.drop_duplicates("source_id").set_index("source_id").job_description
-            candidates["original_text"] = candidates.original_text.where(candidates.original_text.ne(""), candidates.source_id.map(contexts).fillna(""))
     from .cleaning import normalize_text
-    candidates["normalized_phrase"] = candidates.normalized_phrase.where(candidates.normalized_phrase.ne(""), candidates.phrase.map(normalize_text))
+    missing = candidates.normalized_phrase.eq("")
+    candidates.loc[missing, "normalized_phrase"] = candidates.loc[missing, "phrase"].map(normalize_text)
     candidates = candidates[candidates.phrase.str.strip().ne("")].drop_duplicates(["normalized_phrase", "source_type", "source_id"])
     from .pretrained_suggestions import is_incomplete_phrase
-    candidates["needs_phrase_edit"] = candidates.phrase.map(is_incomplete_phrase)
+    candidates["needs_phrase_edit"] = candidates.phrase.map(
+        {phrase: is_incomplete_phrase(phrase) for phrase in candidates.phrase.unique()}
+    )
     taxonomy = training_taxonomy(storage.ROOT)
     return candidates, taxonomy
+
+
+def _review_contexts(frame):
+    """Resolve omitted shared evidence before displaying, suggesting or reviewing it."""
+    frame = frame.copy()
+    if "_job_context" in frame and frame._job_context.eq("jobs").any():
+        jobs = storage.read_frame("cleaned_jobs", columns=["source_id", "original_text", "job_description"])
+        if not jobs.empty:
+            context_column = "original_text" if "original_text" in jobs else "job_description"
+            contexts = jobs.drop_duplicates("source_id").set_index("source_id")[context_column]
+            selected = frame._job_context.eq("jobs")
+            frame.loc[selected, "original_text"] = frame.loc[selected, "source_id"].map(contexts).fillna("")
+    if not supabase_store.configured() or "_shared_candidate" not in frame:
+        return frame
+    shared = frame.loc[frame["_shared_candidate"].eq(True)]
+    keys = list(shared[["normalized_phrase", "source_type", "source_id"]].itertuples(index=False, name=None))
+    if keys:
+        contexts = supabase_store.candidate_contexts(supabase_store.get_token(), keys)
+        for index, row in shared.iterrows():
+            key = (row.normalized_phrase, row.source_type, row.source_id)
+            if contexts.get(key):
+                frame.loc[index, "original_text"] = contexts[key]
+    return frame
 
 @st.cache_data(show_spinner=False)
 def cached_clean(frame, kind, duplicate_list):
@@ -131,13 +202,19 @@ def cached_clean(frame, kind, duplicate_list):
 def cached_nlp():
     return get_nlp()
 
-@st.cache_data(show_spinner=False)
-def workbook_bytes(tables, metadata):
-    return export_excel(tables, metadata)
-
 def display(frame):
     if frame.empty:
         st.caption("No records to display for the current selection.")
+    if len(frame) > 100:
+        number = st.session_state.get("_table_number", 0)
+        st.session_state["_table_number"] = number + 1
+        key = f"table_page_{st.session_state.get('_fow_current_page', '')}_{number}"
+        total = (len(frame) + 99) // 100
+        if st.session_state.get(key, 1) > total:
+            st.session_state[key] = total
+        page = st.number_input("Table page (100 rows)", 1, total, key=key)
+        st.caption(f"{len(frame):,} total rows. Full tables are available in Reports and downloads.")
+        frame, _, _ = _paginate_frame(frame, page)
     text_columns = {key: st.column_config.TextColumn(width="large") for key in
                     ("original_text", "job_description", "rationale", "interpretation", "competency_description", "range_of_application") if key in frame}
     st.dataframe(frame, width="stretch", hide_index=True, row_height=38,
@@ -223,6 +300,7 @@ def filtered_bundle():
         correction_revision = None
     mapping_reviews = storage.read_frame(REVIEW_TABLE)
     analysis_revision = digest({"inputs": signature, "corrections": correction_revision,
+                                "extraction": storage.frame_revision("extractions_original"),
                                 "mapping_reviews": frame_hash(mapping_reviews)})
     source_key = f"sources:{analysis_revision}"
     source_snapshot = _session_cached_value(
@@ -230,6 +308,7 @@ def filtered_bundle():
         lambda: {"jobs": storage.read_frame("cleaned_jobs"),
                  "taxonomy": storage.read_frame("cleaned_psf_aai"),
                  "extracted": current_extractions(), "mapping_reviews": mapping_reviews},
+        ttl=None, max_entries=1,
     )
     jobs, skills = source_snapshot["jobs"], source_snapshot["extracted"]
     upload = storage.read_json("uploads", {}).get("jobs", {})
@@ -259,6 +338,7 @@ def filtered_bundle():
         "_fow_analysis_cache", bundle_key,
         lambda: analysis_bundle(job_filters=jf, skill_filters=sf, statuses=status,
                                 source_snapshot=source_snapshot),
+        ttl=None, max_entries=2,
     )
 
 
@@ -340,8 +420,8 @@ def home():
                     st.write(description)
                     page_button(path, link, key=f"home_workflow_{number}")
     try:
-        readiness_path = resolve_training_file(storage.ROOT)
-        readiness_labels = storage.read_frame("labeled_competencies") if supabase_store.configured() else load_labeled_data(readiness_path)
+        readiness_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
+                            else load_labeled_data(resolve_training_file(storage.ROOT)))
         _, readiness_validation = cached_label_validation(readiness_labels, require_provenance=True)
         readiness_audit = assess_research_readiness(readiness_labels, model, readiness_validation)
     except (ValueError, OSError) as exc:
@@ -612,26 +692,22 @@ def extraction():
         if training_data_changed():
             st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     if action_button("Run extraction and classification", type="primary"):
-        with st.skeleton(height=240):
-            uploads = storage.read_json("uploads", {})
-            if uploads.get("psf_aai") and _local_verified_psf_available():
-                _persist_psf_reference_files(force=True)
-            else:
-                verified = storage.read_frame("verified_psf_aai")
-                if not verified.empty:
-                    _persist_psf_reference_files(verified)
-            cached_nlp()
-            result = run_extraction()
-        st.session_state["_extraction_results_frame"] = result.drop(columns=["original_text"], errors="ignore")
-        st.session_state["_extraction_results_page"] = 1
-        st.success(f"Saved {len(result):,} candidate/match records with evidence.")
+        uploads = storage.read_json("uploads", {})
+        if uploads.get("psf_aai") and _local_verified_psf_available():
+            _persist_psf_reference_files(force=True)
+        else:
+            verified = storage.read_frame("verified_psf_aai")
+            if not verified.empty:
+                _persist_psf_reference_files(verified)
+        _start_processing("Extract skill phrases", background_tasks.extract)
     if action_button("Refresh saved results", type="secondary", icon=":material/refresh:", action_id="refresh_extraction_results"):
         st.session_state.pop("_extraction_results_frame", None)
         st.session_state["_extraction_results_page"] = 1
         st.rerun()
     if "_extraction_results_frame" not in st.session_state:
         st.session_state["_extraction_results_frame"] = load_data_with_skeleton(
-            lambda: storage.read_frame("extractions_original", include_source_text=False), height=220
+            lambda: storage.read_frame("extractions_original", include_source_text=False,
+                                       columns=storage.EXTRACTION_REVIEW_COLUMNS), height=220
         )
     result = st.session_state["_extraction_results_frame"]
     if not result.empty:
@@ -678,21 +754,7 @@ def _auto_train_after_review(labels, enabled):
             "Open ML Training to see the specific fixes needed."
         )
         return
-    progress = st.progress(0., text="Validating reviewed annotations before automatic retraining")
-    try:
-        metadata, _ = train_and_save_models(
-            .2, False, VECTORIZER_CONFIG,
-            progress=lambda value, message: progress.progress(value, text=message),
-        )
-    except (ValueError, OSError, RuntimeError) as exc:
-        progress.empty()
-        st.warning(f"Annotations were saved, but automatic retraining did not complete: {exc}")
-        return
-    progress.empty()
-    st.success(
-        f"Development classifier refreshed from the reviewed dataset ({metadata['rows_used']:,} usable phrases). "
-        "These iterative holdout results are not final research metrics."
-    )
+    _start_processing("Train reviewed labels", background_tasks.train, .2, False, VECTORIZER_CONFIG)
 
 
 def _auto_retraining_control():
@@ -706,7 +768,7 @@ def _auto_retraining_control():
         disabled=not can_train,
         help=(
             "When enabled, saving labels will retrain both classifiers if the complete reviewed dataset passes validation. "
-            "Training runs during the save and can take a few minutes. It never trains on AI drafts."
+            "Training runs in the background after saving; you can keep reviewing. It never trains on AI drafts."
         ),
     )
     if shared_workspace and not can_train:
@@ -717,79 +779,53 @@ def _auto_retraining_control():
 def labeling():
     page_intro("Review and label phrases", "Choose a category and one or more PSF-AAI competencies together in the manual review table.")
     review_content = st.container()
-    with st.expander("Sources and batch tools", icon=":material/settings:"):
-        with st.expander("Optional: add remote job sources"):
-            st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
-            if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
-                from .himalayas_feed import fetch_philippines_jobs
-                try:
-                    report = fetch_philippines_jobs(storage.ROOT)
-                except Exception as exc:
-                    st.error(f"The feed request did not complete: {exc}")
-                else:
-                    st.success(
-                        f"Checked {report['response_rows']} listings; found {report['explicit_philippines_eligible_rows']} that explicitly allow applicants in the Philippines; added {report['new_rows_added']} new postings. No labels or models were changed."
-                    )
-                    st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
-                    if report["new_rows_added"]:
-                        st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
-        with st.expander("Local AI drafts — batch tools"):
-            st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
-            if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
-                from .unattended_suggestions import run_local_suggestions
-                progress = st.progress(0.0, text="Starting local candidate scan")
-                try:
-                    report = run_local_suggestions(
-                        storage.ROOT, max_drafts=25, batch_size=5,
-                        progress=lambda value, message: progress.progress(value, text=message),
-                    )
-                except ImportError:
-                    progress.empty()
-                    if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
-                        st.error("The suggestion package is missing from this Vercel deployment. Redeploy the latest GitHub commit and check the Vercel build logs for dependency installation errors.")
+    source_tools = st.expander("Sources and batch tools", icon=":material/settings:", key="review_source_tools", on_change="rerun")
+    if source_tools.open:
+        with source_tools:
+            with st.expander("Optional: add remote job sources"):
+                st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
+                if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
+                    from .himalayas_feed import fetch_philippines_jobs
+                    try:
+                        report = fetch_philippines_jobs(storage.ROOT)
+                    except Exception as exc:
+                        st.error(f"The feed request did not complete: {exc}")
                     else:
-                        st.error("Install the optional local models once: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`. The first BGE-M3 run downloads about 2.3 GB.")
-                except Exception as exc:
-                    progress.empty()
-                    st.error(f"The local suggestion run stopped safely. Suggestions saved in earlier batches remain available to resume: {exc}")
-                else:
-                    st.success(
-                        f"Finished scanning {report['candidate_rows_scanned']:,} candidate rows. "
-                        f"Created {report['suggestions_generated']:,} new drafts; "
-                        f"skipped {report['already_reviewed']:,} reviewed and {report['already_suggested']:,} already-suggested phrases. "
-                        "No research labels or classifier models were changed."
-                    )
-                    if report["missing_source_id"]:
-                        st.caption(f"Skipped {report['missing_source_id']:,} candidate rows without a source ID so they cannot enter the review workflow without provenance.")
-                    for skipped in report["preparation_skips"]:
-                        st.caption(f"Posting source skipped: {skipped}")
-                    for error in report["preparation_errors"]:
-                        st.warning(f"Could not prepare one posting file: {error}")
-        with st.expander("Prepare candidates from posting CSVs"):
-            from .posting_import import prepare_posting_candidates, COUNTRY_RULE
-            posting_files = [item["filename"] for item in inspect_training_folder(storage.ROOT)
-                             if item["purpose"] == "job-ad source data" and item["filename"].lower().endswith(".csv")
-                             and "derived" not in Path(item["filename"]).parts]
-            st.caption("Columns are mapped automatically. " + COUNTRY_RULE)
-            st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
-            if posting_files:
-                posting_file = st.selectbox("Posting CSV in ./train", posting_files)
-                if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
-                    with st.skeleton(height=240):
-                        report = prepare_posting_candidates(storage.ROOT, posting_file)
-                        candidate_path = storage.ROOT / "train" / report["candidate_file"]
-                        new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
-                        shared_candidates = storage.read_frame("team_training_candidates")
-                        combined_candidates = pd.concat([shared_candidates, new_candidates], ignore_index=True).drop_duplicates(
-                            [column for column in ("normalized_phrase", "source_type", "source_id") if column in new_candidates], keep="last"
-                        ) if not shared_candidates.empty else new_candidates
-                        storage.save_frame("team_training_candidates", combined_candidates)
-                    st.success(f"Prepared {report['candidate_occurrences']:,} candidates from {report['explicit_philippine_postings']:,} of {report['total_postings']:,} postings. Labels remain blank until reviewed.")
-            for report_path in sorted((storage.ROOT / "train/derived").glob("postings_*/import_report.json")):
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-                st.write(f"{report['source_file']}: {report['explicit_philippine_postings']:,} postings with explicit Philippine locations; {report['excluded_without_explicit_philippine_location']:,} excluded; {report['candidate_occurrences']:,} candidate occurrences.")
-                if report["postings_reaching_candidate_limit"]:
-                    st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
+                        st.success(
+                            f"Checked {report['response_rows']} listings; found {report['explicit_philippines_eligible_rows']} that explicitly allow applicants in the Philippines; added {report['new_rows_added']} new postings. No labels or models were changed."
+                        )
+                        st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
+                        if report["new_rows_added"]:
+                            st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
+            with st.expander("Local AI drafts — batch tools"):
+                st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
+                if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
+                    _start_processing("Generate local drafts", background_tasks.suggest_local, storage.ROOT)
+            with st.expander("Prepare candidates from posting CSVs"):
+                from .posting_import import prepare_posting_candidates, COUNTRY_RULE
+                posting_files = [item["filename"] for item in inspect_training_folder(storage.ROOT)
+                                 if item["purpose"] == "job-ad source data" and item["filename"].lower().endswith(".csv")
+                                 and "derived" not in Path(item["filename"]).parts]
+                st.caption("Columns are mapped automatically. " + COUNTRY_RULE)
+                st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
+                if posting_files:
+                    posting_file = st.selectbox("Posting CSV in ./train", posting_files)
+                    if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
+                        with st.skeleton(height=240):
+                            report = prepare_posting_candidates(storage.ROOT, posting_file)
+                            candidate_path = storage.ROOT / "train" / report["candidate_file"]
+                            new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
+                            shared_candidates = storage.read_frame("team_training_candidates")
+                            combined_candidates = pd.concat([shared_candidates, new_candidates], ignore_index=True).drop_duplicates(
+                                [column for column in ("normalized_phrase", "source_type", "source_id") if column in new_candidates], keep="last"
+                            ) if not shared_candidates.empty else new_candidates
+                            storage.save_frame("team_training_candidates", combined_candidates)
+                        st.success(f"Prepared {report['candidate_occurrences']:,} candidates from {report['explicit_philippine_postings']:,} of {report['total_postings']:,} postings. Labels remain blank until reviewed.")
+                for report_path in sorted((storage.ROOT / "train/derived").glob("postings_*/import_report.json")):
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    st.write(f"{report['source_file']}: {report['explicit_philippine_postings']:,} postings with explicit Philippine locations; {report['excluded_without_explicit_philippine_location']:,} excluded; {report['candidate_occurrences']:,} candidate occurrences.")
+                    if report["postings_reaching_candidate_limit"]:
+                        st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
 
     with review_content:
         review_tools = st.container(horizontal=True, key="review_tools", vertical_alignment="center")
@@ -862,16 +898,20 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         if query:
             source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
         phrase_rows = source_filtered.drop_duplicates(["normalized_phrase", "source_id"]).copy()
-        phrase_counts = group_candidates_by_phrase(occurrences).set_index("normalized_phrase").source_ads
+        source_pairs = occurrences[["normalized_phrase", "source_type", "source_id"]].copy()
+        source_pairs[["source_type", "source_id"]] = source_pairs[["source_type", "source_id"]].apply(lambda values: values.astype(str).str.strip())
+        phrase_counts = source_pairs[source_pairs.source_id.ne("")].drop_duplicates().groupby("normalized_phrase").size()
         if not phrase_rows.empty:
             phrase_rows["source_ads"] = phrase_rows.normalized_phrase.map(phrase_counts).fillna(0).astype(int)
         with review_controls:
             page = st.number_input("Review page (10 rows per page)", 1, max(1, (len(phrase_rows)+9)//10), 1, width=200)
-        shown = phrase_rows.iloc[(page-1)*10:page*10]
+        shown = _review_contexts(phrase_rows.iloc[(page-1)*10:page*10])
         detail_tools = st.container(horizontal=True, key="review_detail_tools")
         with detail_tools, st.popover("Source evidence", icon=":material/article:"):
-            evidence = occurrences[occurrences.normalized_phrase.isin(shown.normalized_phrase)]
-            st.dataframe(evidence[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
+            # Context for the selected rows is always loaded, including training
+            # sources outside the study dataset.
+            st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
+            st.caption("Source evidence for the ten displayed occurrences. Change the review page to inspect other advertisements.")
     else:
         st.info("No candidate phrases yet. Add Philippine job-ad source/candidate data to ./train or run Competency Extraction on uploaded jobs. No example labels are added automatically.")
         occurrences = candidates.copy()
@@ -887,26 +927,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
     saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
     page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
     def generate_ai_drafts(rows):
-        progress = st.progress(0, text="Loading BGE-M3. First use may download about 2.3 GB…")
-        batch_size = 5
-        try:
-            with st.spinner("Generating category and PSF suggestions. This can take several minutes on the first run."):
-                for start in range(0, len(rows), batch_size):
-                    batch = rows[start:start + batch_size]
-                    predicted = suggest_labels(batch, taxonomy)
-                    save_ai_suggestions(storage.ROOT, batch, predicted)
-                    complete = min(start + len(batch), len(rows))
-                    progress.progress(complete / max(len(rows), 1), text=f"Generated suggestions for {complete:,} of {len(rows):,} phrases")
-        except ImportError:
-            if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
-                st.error("The suggestion package is missing from this Vercel deployment. Redeploy the latest GitHub commit and check the Vercel build logs for dependency installation errors.")
-            else:
-                st.error("Install the optional local models once from the project folder: `..\\.venv\\Scripts\\python.exe -m pip install -r requirements-suggestions.txt`.")
-        except Exception as exc:
-            st.error(f"The pretrained models stopped before completing all suggestions. Completed batches remain saved separately: {exc}")
-        else:
-            st.success(f"Saved AI drafts for {len(rows):,} phrases. They remain separate from researcher-reviewed labels.")
-            st.rerun()
+        _start_processing("Generate AI drafts", background_tasks.suggest,
+                          deepcopy(rows), taxonomy.copy(deep=True), storage.ROOT)
 
     if not shown.empty:
         with detail_tools, st.popover("AI details", icon=":material/auto_awesome:"):
@@ -935,7 +957,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
     if reference.empty:
         st.caption("Activate the reviewed PSF-AAI reference to enable competency selections.")
     page_identity = digest([page_identity, frame_hash(active_taxonomy), frame_hash(mapping_reviews)])[:24]
-    mapping_occurrences = manual_mapping_occurrences(occurrences, current_extractions())
+    mapping_occurrences = manual_mapping_occurrences(shown, current_extractions(source_ids=shown.source_id.unique()))
     occurrence_lookup = {(row.source_id, row.normalized_phrase): row._asdict() for row in mapping_occurrences.itertuples(index=False)}
     page_occurrences, page_reviews = [], []
     table_rows = []
@@ -1200,23 +1222,27 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
 
 def training():
     page_intro("Train classifier", "Train Naive Bayes and Logistic Regression models using researcher-reviewed labels. Training stays disabled until the real dataset passes the validation checks.")
-    inventory = load_data_with_skeleton(lambda: inspect_training_folder(storage.ROOT), height=140)
-    with st.expander("Detected files in ./train"):
-        display(pd.DataFrame(inventory))
-    try:
-        path = resolve_training_file(storage.ROOT)
-    except ValueError as exc:
-        st.warning(str(exc))
+    if supabase_store.configured():
         path = None
-    options = [item["filename"] for item in inventory if item["purpose"] in ("labeled phrases", "empty label schema") and item["filename"].lower().endswith(".csv")]
-    if len(options) > 1:
-        current = str(path.relative_to(storage.ROOT / "train")) if path else ""
-        choice = st.selectbox("Labeled training file", options, index=options.index(current) if current in options else 0)
-        if action_button("Use selected training file"):
-            path = select_training_file(storage.ROOT, choice)
-    if path is None:
-        return
-    st.caption(f"Training data file: `{project_relative_path(path)}`")
+        st.caption("Training source: saved researcher-reviewed labels in the shared workspace.")
+    else:
+        inventory = load_data_with_skeleton(lambda: inspect_training_folder(storage.ROOT), height=140)
+        with st.expander("Detected files in ./train"):
+            display(pd.DataFrame(inventory))
+        try:
+            path = resolve_training_file(storage.ROOT)
+        except ValueError as exc:
+            st.warning(str(exc))
+            path = None
+        options = [item["filename"] for item in inventory if item["purpose"] in ("labeled phrases", "empty label schema") and item["filename"].lower().endswith(".csv")]
+        if len(options) > 1:
+            current = str(path.relative_to(storage.ROOT / "train")) if path else ""
+            choice = st.selectbox("Labeled training file", options, index=options.index(current) if current in options else 0)
+            if action_button("Use selected training file"):
+                path = select_training_file(storage.ROOT, choice)
+        if path is None:
+            return
+        st.caption(f"Training data file: `{project_relative_path(path)}`")
     fraction = st.slider("Holdout fraction", .1, .5, .2, .05)
     include_irrelevant = st.checkbox("Intentionally train IRRELEVANT as a separate class", value=False)
     max_features = st.number_input("Maximum TF-IDF features", 100, 100000, 10000, 100)
@@ -1252,16 +1278,8 @@ def training():
     if training_data_changed():
         st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     if action_button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
-        progress = st.progress(0., text="Validating reviewed annotations")
-        try:
-            metadata, comparison = train_and_save_models(fraction, include_irrelevant, {"max_features": int(max_features)},
-                                                        progress=lambda value, message: progress.progress(value, text=message))
-        except ValueError as exc:
-            progress.empty()
-            st.error(f"Training failed: {exc}")
-        else:
-            progress.progress(1., text="Models, evaluation tables and metadata saved")
-            st.success(f"Both models trained. Selected {metadata['model_name']} using Macro F1, then Weighted F1 and per-class F1. Re-run Competency Extraction to apply this saved model.")
+        _start_processing("Train reviewed labels", background_tasks.train, fraction, include_irrelevant,
+                          {"max_features": int(max_features)})
     metadata = read_model_metadata()
     if metadata:
         comparison = storage.read_frame("model_metrics")
@@ -1525,17 +1543,18 @@ def research_page(page):
         if downloads.open:
             with downloads:
                 for name, frame in tables.items():
-                    st.download_button(name + ".csv", export_csv(frame), name + ".csv", "text/csv", key="download_"+name)
-        workbook = workbook_bytes(tables, meta)
+                    st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
         st.subheader("Research deliverables")
         st.caption("Downloads use the current sample and filters. Keep the metadata with the exported evidence.")
-        st.download_button("Download research_results.xlsx", workbook, "research_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", icon=":material/table_view:")
-        research_report = export_research_report(tables, meta)
-        st.download_button("Download written research report (.md)", research_report, "philippine_job_ads_psf_aai_report.md", "text/markdown")
-        summary = export_html(tables, meta)
-        st.download_button("Download HTML research summary", summary, "research_summary.html", "text/html")
+        st.download_button("Download research_results.xlsx", lambda: export_excel(tables, meta), "research_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", icon=":material/table_view:", on_click="ignore")
+        st.download_button("Download written research report (.md)", lambda: export_research_report(tables, meta), "philippine_job_ads_psf_aai_report.md", "text/markdown", on_click="ignore")
+        st.download_button("Download HTML research summary", lambda: export_html(tables, meta), "research_summary.html", "text/html", on_click="ignore")
         st.download_button("Download analysis metadata", json.dumps(meta, indent=2, default=str), "analysis_metadata.json", "application/json")
         if action_button("Save this report snapshot locally"):
+            with st.spinner("Preparing the complete report snapshot…"):
+                workbook = export_excel(tables, meta)
+                research_report = export_research_report(tables, meta)
+                summary = export_html(tables, meta)
             folder = ROOT / "outputs/reports" / timestamp().replace(":", "-")
             folder.mkdir(parents=True, exist_ok=True)
             storage.atomic_bytes(folder / "research_results.xlsx", workbook)
@@ -1786,6 +1805,7 @@ PAGES = {"Home": home, "Job Data Upload": upload, "Data Quality": quality,
 
 def render(page):
     storage.initialize()
+    st.session_state["_table_number"] = 0
     st.session_state["_fow_current_page"] = page
     apply_design()
     st.sidebar.caption(f"Research workspace · v{VERSION}")
@@ -1794,6 +1814,7 @@ def render(page):
         with st.container(width="stretch"):
             st.caption("FUTURE OF WORK  /  " + ("OVERVIEW" if page == "Home" else page.upper()))
         render_account_menu()
+    _processing_status()
     try:
         if supabase_store.configured() and page in {"Job Data Upload", "Data Quality", "Competency Extraction", "Settings", "Feedback", "PSF Framework"} and not supabase_store.is_admin():
             st.info("This step is managed by the project administrator. Open Review and label phrases to contribute your annotations.")

@@ -20,6 +20,9 @@ EXTRACTION_COLUMNS = "extraction_id source_type source_id original_text original
 def extract_skills(frame, source_type, matcher=None, model=None, annotations=None, **options):
     if frame.empty:
         return pd.DataFrame(columns=EXTRACTION_COLUMNS), pd.DataFrame()
+    from .background_tasks import checkpoint
+    progress = options.pop("progress", None) or (lambda value, message: None)
+    progress(.05, "Preparing NLP phrases from the complete source text")
     texts = frame.cleaned_text.map(clean_text)
     options.setdefault("priority_phrases", GENERAL.keys())
     processed = extract_candidate_phrases(texts, **options)
@@ -43,7 +46,9 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     extracted, diagnostics = [], []
     # NLP and model predictions are reused for repeated text/phrases.
     evidence_by_text = {}
+    progress(.25, "Scanning full text against vocabulary and PSF-AAI")
     for text in processed:
+        checkpoint()
         evidence = []
         if matcher:
             evidence.extend((p, normalize_text(p), a, b, m) for p, a, b, m in matcher.exact_in_text(text))
@@ -51,13 +56,16 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
             evidence.append((hit.group(), normalize_text(hit.group()), hit.start(), hit.end(), None))
         evidence.extend((*p, None) for p in processed[text]["phrases"])
         evidence_by_text[text] = evidence
+    progress(.35, "Classifying candidate phrases")
     predictions = {}
     if model is not None:
         phrases = list(dict.fromkeys(normalize_text(p[1] or p[0]) for evidence in evidence_by_text.values() for p in evidence))
         if phrases:
             probabilities = model.predict_proba(phrases)
             predictions = {p: (str(model.classes_[probs.argmax()]), float(probs.max())) for p, probs in zip(phrases, probabilities)}
-    for (_, row), text in zip(frame.iterrows(), texts):
+    for number, ((_, row), text) in enumerate(zip(frame.iterrows(), texts)):
+        checkpoint()
+        progress(.4 + .5 * number / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")
         evidence = evidence_by_text[text]
         seen = set()
         for phrase, normal, start, end, mapped in evidence:

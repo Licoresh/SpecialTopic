@@ -19,7 +19,12 @@ def input_signature():
                    "column_mappings": {k:storage.read_json("mapping_"+k, {}) for k in ("jobs", "psf_aai")},
                    "annotations": frame_hash(storage.read_frame("labeled_competencies")), "settings": storage.settings(), "model": storage.read_json("selected_model", {}), "version": VERSION})
 
-def run_extraction():
+def run_extraction(progress=None):
+    from .background_tasks import begin_publication
+    from . import supabase_store
+    progress = progress or (lambda value, message: None)
+    progress(0., "Checking source data and review provenance")
+    signature = input_signature()
     settings = storage.settings()
     for kind, upload in storage.read_json("uploads", {}).items():
         if kind not in ("jobs", "psf_aai"):
@@ -49,20 +54,28 @@ def run_extraction():
     frames, diagnostics = [], []
     for kind in ("jobs",):
         frame = storage.read_frame("cleaned_" + kind)
-        result, processed = extract_skills(frame, kind, matcher, model, annotations, stopwords=settings["stopwords"], batch_size=settings["batch_size"], max_candidates=settings["max_candidates"])
+        result, processed = extract_skills(frame, kind, matcher, model, annotations, stopwords=settings["stopwords"], batch_size=settings["batch_size"], max_candidates=settings["max_candidates"], progress=progress)
         frames.append(result)
         diagnostics.append(processed)
     populated = [frame for frame in frames if not frame.empty]
     output = pd.concat(populated, ignore_index=True) if populated else frames[0]
     if output.empty:
         raise ValueError("No phrases were found. Upload, map and clean text datasets first.")
+    progress(.95, "Checking that research inputs are unchanged")
+    supabase_store.clear_read_cache()
+    if signature != input_signature():
+        raise ValueError("Research inputs changed during extraction. Previous results were retained; rerun with the current data and reviewed labels.")
+    begin_publication()
     storage.save_frame("extractions_original", output)
     storage.save_frame("nlp_processed", pd.concat(diagnostics, ignore_index=True))
-    storage.save_json("extraction_metadata", {"signature": input_signature(), "timestamp": timestamp(), "taxonomy_available": matcher is not None, "model_available": model is not None})
+    storage.save_json("extraction_metadata", {"signature": signature, "timestamp": timestamp(), "taxonomy_available": matcher is not None, "model_available": model is not None})
     return output
 
-def current_extractions():
-    extracted = apply_corrections(storage.read_frame("extractions_original"), "extraction", "extraction_id")
+def current_extractions(*, source_ids=None):
+    extracted = storage.read_frame("extractions_original", source_ids=source_ids) if source_ids is not None else storage.read_frame("extractions_original")
+    if source_ids is not None and not extracted.empty:
+        extracted = extracted[extracted.source_id.isin(source_ids)]
+    extracted = apply_corrections(extracted, "extraction", "extraction_id")
     if not extracted.empty:
         # Human PSF edits update the identity and related taxonomy fields together.
         taxonomy = storage.read_frame("cleaned_psf_aai")

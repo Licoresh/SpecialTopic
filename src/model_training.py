@@ -79,10 +79,12 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
                 "include_irrelevant": include_irrelevant, "validation": validation, "split": winner["split"],
                 "interpretation": "Based on the current labeled validation sample. Minimum sample gates do not establish research accuracy; independent validation is still required.",
                 "classifier_config": details[selected]["config"], "refit_on_holdout": False}
+    from .background_tasks import begin_publication
+    begin_publication()
     # No artifacts are written before both models, their evaluation, and selection succeed.
     if shared:
         metadata["shared_annotation_hash"] = shared_hash
-        metadata["shared_run_id"] = supabase_store.st.session_state["training_run_id"]
+        metadata["shared_run_id"] = supabase_store.session_state()["training_run_id"]
         metadata["snapshot_note"] = "Evaluated on a fixed Supabase reviewed-label snapshot; subsequent team edits are not included."
     for name, result in results.items():
         slug = "nb" if name.startswith("Multinomial") else "lr"

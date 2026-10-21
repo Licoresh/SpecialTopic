@@ -41,6 +41,8 @@ class TaxonomyMatcher:
         self.profiles = [normalize_text(row.get("competency_description", "")) for row in self.rows]
         self.profile_tokens = [set(re.findall(r"[\w+#.]+", text)) for text in self.profiles]
         self.profile_cache = {}
+        self.ranges = [normalize_text(row.get("range_of_application", "")) for row in self.rows]
+        self.range_cache = {}
         self.pattern = re.compile(r"(?<![\w+#])(?:" + "|".join(re.escape(k) for k in sorted(self.terms, key=len, reverse=True)) + r")(?![\w+#])", re.I)
         self.fuzzy_threshold = fuzzy_threshold
         self.semantic_threshold = semantic_threshold
@@ -98,12 +100,15 @@ class TaxonomyMatcher:
 
     def _range_matches(self, phrase, normalized=None):
         key = normalize_text(normalized or phrase)
+        if key in self.range_cache:
+            return self.range_cache[key]
         if len(key) < 2:
             return []
         pattern = re.compile(r"(?<!\w)" + re.escape(key) + r"(?!\w)", re.I)
-        return [self.evidence(normalize_text(row["competency_name"]), "range_of_application", 1.)
-                for row in self.rows
-                if pattern.search(normalize_text(row.get("range_of_application", "")))]
+        matches = [self.evidence(normalize_text(row["competency_name"]), "range_of_application", 1.)
+                   for row, text in zip(self.rows, self.ranges) if pattern.search(text)]
+        self.range_cache[key] = matches
+        return matches
 
     def _profile_matches(self, phrase, normalized=None):
         key = normalize_text(normalized or phrase)

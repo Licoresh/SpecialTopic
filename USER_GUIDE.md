@@ -12,6 +12,12 @@ Open PowerShell in the `future_of_work` project folder and run:
 
 Open the local address printed in the terminal. Keep that terminal running while you use the app.
 
+Version 2.0.54 reuses unchanged data during a session. The first shared-data load and first AI model load can still take longer. In Manual Review, source evidence follows the ten displayed occurrences; open **Sources and batch tools** only when needed. Other large tables use 100-row pages. **Reports and downloads** exports the complete selected results and prepares files only when you download them. Use **Team updates → Refresh shared review table** to fetch teammates' changes before starting a new batch; save your edits first.
+
+Extraction, classifier training, and AI suggestions run in the background. A status panel shows progress on every workspace page; navigation and manual review remain available. One heavy job runs per app process, and the shared training lease still prevents competing model publications. **Stop processing** takes effect between processing steps; it is disabled once result publication starts. Save your edits before pressing **Refresh view** after completion.
+
+Keep the local/Docker server running. Jobs are in memory: restarting the server interrupts them, and refreshing the entire browser can lose the progress panel. Completed AI batches stay saved; retry to continue local batches. A worker whose sign-in expires stops before its next authenticated operation; sign in again and retry. First model loading and inference still depend on your hardware. After upgrading, rerun extraction once to publish the smaller shared review index and source-partition metadata. Existing snapshots remain readable, and exports retain all selected research records and evidence.
+
 ## 2. Prepare a suitable Philippine job-ad sample
 
 Use **Job Data Upload** to upload a CSV or XLSX file. Retain original posting URLs, locations, job titles and source identifiers. Review the automatically suggested column mappings and click **Save mapping**.

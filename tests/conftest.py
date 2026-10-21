@@ -52,4 +52,10 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow, "ROOT", tmp_path)
     monkeypatch.setattr(labeling, "ROOT", tmp_path)
     storage.initialize()
-    return tmp_path
+    yield tmp_path
+    # Background work must finish before temporary roots and network guards reset.
+    import threading
+    for thread in threading.enumerate():
+        if thread.name == "research-processing":
+            thread.join(timeout=60)
+            assert not thread.is_alive(), "Test worker did not stop inside its isolated workspace"

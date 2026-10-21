@@ -94,6 +94,30 @@ def test_shared_extractions_omit_duplicated_job_context(shared, monkeypatch):
     assert saved["extractions_original"]["records"][0]["original_text"] == ""
 
 
+def test_review_projection_and_source_partition_keep_full_evidence(shared, monkeypatch):
+    monkeypatch.setattr(storage, "REMOTE_FRAME_CHUNK_BYTES", 1000)
+    saved, fetched = {}, []
+    monkeypatch.setattr(storage, "_remote_write", lambda kind, name, payload: saved.__setitem__(name, payload))
+    monkeypatch.setattr(storage, "_remote_payload", lambda kind, name: saved.get(name))
+    def fetch(kind, names):
+        fetched.extend(names)
+        return {name: saved[name] for name in names}
+    monkeypatch.setattr(storage, "_remote_payloads", fetch)
+    frame = pd.DataFrame({"source_id": [f"TEST-{i}" for i in range(6)],
+                          "original_phrase": ["SQL"] * 6,
+                          "psf_range_of_application": ["SYNTHETIC RANGE " * 30] * 6})
+    storage._save_remote_frame("extractions_original", frame)
+    view = storage.read_frame("extractions_original", columns=["source_id", "original_phrase"])
+    pd.testing.assert_frame_equal(view, frame[["source_id", "original_phrase"]])
+    assert fetched and all(":chunk:review:" in name for name in fetched)
+    fetched.clear()
+    evidence = storage.read_frame("extractions_original", source_ids=["TEST-3"])
+    pd.testing.assert_frame_equal(evidence.reset_index(drop=True), frame.iloc[[3]].reset_index(drop=True))
+    assert len(fetched) == 1 and ":review:" not in fetched[0]
+    complete = storage.read_frame("extractions_original")
+    pd.testing.assert_frame_equal(complete, frame)
+
+
 def test_read_shared_extractions_restores_context_from_job_record(shared, monkeypatch):
     manifest = {"_storage_codec": "frame-chunks-v1", "generation": "test-generation",
                 "chunk_count": 1, "record_count": 1,
@@ -160,7 +184,7 @@ def test_missing_membership_does_not_pass_connection_check(shared, monkeypatch):
 def test_missing_schema_message_is_actionable(shared, monkeypatch):
     response = Mock(ok=False, status_code=404)
     response.json.return_value = {"message": "Could not find the table in the schema cache"}
-    monkeypatch.setattr(backend.requests, "request", lambda *a, **k: response)
+    monkeypatch.setattr(backend, "_http_session", lambda: Mock(request=Mock(return_value=response)))
     with pytest.raises(backend.SupabaseError, match="database setup is incomplete"):
         backend._request("GET", "/rest/v1/app_state", token="test")
 
@@ -348,10 +372,12 @@ def test_shared_review_table_save_as_reviewer(workspace, monkeypatch):
     monkeypatch.setattr(backend, "configured", lambda: True)
     monkeypatch.setattr(backend, "get_token", lambda: "test")
     monkeypatch.setattr(backend, "is_admin", lambda: False)
+    monkeypatch.setattr(backend, "candidate_contexts", lambda token, keys: {
+        key: "Synthetic fixture only" for key in keys})
     candidate = {"phrase": "SYNTHETIC SQL", "normalized_phrase": "synthetic sql", "source_type": "jobs",
                  "source_id": "SYNTHETIC-TEST", "job_title": "Synthetic test", "company": "", "source_url": "", "original_text": "Synthetic fixture only"}
     saved = []
-    def read_frame(name):
+    def read_frame(name, **kwargs):
         if name == "labeled_competencies":
             return pd.DataFrame(saved, columns=ANNOTATION_COLUMNS+["version"])
         if name == "team_training_candidates":

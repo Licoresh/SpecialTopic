@@ -5,6 +5,7 @@ labels, trains a classifier, or reports research performance metrics.
 """
 from pathlib import Path
 import json
+from .background_tasks import checkpoint
 import pandas as pd
 
 from .cleaning import normalize_text
@@ -123,6 +124,7 @@ def run_local_suggestions(root=ROOT, progress=None, chunksize=5000, batch_size=2
     scanned = already_reviewed = already_suggested = missing_source_id = generated = 0
     seen = set()
     pending = []
+    limit_reached = False
 
     def flush_batch():
         nonlocal generated, pending
@@ -131,12 +133,14 @@ def run_local_suggestions(root=ROOT, progress=None, chunksize=5000, batch_size=2
         progress(0.20 + 0.79 * min(scanned / max(total_rows, 1), 1.0),
                  f"Generating {len(pending)} drafts; {generated} saved. First use may download/load BGE-M3 (about 2.3 GB).")
         predictions = suggest_labels(pending, taxonomy)
+        checkpoint()
         save_ai_suggestions(root, pending, predictions)
         generated += len(pending)
         pending = []
 
     for path in files:
         for frame in _iter_rows(path, chunksize):
+            checkpoint()
             for row in _usable_candidate_rows(frame).to_dict("records"):
                 scanned += 1
                 phrase = str(row.get("phrase", "") or row.get("normalized_phrase", "")).strip()
@@ -159,15 +163,20 @@ def run_local_suggestions(root=ROOT, progress=None, chunksize=5000, batch_size=2
                 if key in completed:
                     already_suggested += 1
                     continue
-                if max_drafts is not None and generated + len(pending) >= max_drafts:
-                    continue
                 pending.append(row)
                 if len(pending) >= batch_size:
                     flush_batch()
+                if max_drafts is not None and generated + len(pending) >= max_drafts:
+                    limit_reached = True
+                    break
                 denominator = max(total_rows, 1)
                 fraction = 0.20 + 0.79 * min(scanned / denominator, 1.0)
                 if scanned % 100 == 0 or not pending:
                     progress(fraction, f"Scanned {scanned:,} candidate rows; saved {generated:,} suggestion drafts")
+            if limit_reached:
+                break
+        if limit_reached:
+            break
     flush_batch()
     progress(1.0, f"Done: generated {generated:,} new suggestion drafts")
     return {

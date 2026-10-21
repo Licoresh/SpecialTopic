@@ -15,10 +15,42 @@ import io
 import json
 from pathlib import Path
 from functools import wraps
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import requests
 import streamlit as st
 from .config import ROOT
+
+_worker_state = ContextVar("research_worker_state", default=None)
+
+
+def session_state():
+    """Workers own their auth and caches; only the UI reads Streamlit state."""
+    state = _worker_state.get()
+    return state if state is not None else st.session_state
+
+
+def worker_credentials():
+    token = get_token()
+    if configured() and not token:
+        raise SupabaseError("Sign in before starting processing.")
+    return {"_configuration": configuration(), "supabase_access_token": token,
+            "supabase_expires_at": session_state().get("supabase_expires_at", 0)}
+
+
+@contextmanager
+def worker_session(credentials):
+    state = dict(credentials)
+    reset = _worker_state.set(state)
+    try:
+        yield
+    finally:
+        connection = state.get("_supabase_http")
+        if connection:
+            connection[1].close()
+        state.clear()
+        _worker_state.reset(reset)
 
 
 class SupabaseError(RuntimeError):
@@ -27,11 +59,27 @@ class SupabaseError(RuntimeError):
         self.status_code = status_code
 
 
-def clear_read_cache():
-    st.session_state.pop("supabase_reads", None)
+def clear_read_cache(*, frames=False):
+    session_state().pop("supabase_reads", None)
     # Shared saves and explicit refreshes should invalidate per-user derived views too.
     for key in ("_fow_source_cache", "_fow_analysis_cache", "_fow_signature_cache"):
-        st.session_state.pop(key, None)
+        session_state().pop(key, None)
+    # Decoded generations remain valid after annotation saves. Every frame read
+    # still checks its manifest/file revision; logout removes the entire session.
+    if frames:
+        session_state().pop("_fow_frame_cache", None)
+
+
+def _http_session():
+    """Reuse this user's HTTPS connections without putting credentials in defaults."""
+    url = configuration()[0]
+    saved = session_state().get("_supabase_http")
+    if saved is None or saved[0] != url:
+        if saved is not None:
+            saved[1].close()
+        saved = (url, requests.Session())
+        session_state()["_supabase_http"] = saved
+    return saved[1]
 
 
 def session_cached(function):
@@ -39,7 +87,7 @@ def session_cached(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
         key = (configuration()[0], function.__name__, repr(args), repr(kwargs))
-        cache = st.session_state.setdefault("supabase_reads", {})
+        cache = session_state().setdefault("supabase_reads", {})
         entry = cache.get(key)
         if entry and time.monotonic() - entry[0] < 15:
             return copy.deepcopy(entry[1])
@@ -91,6 +139,9 @@ def _setting(name: str) -> str:
 
 
 def configuration() -> tuple[str, str]:
+    worker = _worker_state.get()
+    if worker is not None:
+        return worker["_configuration"]
     return _setting("SUPABASE_URL").rstrip("/"), _setting("SUPABASE_PUBLISHABLE_KEY")
 
 
@@ -108,7 +159,7 @@ def _request(method: str, endpoint: str, *, token: str, payload=None, params=Non
     if prefer:
         headers["Prefer"] = prefer
     try:
-        response = requests.request(method, f"{url}{endpoint}", headers=headers, json=payload, params=params, timeout=30)
+        response = _http_session().request(method, f"{url}{endpoint}", headers=headers, json=payload, params=params, timeout=30)
     except requests.RequestException as exc:
         raise SupabaseError(f"Could not reach Supabase: {exc}") from exc
     if not response.ok:
@@ -162,6 +213,13 @@ def sign_in(email: str, password: str) -> dict:
     if not result.get("access_token") or not result.get("user", {}).get("id"):
         raise SupabaseError("Supabase Auth did not return a valid user session.")
     return result
+
+
+@session_cached
+def state_version(name: str, token: str):
+    rows = _request("GET", "/rest/v1/app_state", token=token,
+                    params={"name": f"eq.{name}", "select": "updated_at", "limit": "1"})
+    return rows[0]["updated_at"] if rows else None
 
 
 @session_cached
@@ -242,18 +300,42 @@ def upsert_annotations(records: list[dict], token: str, *, preserve_existing: bo
 
 
 @session_cached
-def read_candidates(token: str) -> list[dict]:
+def read_candidates(token: str, *, include_source_text=True) -> list[dict]:
     rows = []
     offset = 0
+    fields = "phrase,normalized_phrase,source_type,source_id,job_title,company,source_url,candidate_file"
+    if include_source_text:
+        fields += ",original_text"
     while True:
         page = _request("GET", "/rest/v1/research_candidates", token=token,
-                        params={"select": "phrase,normalized_phrase,source_type,source_id,job_title,company,source_url,original_text,candidate_file",
+                        params={"select": fields,
                                 "order": "normalized_phrase.asc,source_type.asc,source_id.asc",
                                 "limit": "1000", "offset": str(offset)})
         rows.extend(page or [])
         if not page or len(page) < 1000:
             return rows
         offset += 1000
+
+
+@session_cached
+def candidate_contexts(token, keys):
+    """Fetch exact occurrence evidence only for the small displayed review batch."""
+    found = {}
+    fields = ("normalized_phrase", "source_type", "source_id")
+    for start in range(0, len(keys), 10):
+        batch = keys[start:start + 10]
+        filters = [
+            "and(" + ",".join(f"{field}.eq.{json.dumps(str(value), ensure_ascii=False)}"
+                             for field, value in zip(fields, key)) + ")"
+            for key in batch
+        ]
+        rows = _request("GET", "/rest/v1/research_candidates", token=token, params={
+            "select": ",".join(fields) + ",original_text",
+            "or": "(" + ",".join(filters) + ")", "limit": str(len(batch)),
+        }) or []
+        for row in rows:
+            found[tuple(row[field] for field in fields)] = row.get("original_text", "")
+    return found
 
 
 @session_cached
@@ -320,12 +402,14 @@ def clear_generated_extractions(token: str):
 
 
 def get_token() -> str:
-    token = str(st.session_state.get("supabase_access_token", ""))
+    token = str(session_state().get("supabase_access_token", ""))
     if not token:
         return ""
-    if time.time() < float(st.session_state.get("supabase_expires_at", 0)):
+    if time.time() < float(session_state().get("supabase_expires_at", 0)):
         return token
-    refresh = str(st.session_state.get("supabase_refresh_token", ""))
+    if _worker_state.get() is not None:
+        raise SupabaseError("Processing paused because its sign-in expired. Sign in again and retry; saved drafts are retained.")
+    refresh = str(session_state().get("supabase_refresh_token", ""))
     url, key = configuration()
     if not refresh or not url or not key:
         sign_out()
@@ -347,13 +431,19 @@ def get_token() -> str:
         raise SupabaseError("Session refresh is temporarily unavailable. Retry; unsaved work is retained.") from exc
     except (requests.RequestException, ValueError) as exc:
         raise SupabaseError("Could not refresh the session. Retry the connection; unsaved work is retained.") from exc
-    st.session_state["supabase_access_token"] = session["access_token"]
-    st.session_state["supabase_refresh_token"] = session["refresh_token"]
-    st.session_state["supabase_expires_at"] = time.time() + int(session.get("expires_in", 3600)) - 60
+    session_state()["supabase_access_token"] = session["access_token"]
+    session_state()["supabase_refresh_token"] = session["refresh_token"]
+    session_state()["supabase_expires_at"] = time.time() + int(session.get("expires_in", 3600)) - 60
     return str(session["access_token"])
 
 
 def sign_out():
+    job = session_state().get("_background_job")
+    if job is not None:
+        job.cancel()
+    connection = session_state().get("_supabase_http")
+    if connection:
+        connection[1].close()
     # Also remove review drafts and cached research data before another login.
-    for key in list(st.session_state):
-        del st.session_state[key]
+    for key in list(session_state()):
+        del session_state()[key]

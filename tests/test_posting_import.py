@@ -95,7 +95,11 @@ def test_missing_mapping_and_outside_source_rejected(workspace):
 
 def test_manual_labeling_import_action_and_training_gate(workspace):
     postings(workspace)
-    app = AppTest.from_string("from src.ui import render\nrender('Manual Labeling')").run(timeout=60)
+    # AppTest does not round-trip expander state when a child button is clicked.
+    app = AppTest.from_string(
+        "import streamlit as st\nst.session_state['review_source_tools'] = True\n"
+        "from src.ui import render\nrender('Manual Labeling')"
+    ).run(timeout=60)
     next(button for button in app.button if button.label == "Prepare Philippine posting candidates").click().run(timeout=60)
     assert not app.exception and not app.error
     assert any("Labels remain blank" in message.value for message in app.success)
