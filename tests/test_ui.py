@@ -446,7 +446,8 @@ def leave_blank(frame, **kwargs):
     if "AI category draft" in frame.columns:
         assert frame.loc[frame.index[0], "Category"] == ""
         assert frame.iloc[0]["PSF-AAI competencies"] == []
-        if frame.iloc[0]["Draft status"] == "Ready":
+        assert "Draft status" not in frame.columns
+        if frame.iloc[0]["AI category draft"]:
             assert frame.iloc[0]["AI PSF-AAI drafts"] == ["communication skills", "data analysis"]
         else:
             assert frame.iloc[0]["AI category draft"] == ""
@@ -516,16 +517,18 @@ def test_later_review_pages_generate_only_missing_drafts(ui_workspace, taxonomy,
     app = page_app("Manual Labeling")
     next(item for item in app.number_input if item.label.startswith("Review page")).set_value(page).run(timeout=60)
     assert not app.exception and not app.error
-    table = next(item.value for item in app.dataframe if "Draft status" in item.value)
-    assert table["Draft status"].tolist() == ["Ready", "No competency (irrelevant)", "Needs PSF draft"] + ["Not generated"] * 7
+    table = next(item.value for item in app.dataframe if "AI category draft" in item.value)
+    assert "Draft status" not in table
+    assert table["AI category draft"].tolist() == ["Data / Analytics", "IRRELEVANT", "Data / Analytics"] + [""] * 7
     assert table["Category"].eq("").all()
     next(item for item in app.button if item.label == "Generate missing AI drafts").click().run(timeout=60)
     wait_processing(app)
     app.run(timeout=60)
     assert not app.exception and not app.error
     assert [row["source_id"] for row in predicted_rows] == [row["source_id"] for row in rows[start + 2:start + 10]]
-    table = next(item.value for item in app.dataframe if "Draft status" in item.value)
-    assert table["Draft status"].tolist() == ["Ready", "No competency (irrelevant)"] + ["Ready"] * 8
+    table = next(item.value for item in app.dataframe if "AI category draft" in item.value)
+    assert "Draft status" not in table
+    assert table["AI category draft"].tolist() == ["Data / Analytics", "IRRELEVANT"] + ["Data / Analytics"] * 8
     assert table["Category"].eq("").all()
     assert all(len(value) == 0 for value in table["PSF-AAI competencies"])
     assert storage.read_frame("labeled_competencies").empty
@@ -546,7 +549,7 @@ def test_new_drafts_preserve_pending_browser_edits(ui_workspace, taxonomy):
     save_ai_suggestions(ui_workspace, [row], [{"label": "Data / Analytics", "psf_competency": "SQL"}])
     app.run(timeout=60)
     assert not app.exception and not app.error
-    table = next(item.value for item in app.dataframe if "Draft status" in item.value)
+    table = next(item.value for item in app.dataframe if "AI category draft" in item.value)
     assert table.iloc[0]["Category"] == "Business / Domain"
     assert list(table.iloc[0]["PSF-AAI competencies"]) == ["TEST-1"]
     assert table.iloc[0]["AI category draft"] == "Data / Analytics"

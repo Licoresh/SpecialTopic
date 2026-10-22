@@ -1008,9 +1008,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
     table_config.update({
         "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
         "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
-        "Draft status": st.column_config.TextColumn(disabled=True, width=180),
     })
-    disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts", "Draft status"])
+    disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts"])
     job = st.session_state.get("_background_job")
     polling_drafts = bool(job and job.title in ("Generate AI drafts", "Generate local drafts")
                           and job.snapshot()["status"] == "running")
@@ -1023,12 +1022,6 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         missing_rows = [row for row, draft in zip(page_rows, page_suggestions) if not draft_complete(draft)]
         manual_table["AI category draft"] = [item.get("category", "") if item.get("category") in LABELS else "" for item in page_suggestions]
         manual_table["AI PSF-AAI drafts"] = [[item["competency_name"] for item in psf_draft_candidates(draft)] for draft in page_suggestions]
-        manual_table["Draft status"] = [
-            "No competency (irrelevant)" if draft.get("category") == "IRRELEVANT" else
-            "Ready" if draft_complete(draft) else
-            "Needs PSF draft" if draft.get("category") in LABELS else "Not generated"
-            for draft in page_suggestions
-        ]
         with st.container(horizontal=True, vertical_alignment="center", key="manual_review_actions"):
             save_action = st.container(width="content")
             generate_action = st.container(width="content")
@@ -1064,7 +1057,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             width="stretch",
             disabled=disabled_columns,
             column_config=table_config,
-            column_order=["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Draft status", "Source ads", "Source advertisement"],
+            column_order=["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"],
             row_height=52,
             height=min(580, 52 * len(manual_table) + 40),
             alt="Manual review: phrase, category, selected competencies, AI drafts and source advertisement",
