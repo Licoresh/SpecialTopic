@@ -1,5 +1,11 @@
 # Validation record
 
+## 2026-10-23 — Deferred extraction results, v2.0.57
+
+- Extraction page entry no longer downloads saved extraction or NLP diagnostic tables. Explicit result loading uses the existing authenticated background worker, exposes progress/cancellation/errors, and transfers the completed read into the session cache. Only review columns and the diagnostic limit flag are requested; displayed pages remain limited to 100 records.
+- 321 isolated software tests passed in 100.04 seconds; one existing pandas downcasting FutureWarning remains. The focused extraction/worker run passed 16 tests. Checks include a blocked reader with responsive page controls, visible connection failure, preservation of approved labels, unchanged result rows, and browser pagination. Compilation and diff checks passed.
+- No research records, labels, PSF mappings, or export scope changed. The teammate screenshot has different button wording from this checkout; their exact installed version, network latency, and authenticated browser behavior remain unverified. Old shared snapshots may still take time to download when explicitly requested.
+
 ## 2026-10-22 — Review-page drafts and queue reuse, v2.0.55
 
 - Both draft columns remain visible, including pages without predictions. Draft status distinguishes missing, incomplete, ready and intentionally irrelevant rows. Generation processes only missing/incomplete visible rows unless the researcher explicitly regenerates a complete page. Tests cover pages 3 and 4, partial drafts and unchanged manual fields.

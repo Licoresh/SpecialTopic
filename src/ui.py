@@ -75,6 +75,8 @@ def _processing_status():
                 if st.session_state.get("_background_job_seen") is not job:
                     supabase_store.clear_read_cache()
                     st.session_state.pop("_extraction_results_frame", None)
+                    if job.title == "Load saved extraction results" and state["status"] == "complete":
+                        st.session_state["_extraction_results_frame"] = job.result
                     st.session_state["_background_job_seen"] = job
                 show = st.success if state["status"] == "complete" else st.error if state["status"] == "failed" else st.info
                 show(f"{job.title}: {state['message']}")
@@ -728,16 +730,18 @@ def extraction():
             if not verified.empty:
                 _persist_psf_reference_files(verified)
         _start_processing("Extract skill phrases", background_tasks.extract)
-    if action_button("Refresh saved results", type="secondary", icon=":material/refresh:", action_id="refresh_extraction_results"):
-        st.session_state.pop("_extraction_results_frame", None)
+    has_results = "_extraction_results_frame" in st.session_state
+    if action_button("Refresh saved results" if has_results else "Load saved results", type="secondary",
+                     icon=":material/refresh:", action_id="refresh_extraction_results"):
         st.session_state["_extraction_results_page"] = 1
-        st.rerun()
+        _start_processing("Load saved extraction results", background_tasks.extraction_preview)
     if "_extraction_results_frame" not in st.session_state:
-        st.session_state["_extraction_results_frame"] = load_data_with_skeleton(
-            lambda: storage.read_frame("extractions_original", include_source_text=False,
-                                       columns=storage.EXTRACTION_REVIEW_COLUMNS), height=220
-        )
+        st.caption("Run extraction to prepare phrases, or load previously saved results. Saved results are not downloaded when you open this page.")
+        return
     result = st.session_state["_extraction_results_frame"]
+    limits = result.attrs.get("discovery_limits", {})
+    if result.empty:
+        st.info("No saved extraction results yet. Run extraction to prepare phrases for review.")
     if not result.empty:
         approved = result.human_label.fillna("").astype(str).str.strip().ne("") if "human_label" in result else pd.Series(False, index=result.index)
         metrics = st.columns(3)
@@ -765,11 +769,8 @@ def extraction():
             last_row = min(page * 100, len(result))
             st.caption(f"Showing {first_row:,}–{last_row:,} of {len(result):,} rows. Full results stay saved; only this page is sent to your browser.")
             display(visible)
-        diagnostics = load_data_with_skeleton(lambda: storage.read_frame("nlp_processed"), height=140)
-        if not diagnostics.empty and diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").any():
-            limited = int(diagnostics.candidate_limit_reached.astype(str).str.casefold().eq("true").sum())
-            cap = storage.settings()["max_candidates"]
-            st.warning(f"{limited} of {len(diagnostics)} job ads reached the {cap}-phrase cap for broad n-gram discovery. Exact vocabulary and PSF-AAI term scans still use the full text. Keeping this cap limits low-confidence review fragments; raise it in Settings only when you want a wider manual review and can inspect the extra candidates.")
+        if limits.get("limited", 0):
+            st.warning(f"{limits['limited']} of {limits['total']} job ads reached the {limits['cap']}-phrase cap for broad n-gram discovery. Exact vocabulary and PSF-AAI term scans still use the full text. Keeping this cap limits low-confidence review fragments; raise it in Settings only when you want a wider manual review and can inspect the extra candidates.")
 
 def _auto_train_after_review(labels, enabled):
     """Refresh development models only from saved, provenance-checked review labels."""

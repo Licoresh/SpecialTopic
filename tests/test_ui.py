@@ -208,6 +208,9 @@ def test_extraction_exposes_reused_researcher_approved_labels(ui_workspace, jobs
     save_annotations(labeled, "Synthetic reviewer")
     run_extraction()
     app = page_app("Competency Extraction")
+    next(button for button in app.button if button.label == "Load saved results").click().run()
+    wait_processing(app)
+    app.run()
     assert not app.exception and not app.error
     assert any(metric.label == "Researcher-approved labels" and int(metric.value.replace(",", "")) > 0
                for metric in app.metric)
@@ -309,6 +312,7 @@ def test_extraction_results_are_paginated(ui_workspace):
 def test_extraction_page_sends_only_100_rows_to_browser(ui_workspace):
     script = '''
 import pandas as pd
+import streamlit as st
 from unittest.mock import patch
 from src.ui import render
 frame = pd.DataFrame({
@@ -318,6 +322,7 @@ frame = pd.DataFrame({
     "model_prediction": [""] * 250,
     "accepted": ["True"] * 250,
 })
+st.session_state["_extraction_results_frame"] = frame
 def read_frame(name, **kwargs):
     return frame if name == "extractions_original" else pd.DataFrame()
 with patch("src.ui.storage.read_frame", side_effect=read_frame):
@@ -327,6 +332,41 @@ with patch("src.ui.storage.read_frame", side_effect=read_frame):
     assert not app.exception and not app.error
     assert len(app.dataframe[0].value) == 100
     assert any("Showing 1–100 of 250 rows" in item.value for item in app.caption)
+
+
+def test_extraction_opens_without_downloading_results(ui_workspace, monkeypatch):
+    read_frame = storage.read_frame
+    def guarded(name, **kwargs):
+        assert name not in {"extractions_original", "nlp_processed"}, "Page entry downloaded bulk results"
+        return read_frame(name, **kwargs)
+    monkeypatch.setattr(storage, "read_frame", guarded)
+    app = page_app("Competency Extraction")
+    assert not app.exception and not app.error
+    assert any(button.label == "Load saved results" for button in app.button)
+
+
+def test_saved_results_load_does_not_block_page_and_reports_failure(ui_workspace, monkeypatch):
+    from threading import Event
+    from src import background_tasks
+    entered, release = Event(), Event()
+    def slow_read(*, progress):
+        entered.set()
+        assert release.wait(15)
+        raise ValueError("Synthetic shared connection timeout")
+    monkeypatch.setattr(background_tasks, "extraction_preview", slow_read)
+    app = page_app("Competency Extraction")
+    try:
+        next(button for button in app.button if button.label == "Load saved results").click().run(timeout=10)
+        assert entered.wait(2)
+        assert not app.session_state["_background_job"].done.is_set()
+        assert any(button.label == "Stop processing" for button in app.button)
+        assert not app.exception
+    finally:
+        release.set()
+    assert app.session_state["_background_job"].done.wait(10)
+    app.run()
+    assert any("Synthetic shared connection timeout" in item.value for item in app.error)
+    assert "_extraction_results_frame" not in app.session_state
 
 @pytest.mark.parametrize("kind,content", [
     ("jobs", "role,text\nSynthetic analyst,Python"),

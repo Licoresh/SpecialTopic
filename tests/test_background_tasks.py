@@ -46,6 +46,23 @@ def test_worker_returns_immediately_and_isolates_session(worker, monkeypatch):
     assert backend.session_state() is ui_state
 
 
+def test_extraction_preview_projects_data_and_preserves_rows(worker, monkeypatch):
+    frame = pd.DataFrame({"original_phrase": ["SYNTHETIC Python", "SYNTHETIC SQL"], "human_label": ["", ""]})
+    def read(name, **kwargs):
+        if name == "extractions_original":
+            assert kwargs == {"include_source_text": False, "columns": storage.EXTRACTION_REVIEW_COLUMNS}
+            return frame.copy()
+        assert name == "nlp_processed"
+        assert kwargs == {"columns": ["candidate_limit_reached"]}
+        return pd.DataFrame({"candidate_limit_reached": ["True", "False"]})
+    monkeypatch.setattr(storage, "read_frame", read)
+    monkeypatch.setattr(storage, "settings", lambda: {"max_candidates": 300})
+    job = tasks.start("Load saved extraction results", tasks.extraction_preview)
+    assert finished(job)["status"] == "complete"
+    pd.testing.assert_frame_equal(job.result, frame)
+    assert job.result.attrs["discovery_limits"] == {"limited": 1, "total": 2, "cap": 300}
+
+
 def test_cancel_stops_before_publication_and_sign_out_cancels(worker, monkeypatch):
     entered, release = Event(), Event()
     write = Mock()

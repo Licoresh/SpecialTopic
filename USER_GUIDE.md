@@ -18,6 +18,8 @@ Both AI draft columns stay visible on every review page. Choose **Generate missi
 
 Extraction, classifier training, and AI suggestions run in the background. A status panel shows progress on every workspace page; navigation and manual review remain available. One heavy job runs per app process, and the shared training lease still prevents competing model publications. **Stop processing** takes effect between processing steps; it is disabled once result publication starts. Save your edits before pressing **Refresh view** after completion.
 
+From v2.0.57, opening **Extract skill phrases** does not download the saved extraction archive. Choose **Load saved results** to fetch it in the background, then **Refresh view** when ready. The same panel reports connection errors and lets you stop between loading steps. Loaded results remain available while you browse their 100-row pages; **Refresh saved results** fetches a newer snapshot. This changes loading only, not the saved research records or export scope.
+
 Keep the local/Docker server running. Jobs are in memory: restarting the server interrupts them, and refreshing the entire browser can lose the progress panel. Completed AI batches stay saved; retry to continue local batches. A worker whose sign-in expires stops before its next authenticated operation; sign in again and retry. First model loading and inference still depend on your hardware. After upgrading, rerun extraction once to publish the smaller shared review index and source-partition metadata. Existing snapshots remain readable, and exports retain all selected research records and evidence.
 
 ## 2. Prepare a suitable Philippine job-ad sample

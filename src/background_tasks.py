@@ -16,6 +16,7 @@ class Job:
         self.title = title
         self._lock = Lock()
         self.done = Event()
+        self.result = None
         self._state = {"status": "running", "value": 0., "message": "Starting…",
                        "cancel_requested": False, "cancellable": True}
 
@@ -61,7 +62,10 @@ def start(title, function, *args, **kwargs):
         try:
             with supabase_store.worker_session(credentials):
                 checkpoint()
-                message = function(*args, progress=job.progress, **kwargs)
+                result = function(*args, progress=job.progress, **kwargs)
+                checkpoint()
+            job.result = result
+            message = result if isinstance(result, str) else "Saved results loaded. Select Refresh view to display them."
             status = "complete"
         except Cancelled as exc:
             status, message = "cancelled", str(exc)
@@ -88,6 +92,22 @@ def extract(*, progress):
     from .workflow import run_extraction
     result = run_extraction(progress=progress)
     return f"Saved {len(result):,} candidate/match records with source evidence."
+
+
+def extraction_preview(*, progress):
+    from . import storage
+    progress(0., "Reading saved phrases. Older shared datasets may take longer to download…")
+    frame = storage.read_frame("extractions_original", include_source_text=False,
+                               columns=storage.EXTRACTION_REVIEW_COLUMNS)
+    progress(.9, "Reading discovery limits…")
+    diagnostics = storage.read_frame("nlp_processed", columns=["candidate_limit_reached"])
+    limited = diagnostics.get("candidate_limit_reached")
+    frame.attrs["discovery_limits"] = {
+        "limited": int(limited.astype(str).str.casefold().eq("true").sum()) if limited is not None else 0,
+        "total": len(diagnostics),
+        "cap": storage.settings()["max_candidates"],
+    }
+    return frame
 
 
 def train(test_size=.2, include_irrelevant=False, vectorizer_config=None, *, progress):
