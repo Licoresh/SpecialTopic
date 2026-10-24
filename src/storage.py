@@ -115,6 +115,7 @@ def _frame_chunks(columns, records, max_bytes=None):
 
 def _save_remote_frame(name, frame):
     from .supabase_store import configured
+    from .background_tasks import report
     if not configured():
         return
     shared = frame
@@ -135,18 +136,21 @@ def _save_remote_frame(name, frame):
     generation = uuid.uuid4().hex
     chunks = _frame_chunks(columns, records)
     for index, chunk in enumerate(chunks):
+        report(f"Saving {name} · batch {index + 1} of {len(chunks)}")
         _remote_write("frame", f"{name}:chunk:{generation}:{index}", {"records": chunk})
     review_projection = None
     if name == "extractions_original":
         review = shared.loc[:, [column for column in EXTRACTION_REVIEW_COLUMNS if column in shared]]
         review_chunks = _frame_chunks(list(review.columns), review.to_dict(orient="records"))
         for index, chunk in enumerate(review_chunks):
+            report(f"Saving review index · batch {index + 1} of {len(review_chunks)}")
             _remote_write("frame", f"{name}:chunk:review:{generation}:{index}", {"records": chunk})
         review_projection = {"_storage_codec": "frame-chunks-v1", "generation": generation,
                              "chunk_count": len(review_chunks), "record_count": len(review),
                              "columns": list(review.columns), "chunk_prefix": f"{name}:chunk:review"}
     # Publish only after every chunk is durable; interrupted writes leave the
     # previous snapshot readable.
+    report(f"Publishing completed {name} snapshot…")
     _remote_write("frame", name, {"_storage_codec": "frame-chunks-v1", "generation": generation,
                                   "chunk_count": len(chunks), "record_count": len(records),
                                   "columns": columns, "elided_columns": elided,

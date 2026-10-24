@@ -189,6 +189,88 @@ def test_missing_schema_message_is_actionable(shared, monkeypatch):
         backend._request("GET", "/rest/v1/app_state", token="test")
 
 
+def test_connection_reset_retries_identical_snapshot_on_fresh_connection(shared, monkeypatch):
+    import requests
+    response = Mock(ok=True, status_code=201, content=b"")
+    broken = Mock()
+    broken.request.side_effect = requests.ConnectionError("Synthetic reset 10054")
+    healthy = Mock()
+    healthy.request.return_value = response
+    monkeypatch.setattr(backend.requests, "Session", Mock(side_effect=[broken, healthy]))
+    monkeypatch.setattr(backend.time, "sleep", lambda seconds: None)
+    backend.write_state("frame:synthetic:chunk:fixed:0", {"records": [{"x": 1}]}, "test")
+    broken.close.assert_called_once()
+    assert broken.request.call_args == healthy.request.call_args
+    assert healthy.request.call_count == 1
+
+
+@pytest.mark.parametrize("method,endpoint,attempts", [("GET", "/rest/v1/app_state", 3),
+    ("POST", "/rest/v1/rpc/save_reviewed_annotations", 1)])
+def test_retry_limit_and_no_replay_of_review_rpc(shared, monkeypatch, method, endpoint, attempts):
+    import requests
+    session = Mock()
+    session.request.side_effect = requests.ConnectionError("Synthetic reset")
+    monkeypatch.setattr(backend, "_http_session", lambda: session)
+    monkeypatch.setattr(backend.time, "sleep", lambda seconds: None)
+    with pytest.raises(backend.SupabaseError, match=f"after {attempts} attempt"):
+        backend._request(method, endpoint, token="test", payload={})
+    assert session.request.call_count == attempts
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_failures_are_not_retried(shared, monkeypatch, status):
+    response = Mock(ok=False, status_code=status)
+    response.json.return_value = {"message": "Synthetic auth failure"}
+    session = Mock(request=Mock(return_value=response))
+    monkeypatch.setattr(backend, "_http_session", lambda: session)
+    with pytest.raises(backend.SupabaseError):
+        backend._request("GET", "/rest/v1/app_state", token="test")
+    assert session.request.call_count == 1
+
+
+@pytest.mark.parametrize("content", [b"not JSON", b""])
+def test_malformed_success_response_is_not_empty_data(shared, monkeypatch, content):
+    response = Mock(ok=True, status_code=200, content=content)
+    response.json.side_effect = ValueError("Synthetic invalid JSON")
+    monkeypatch.setattr(backend, "_http_session", lambda: Mock(request=Mock(return_value=response)))
+    with pytest.raises(backend.SupabaseError, match="no empty dataset"):
+        backend.read_state("frame:synthetic", "test")
+
+
+def test_temporary_gateway_failure_retries_but_tls_failure_does_not(shared, monkeypatch):
+    import requests
+    failed = Mock(ok=False, status_code=503)
+    success = Mock(ok=True, status_code=200, content=b"[]")
+    success.json.return_value = []
+    session = Mock()
+    session.request.side_effect = [failed, success]
+    monkeypatch.setattr(backend, "_http_session", lambda: session)
+    monkeypatch.setattr(backend.time, "sleep", lambda seconds: None)
+    assert backend._request("GET", "/rest/v1/app_state", token="test") == []
+    assert session.request.call_count == 2
+    failed.close.assert_called_once()
+    session.request.reset_mock()
+    session.request.side_effect = requests.exceptions.SSLError("Synthetic certificate error")
+    with pytest.raises(backend.SupabaseError, match="secure"):
+        backend._request("GET", "/rest/v1/app_state", token="test")
+    assert session.request.call_count == 1
+
+
+def test_failed_chunk_does_not_publish_partial_snapshot(shared, monkeypatch):
+    monkeypatch.setattr(storage, "REMOTE_FRAME_CHUNK_BYTES", 300)
+    previous = {"records": [{"original_phrase": "previous synthetic result"}]}
+    saved = {"extractions_original": previous}
+    def write(kind, name, payload):
+        if name.endswith(":1"):
+            raise backend.SupabaseError("Synthetic connection failure")
+        saved[name] = payload
+    monkeypatch.setattr(storage, "_remote_write", write)
+    frame = pd.DataFrame({"source_id": [f"TEST-{i}" for i in range(20)], "original_phrase": ["Synthetic phrase"] * 20})
+    with pytest.raises(backend.SupabaseError):
+        storage._save_remote_frame("extractions_original", frame)
+    assert saved["extractions_original"] == previous
+
+
 def test_signout_removes_previous_reviewers_drafts_and_data(shared):
     shared["review_snapshot"] = "private data"
     shared["manual_labels_123"] = "unsaved edits"

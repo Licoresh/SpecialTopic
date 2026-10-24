@@ -3,6 +3,32 @@ import pandas as pd
 from src.psf_mapping import TaxonomyMatcher, mapping_table
 from src.skill_extraction import extract_skills
 
+
+def test_profile_word_reuse_matches_original_scoring(taxonomy):
+    import re
+    from rapidfuzz import fuzz
+    from src.psf_mapping import PROFILE_STOPWORDS
+    from src.cleaning import normalize_text
+    taxonomy.loc[0, "competency_description"] = "Statistical algorithms, communication, collaboration, modelling"
+    taxonomy.loc[1, "competency_description"] = "Statistics and algorithmic communication with SQL"
+    matcher = TaxonomyMatcher(taxonomy)
+    for phrase in ["statistics", "statistical algorithm", "communication modelling", "collaboration statistics",
+                   "irrelevant nonsense", "SQL", "data", "statistic algorithmic"]:
+        terms = [t for t in re.findall(r"[\w+#.]+", normalize_text(phrase))
+                 if t not in PROFILE_STOPWORDS and len(t) >= 3]
+        expected = []
+        if terms:
+            for row, tokens in zip(matcher.rows, matcher.profile_tokens):
+                scores = []
+                for term in terms:
+                    best = 1. if term in tokens else max((fuzz.ratio(term, token) / 100 for token in tokens
+                            if len(token) >= 7), default=0.) if len(term) >= 7 else 0.
+                    if best >= .85:
+                        scores.append(best)
+                if len(scores) / len(terms) >= .8:
+                    expected.append(matcher.evidence(normalize_text(row["competency_name"]), "competency_profile", sum(scores) / len(terms)))
+        assert matcher._profile_matches(phrase) == expected
+
 def test_exact_alias_fuzzy_and_ambiguity(taxonomy):
     matcher = TaxonomyMatcher(taxonomy)
     assert matcher.match("Python")["matching_method"] == "exact"

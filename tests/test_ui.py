@@ -360,6 +360,7 @@ def test_saved_results_load_does_not_block_page_and_reports_failure(ui_workspace
         assert entered.wait(2)
         assert not app.session_state["_background_job"].done.is_set()
         assert any(button.label == "Stop processing" for button in app.button)
+        assert any("Elapsed" in item.value for item in app.caption)
         assert not app.exception
     finally:
         release.set()
@@ -367,6 +368,24 @@ def test_saved_results_load_does_not_block_page_and_reports_failure(ui_workspace
     app.run()
     assert any("Synthetic shared connection timeout" in item.value for item in app.error)
     assert "_extraction_results_frame" not in app.session_state
+
+
+def test_failed_refresh_preserves_visible_results(ui_workspace):
+    script = '''
+import pandas as pd
+import streamlit as st
+from src import ui, background_tasks
+if "_background_job" not in st.session_state:
+    job = background_tasks.Job("Load saved extraction results")
+    job._state.update(status="failed", message="Synthetic connection reset")
+    st.session_state["_background_job"] = job
+    st.session_state["_extraction_results_frame"] = pd.DataFrame({"original_phrase": ["SYNTHETIC SQL"]})
+ui.render("Competency Extraction")
+'''
+    app = AppTest.from_string(script).run(timeout=60)
+    assert not app.exception
+    assert any("Synthetic connection reset" in error.value for error in app.error)
+    assert app.dataframe[0].value.original_phrase.tolist() == ["SYNTHETIC SQL"]
 
 @pytest.mark.parametrize("kind,content", [
     ("jobs", "role,text\nSynthetic analyst,Python"),

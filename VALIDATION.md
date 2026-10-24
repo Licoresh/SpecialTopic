@@ -1,5 +1,18 @@
 # Validation record
 
+## 2026-10-24 — Retry finished extraction saves, v2.0.59
+
+- Finished extraction and diagnostics are retained in the originating job's memory after a connection/file-write failure. Retry saving recomputes input fingerprints and checks cleaning metadata plus local/published model identity before publication, without repeating NLP or matching. Local model guards are separate from the cross-device study signature. A restart, sign-out, dismissal or replacement job discards the in-memory retry copy; this is not durable job recovery.
+- Failed result refreshes preserve the visible snapshot. Malformed or empty GET response bodies raise an error instead of being treated as an empty shared dataset. Successful minimal write responses remain supported.
+- Full suite passed 339 tests in 85.53s with one existing pandas FutureWarning. Tests verify one computation across a failed save/retry, exact restored output, rejection of changed jobs/taxonomy/labels/settings/cleaning/model, preserved visible tables and malformed-response errors. Compilation and diff checks passed. Research data was not changed; school-network behavior and simultaneous multi-device operation remain unverified.
+
+## 2026-10-24 — Connection recovery and extraction progress, v2.0.58
+
+- Supabase reads and explicitly repeat-safe app_state upserts retry connection resets, timeouts and transient 502/503/504 responses at most three times, using a fresh pooled connection after failure. Permission/certificate errors fail immediately. Review-save RPCs are not replayed. UI progress displays retry attempts, elapsed time, preprocessing/scanning counts and upload batches; stage percentages are not time predictions.
+- Profile matching reuses word-to-profile scores and uses RapidFuzz's native maximum-score search with the same scorer and thresholds. Read-only comparison on the entire 500-ad dataset produced exactly equal extraction and diagnostic frames: 93,622 records, 90.719s baseline versus 64.539s optimized (29% less local computation time). A 25-ad check also matched all 5,660 records (5.965s versus 2.421s). No classifier or reviewed annotations were supplied in these timing runs; they do not measure model accuracy or network transfer time.
+- Gzip level 6 preserves the storage codec while reducing compression effort. A 2,000-record compact payload measured 0.0417s/145,139 bytes at level 9 versus 0.0187s/147,042 bytes at level 6. Level 1 was rejected because it increased transfer size to 185,491 bytes.
+- Full suite: 330 isolated tests passed in 80.99s, with one existing pandas downcasting FutureWarning. Tests cover identical matching scores, progress/output equality, bounded retry behavior, fresh connections with identical snapshot payloads, auth/TLS failures and preservation of the previous manifest when a chunk upload fails. Compilation, diff and localhost health checks passed. No live Supabase data or research files were changed. Teammate hardware/network timing and authenticated browser rendering remain unverified.
+
 ## 2026-10-23 — Deferred extraction results, v2.0.57
 
 - Extraction page entry no longer downloads saved extraction or NLP diagnostic tables. Explicit result loading uses the existing authenticated background worker, exposes progress/cancellation/errors, and transfers the completed read into the session cache. Only review columns and the diagnostic limit flag are requested; displayed pages remain limited to 100 records.

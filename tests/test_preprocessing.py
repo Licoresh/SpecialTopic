@@ -1,5 +1,15 @@
 from src.preprocessing import extract_candidate_phrases
 
+
+def test_progress_preserves_candidate_output():
+    texts = ["Synthetic Python statistical analysis", "Synthetic SQL programming", "Synthetic Python statistical analysis"]
+    events = []
+    expected = extract_candidate_phrases(texts)
+    actual = extract_candidate_phrases(texts, progress=lambda value, message: events.append((value, message)))
+    assert actual == expected
+    assert len(events) == 2
+    assert "2 of 2" in events[-1][1]
+
 def test_ngrams_lemmas_and_technical_tokens():
     text = "Models use C++ C# .NET R SQL and machine learning."
     result = extract_candidate_phrases([text, text])

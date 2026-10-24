@@ -40,6 +40,8 @@ class TaxonomyMatcher:
                 self.originals[key] = term
         self.profiles = [normalize_text(row.get("competency_description", "")) for row in self.rows]
         self.profile_tokens = [set(re.findall(r"[\w+#.]+", text)) for text in self.profiles]
+        self.profile_long_tokens = [tuple(token for token in tokens if len(token) >= 7) for tokens in self.profile_tokens]
+        self.profile_word_scores = {}
         self.profile_cache = {}
         self.ranges = [normalize_text(row.get("range_of_application", "")) for row in self.rows]
         self.range_cache = {}
@@ -121,13 +123,17 @@ class TaxonomyMatcher:
         if not terms:
             return []
         matches = []
-        for row, tokens in zip(self.rows, self.profile_tokens):
+        for index, (row, tokens) in enumerate(zip(self.rows, self.profile_tokens)):
             token_scores = []
             for term in terms:
                 if term in tokens:
                     token_scores.append(1.)
                 elif len(term) >= 7:
-                    best = max((fuzz.ratio(term, token) / 100 for token in tokens if len(token) >= 7), default=0.)
+                    word_key = (index, term)
+                    if word_key not in self.profile_word_scores:
+                        hit = process.extractOne(term, self.profile_long_tokens[index], scorer=fuzz.ratio)
+                        self.profile_word_scores[word_key] = hit[1] / 100 if hit else 0.
+                    best = self.profile_word_scores[word_key]
                     if best >= .85:
                         token_scores.append(best)
             if len(token_scores) / len(terms) >= .8:

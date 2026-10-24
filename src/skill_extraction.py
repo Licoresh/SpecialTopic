@@ -25,7 +25,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     progress(.05, "Preparing NLP phrases from the complete source text")
     texts = frame.cleaned_text.map(clean_text)
     options.setdefault("priority_phrases", GENERAL.keys())
-    processed = extract_candidate_phrases(texts, **options)
+    processed = extract_candidate_phrases(texts, progress=progress, **options)
     annotation_map = {}
     psf_annotations = {}
     if annotations is not None and not annotations.empty:
@@ -47,8 +47,9 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     # NLP and model predictions are reused for repeated text/phrases.
     evidence_by_text = {}
     progress(.25, "Scanning full text against vocabulary and PSF-AAI")
-    for text in processed:
+    for number, text in enumerate(processed):
         checkpoint()
+        progress(.25 + .1 * number / max(len(processed), 1), f"Scanning text {number + 1:,} of {len(processed):,}")
         evidence = []
         if matcher:
             evidence.extend((p, normalize_text(p), a, b, m) for p, a, b, m in matcher.exact_in_text(text))

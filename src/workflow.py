@@ -19,12 +19,22 @@ def input_signature():
                    "column_mappings": {k:storage.read_json("mapping_"+k, {}) for k in ("jobs", "psf_aai")},
                    "annotations": frame_hash(storage.read_frame("labeled_competencies")), "settings": storage.settings(), "model": storage.read_json("selected_model", {}), "version": VERSION})
 
-def run_extraction(progress=None):
-    from .background_tasks import begin_publication
+
+def _extraction_retry_signature(signature):
+    # Local model identity guards retries on this host, not shared result freshness.
+    return digest({"inputs": signature,
+                   "cleaning": {k: storage.read_json("cleaning_" + k, {}) for k in ("jobs", "psf_aai")},
+                   "published_model": storage.read_json("model_metadata", {}),
+                   "local_model": {name: digest(path.read_bytes()) if path.is_file() else None
+                                   for name in ("competency_classifier.joblib", "model_metadata.json")
+                                   for path in [ROOT / "models" / name]}})
+
+def run_extraction(progress=None, on_prepared=None):
     from . import supabase_store
     progress = progress or (lambda value, message: None)
     progress(0., "Checking source data and review provenance")
     signature = input_signature()
+    retry_signature = _extraction_retry_signature(signature)
     settings = storage.settings()
     for kind, upload in storage.read_json("uploads", {}).items():
         if kind not in ("jobs", "psf_aai"):
@@ -61,14 +71,28 @@ def run_extraction(progress=None):
     output = pd.concat(populated, ignore_index=True) if populated else frames[0]
     if output.empty:
         raise ValueError("No phrases were found. Upload, map and clean text datasets first.")
+    prepared = (output, pd.concat(diagnostics, ignore_index=True),
+                {"signature": signature, "retry_signature": retry_signature, "timestamp": timestamp(), "taxonomy_available": matcher is not None, "model_available": model is not None})
+    if on_prepared:
+        on_prepared(prepared)
+    return publish_extraction(prepared, progress)
+
+
+def publish_extraction(prepared, progress=None):
+    """Retry publication only after rechecking every input used in computation."""
+    from .background_tasks import begin_publication
+    from . import supabase_store
+    progress = progress or (lambda value, message: None)
+    output, diagnostics, metadata = prepared
     progress(.95, "Checking that research inputs are unchanged")
-    supabase_store.clear_read_cache()
-    if signature != input_signature():
+    supabase_store.clear_read_cache(frames=True)
+    signature = input_signature()
+    if metadata["signature"] != signature or metadata.get("retry_signature") != _extraction_retry_signature(signature):
         raise ValueError("Research inputs changed during extraction. Previous results were retained; rerun with the current data and reviewed labels.")
     begin_publication()
     storage.save_frame("extractions_original", output)
-    storage.save_frame("nlp_processed", pd.concat(diagnostics, ignore_index=True))
-    storage.save_json("extraction_metadata", {"signature": signature, "timestamp": timestamp(), "taxonomy_available": matcher is not None, "model_available": model is not None})
+    storage.save_frame("nlp_processed", diagnostics)
+    storage.save_json("extraction_metadata", metadata)
     return output
 
 def current_extractions(*, source_ids=None):

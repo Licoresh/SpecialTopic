@@ -148,6 +148,55 @@ def test_changed_inputs_cannot_publish_extraction(workspace, monkeypatch):
     save.assert_not_called()
 
 
+def test_retry_saving_reuses_computation(worker, monkeypatch, jobs, taxonomy):
+    from src import workflow
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    compute = Mock(wraps=workflow.extract_skills)
+    monkeypatch.setattr(workflow, "extract_skills", compute)
+    save = storage.save_frame
+    def fail_save(name, frame):
+        if name == "extractions_original":
+            raise backend.SupabaseError("Synthetic upload reset")
+        save(name, frame)
+    monkeypatch.setattr(storage, "save_frame", fail_save)
+    first = tasks.start("Extract skill phrases", tasks.extract)
+    assert first.done.wait(45), first.snapshot()
+    assert finished(first)["status"] == "failed"
+    assert first.prepared_extraction is not None
+    expected = first.prepared_extraction[0].fillna("").astype(str)
+    monkeypatch.setattr(storage, "save_frame", save)
+    retry = tasks.start("Extract skill phrases", tasks.extract, prepared=first.prepared_extraction)
+    assert finished(retry)["status"] == "complete"
+    assert retry.prepared_extraction is None
+    assert compute.call_count == 1
+    pd.testing.assert_frame_equal(storage.read_frame("extractions_original"), expected)
+
+
+@pytest.mark.parametrize("changed", ["labels", "jobs", "settings", "taxonomy", "model", "cleaning"])
+def test_retry_rejects_changed_inputs(workspace, monkeypatch, jobs, taxonomy, changed):
+    from src import workflow
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    signature = workflow.input_signature()
+    retry_signature = workflow._extraction_retry_signature(signature)
+    if changed == "model":
+        (workspace / "models/competency_classifier.joblib").write_bytes(b"SYNTHETIC MODEL CHANGE")
+    elif changed == "labels":
+        storage.save_frame("labeled_competencies", pd.DataFrame({"phrase": ["SYNTHETIC Python"], "label": ["Technical / Digital"]}))
+    elif changed in {"jobs", "taxonomy"}:
+        name = {"jobs": "cleaned_jobs", "taxonomy": "cleaned_psf_aai", "labels": "labeled_competencies"}[changed]
+        (workspace / "data/processed" / f"{name}.csv").write_text("synthetic\nchanged\n")
+    else:
+        storage.save_json("settings" if changed == "settings" else "cleaning_jobs", {"max_candidates": 4})
+    save = Mock()
+    monkeypatch.setattr(storage, "save_frame", save)
+    with pytest.raises(ValueError, match="inputs changed"):
+        workflow.publish_extraction((pd.DataFrame({"source_id": ["TEST"]}), pd.DataFrame(),
+                                     {"signature": signature, "retry_signature": retry_signature}))
+    save.assert_not_called()
+
+
 def test_draft_cancellation_retains_completed_batches_only(worker, monkeypatch):
     from src import pretrained_suggestions
     entered, release = Event(), Event()

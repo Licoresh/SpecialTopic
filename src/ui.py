@@ -64,6 +64,8 @@ def _processing_status():
         with st.container(border=True):
             if state["status"] == "running":
                 st.progress(state["value"], text=f"{job.title} · {state['message']}")
+                elapsed = int(time.monotonic() - job.started_at)
+                st.caption(f"Elapsed {elapsed // 60}:{elapsed % 60:02d} · {state['value']:.0%} through processing stages")
                 if state["cancel_requested"]:
                     st.caption("Stopping after the current processing step…")
                 else:
@@ -74,12 +76,17 @@ def _processing_status():
             else:
                 if st.session_state.get("_background_job_seen") is not job:
                     supabase_store.clear_read_cache()
-                    st.session_state.pop("_extraction_results_frame", None)
+                    if state["status"] == "complete":
+                        st.session_state.pop("_extraction_results_frame", None)
                     if job.title == "Load saved extraction results" and state["status"] == "complete":
                         st.session_state["_extraction_results_frame"] = job.result
                     st.session_state["_background_job_seen"] = job
                 show = st.success if state["status"] == "complete" else st.error if state["status"] == "failed" else st.info
                 show(f"{job.title}: {state['message']}")
+                if state["status"] == "failed" and job.prepared_extraction is not None:
+                    if st.button("Retry saving extraction", key="retry_extraction_save"):
+                        _start_processing("Extract skill phrases", background_tasks.extract, prepared=job.prepared_extraction)
+                    st.caption("Finished computation is kept in this session. Retry checks for changed inputs before saving. Restarting, dismissing this job, or starting another job discards this retry copy.")
                 if st.button("Refresh view", key="refresh_after_processing",
                              help="Save any table edits first. This reloads the page with the latest saved results."):
                     st.session_state.pop("_background_job", None)

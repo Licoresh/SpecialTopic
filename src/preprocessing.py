@@ -43,14 +43,16 @@ def extract_ngrams(doc, stopwords=(), max_n=3):
                 results.append((phrase, normalized, group[0].idx, group[-1].idx + len(group[-1])))
     return results
 
-def extract_candidate_phrases(texts, stopwords=(), batch_size=64, max_candidates=300, priority_phrases=()):
+def extract_candidate_phrases(texts, stopwords=(), batch_size=64, max_candidates=300, priority_phrases=(), progress=None):
     unique = list(dict.fromkeys(clean_text(t) for t in texts))
     priorities = {normalize_text(phrase) for phrase in priority_phrases}
     output = {}
     from .background_tasks import checkpoint
     checkpoint()
-    for text, doc in zip(unique, get_nlp().pipe(unique, batch_size=batch_size)):
+    for number, (text, doc) in enumerate(zip(unique, get_nlp().pipe(unique, batch_size=batch_size))):
         checkpoint()
+        if progress:
+            progress(.05 + .2 * number / max(len(unique), 1), f"Preparing text {number + 1:,} of {len(unique):,}")
         candidates = extract_ngrams(doc, stopwords)
         seen = set()
         retained = []

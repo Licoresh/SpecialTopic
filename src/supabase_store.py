@@ -151,17 +151,36 @@ def configured() -> bool:
     return bool(url or key)
 
 
-def _request(method: str, endpoint: str, *, token: str, payload=None, params=None, prefer=None):
+def _request(method: str, endpoint: str, *, token: str, payload=None, params=None, prefer=None, retry_safe=False):
     url, key = configuration()
     if not url or not key:
         raise SupabaseError("Supabase is not configured. Add SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to Streamlit secrets.")
     headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if prefer:
         headers["Prefer"] = prefer
-    try:
-        response = _http_session().request(method, f"{url}{endpoint}", headers=headers, json=payload, params=params, timeout=30)
-    except requests.RequestException as exc:
-        raise SupabaseError(f"Could not reach Supabase: {exc}") from exc
+    attempts = 3 if method == "GET" or retry_safe else 1
+    from .background_tasks import checkpoint, report
+    for attempt in range(attempts):
+        checkpoint()
+        try:
+            response = _http_session().request(method, f"{url}{endpoint}", headers=headers,
+                                               json=payload, params=params, timeout=(10, 30))
+        except requests.exceptions.SSLError as exc:
+            raise SupabaseError("Could not verify the secure Supabase connection. Check this computer's certificates and network.") from exc
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
+            if attempt + 1 == attempts:
+                raise SupabaseError(f"Supabase connection interrupted after {attempts} attempt(s). Check the internet connection and retry. This operation could not be confirmed.") from exc
+        except requests.RequestException as exc:
+            raise SupabaseError("Could not reach Supabase. Check the internet connection and retry.") from exc
+        else:
+            if response.status_code not in {502, 503, 504} or attempt + 1 == attempts:
+                break
+            response.close()
+        saved = session_state().pop("_supabase_http", None)
+        if saved is not None:
+            saved[1].close()
+        report(f"Connection interrupted · retrying Supabase ({attempt + 2}/{attempts})…")
+        time.sleep(.5 * (attempt + 1))
     if not response.ok:
         try:
             detail = response.json().get("message") or response.json().get("msg") or response.text
@@ -184,11 +203,13 @@ def _request(method: str, endpoint: str, *, token: str, payload=None, params=Non
             )
         raise SupabaseError(f"Supabase returned HTTP {response.status_code}: {detail}", status_code=response.status_code)
     if not response.content:
+        if method == "GET":
+            raise SupabaseError("Supabase returned an empty response body. Retry the read; no empty dataset has been assumed.")
         return None
     try:
         return response.json()
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise SupabaseError("Supabase returned an unreadable response. Retry the operation; no empty dataset has been assumed.") from exc
 
 
 def sign_in(email: str, password: str) -> dict:
@@ -246,7 +267,7 @@ def pack_state(payload):
     encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     if len(encoded) < 128 * 1024:
         return payload
-    return {"_codec": "gzip-json-v1", "data": base64.b64encode(gzip.compress(encoded)).decode("ascii")}
+    return {"_codec": "gzip-json-v1", "data": base64.b64encode(gzip.compress(encoded, compresslevel=6)).decode("ascii")}
 
 
 def unpack_state(payload):
@@ -382,7 +403,8 @@ def is_admin():
 def write_state(name: str, payload, token: str, *, preserve_existing=False):
     result = _request("POST", "/rest/v1/app_state", token=token,
                     payload={"name": name, "payload": pack_state(payload)},
-                    prefer=f"resolution={'ignore' if preserve_existing else 'merge'}-duplicates,return=minimal")
+                    prefer=f"resolution={'ignore' if preserve_existing else 'merge'}-duplicates,return=minimal",
+                    retry_safe=True)
     clear_read_cache()
     return result
 

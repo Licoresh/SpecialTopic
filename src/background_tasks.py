@@ -1,6 +1,7 @@
 """One bounded worker per app process, with session-owned status and credentials."""
 from contextvars import ContextVar
 from threading import Event, Lock, Thread
+from time import monotonic
 from . import supabase_store
 
 _running = Lock()
@@ -17,6 +18,8 @@ class Job:
         self._lock = Lock()
         self.done = Event()
         self.result = None
+        self.prepared_extraction = None
+        self.started_at = monotonic()
         self._state = {"status": "running", "value": 0., "message": "Starting…",
                        "cancel_requested": False, "cancellable": True}
 
@@ -39,6 +42,13 @@ def checkpoint():
     job = _current.get()
     if job is not None and job.snapshot()["cancel_requested"]:
         raise Cancelled("Stopped. Completed draft batches are retained; unfinished analysis was not published.")
+
+
+def report(message):
+    """Update the current stage without inventing a completion percentage."""
+    job = _current.get()
+    if job is not None:
+        job.progress(job.snapshot()["value"], message)
 
 
 def begin_publication():
@@ -71,11 +81,15 @@ def start(title, function, *args, **kwargs):
             status, message = "cancelled", str(exc)
         except Exception as exc:
             status, message = "failed", str(exc)
+            if not isinstance(exc, (supabase_store.SupabaseError, OSError)):
+                job.prepared_extraction = None
         finally:
             credentials.clear()
             _current.reset(reset)
             _running.release()
         with job._lock:
+            if status != "failed":
+                job.prepared_extraction = None
             job._state.update(status=status, message=message, cancellable=False)
         job.done.set()
 
@@ -88,9 +102,17 @@ def start(title, function, *args, **kwargs):
     return job
 
 
-def extract(*, progress):
-    from .workflow import run_extraction
-    result = run_extraction(progress=progress)
+def extract(*, progress, prepared=None):
+    from .workflow import run_extraction, publish_extraction
+    def retain(value):
+        job = _current.get()
+        if job is not None:
+            job.prepared_extraction = value
+    if prepared is None:
+        result = run_extraction(progress=progress, on_prepared=retain)
+    else:
+        retain(prepared)
+        result = publish_extraction(prepared, progress)
     return f"Saved {len(result):,} candidate/match records with source evidence."
 
 
