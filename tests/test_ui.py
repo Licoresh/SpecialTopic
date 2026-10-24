@@ -187,7 +187,7 @@ def test_manual_labels_not_invented_from_candidates(ui_workspace, jobs):
     assert storage.read_frame("labeled_competencies").empty
     assert app.checkbox[0].value is False
 
-def test_manual_review_keeps_source_specific_rows_with_ad_count(ui_workspace):
+def test_manual_review_groups_repeats_and_can_show_all_sources(ui_workspace):
     import pandas as pd
     storage.save_frame("team_training_candidates", pd.DataFrame([
         {"phrase":"Python", "normalized_phrase":"python", "source_type":"jobs", "source_id":"SYNTH-1", "original_text":"Python used for reporting."},
@@ -196,11 +196,37 @@ def test_manual_review_keeps_source_specific_rows_with_ad_count(ui_workspace):
     app = page_app("Manual Labeling")
     assert not app.exception and not app.error
     table = next(editor.value for editor in app.dataframe if "Source ads" in editor.value.columns)
+    assert len(table) == 1
+    assert int(table.iloc[0]["Source ads"]) == 2
+    assert len(storage.read_frame("team_training_candidates")) == 2
+    app.selectbox(key="manual_review_view").set_value("All advertisement occurrences").run()
+    assert not app.exception and not app.error
+    table = next(editor.value for editor in app.dataframe if "Source ads" in editor.value.columns)
     assert len(table) == 2
     assert set(table["Source advertisement"]) == {"SYNTH-1", "SYNTH-2"}
     assert "Category" in table and "PSF-AAI competencies" in table
     assert table.iloc[0]["Phrase"].casefold() == "python"
     assert int(table.iloc[0]["Source ads"]) == 2
+
+def test_unique_review_paginates_phrases_instead_of_repeated_ads(ui_workspace):
+    import pandas as pd
+    rows = pd.DataFrame([
+        dict(phrase=f"Synthetic competency {i}", normalized_phrase=f"synthetic competency {i}",
+             source_type="jobs", source_id=f"SYNTH-{ad}", original_text=f"Requires competency {i}.")
+        for i in range(12) for ad in range(3)
+    ])
+    storage.save_frame("team_training_candidates", rows)
+    app = page_app("Manual Labeling")
+    first = next(editor.value for editor in app.dataframe if "Source ads" in editor.value.columns)
+    assert len(first) == 10 and first["Phrase"].nunique() == 10
+    assert first["Source ads"].eq(3).all()
+    next(item for item in app.number_input if item.label == "Review page (10 rows per page)").set_value(2).run()
+    assert not app.exception and not app.error
+    second = next(editor.value for editor in app.dataframe if "Source ads" in editor.value.columns)
+    assert len(second) == 2
+    assert not set(first["Phrase"]) & set(second["Phrase"])
+    assert len(storage.read_frame("team_training_candidates")) == 36
+
 
 def test_extraction_exposes_reused_researcher_approved_labels(ui_workspace, jobs, taxonomy, labeled):
     storage.save_frame("cleaned_jobs", jobs)
@@ -718,11 +744,13 @@ def test_manual_review_multiple_links_roundtrip_and_source_isolation(ui_workspac
     assert labels.psf_competency.eq("").all()
     app = page_app("Manual Labeling")
     next(item for item in app.checkbox if item.label == "Only show phrases awaiting category review").uncheck()
+    app.selectbox(key="manual_review_view").set_value("All advertisement occurrences")
     next(item for item in app.text_input if item.label == "Find candidate phrase").set_value("python").run(timeout=60)
     table = next(editor.value for editor in app.dataframe if "PSF-AAI competencies" in editor.value)
     reviewed = table[table["Source advertisement"].eq(saved.source_id.iloc[0])]
     assert set(reviewed.iloc[0]["PSF-AAI competencies"]) == {"TEST-1", "TEST-2"}
     others = table[~table["Source advertisement"].eq(saved.source_id.iloc[0])]
+    assert not others.empty
     assert all(len(value) == 0 for value in others["PSF-AAI competencies"])
     tables, _ = analysis_bundle()
     mapping = tables["psf_mapping"]

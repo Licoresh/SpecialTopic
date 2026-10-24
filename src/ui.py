@@ -34,7 +34,7 @@ from .readiness import (assess_research_readiness, source_overlap,
                         historical_category_disagreements, research_data_profile)
 from . import supabase_store
 from .action_guard import action_button, action_form_submit_button, finish_action_run
-from .review_queue import (labels_by_phrase, expand_phrase_annotations,
+from .review_queue import (labels_by_phrase, expand_phrase_annotations, group_candidates_by_phrase,
                            manual_mapping_occurrences, preserve_occurrence_references)
 from .loading_ui import load_data_with_skeleton
 
@@ -918,6 +918,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
         source_filtered = candidates
         review_controls = st.container(horizontal=True, vertical_alignment="bottom", key="review_controls")
         with review_controls:
+            review_view = st.selectbox("Review view", ["Unique phrases", "All advertisement occurrences"],
+                                       key="manual_review_view", width=250)
             query = st.text_input("Find candidate phrase", placeholder="Search phrases…", width=300)
             with st.popover("Filters", icon=":material/filter_list:"):
                 if "candidate_file" in candidates:
@@ -931,7 +933,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     source_filtered = source_filtered.loc[~source_filtered.needs_phrase_edit]
         if query:
             source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
-        phrase_rows = source_filtered.drop_duplicates(["normalized_phrase", "source_id"]).copy()
+        phrase_rows = (group_candidates_by_phrase(source_filtered) if review_view == "Unique phrases"
+                       else source_filtered.drop_duplicates(["normalized_phrase", "source_type", "source_id"]).copy())
         with review_controls:
             page = st.number_input("Review page (10 rows per page)", 1, max(1, (len(phrase_rows)+9)//10), 1, width=200)
         shown = _review_contexts(phrase_rows.iloc[(page-1)*10:page*10])
@@ -940,7 +943,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             # Context for the selected rows is always loaded, including training
             # sources outside the study dataset.
             st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
-            st.caption("Source evidence for the ten displayed occurrences. Change the review page to inspect other advertisements.")
+            st.caption("Evidence belongs to the advertisement shown in each row. Use All advertisement occurrences to inspect other contexts for the same phrase.")
     else:
         st.info("No candidate phrases yet. Add Philippine job-ad source/candidate data to ./train or run Competency Extraction on uploaded jobs. No example labels are added automatically.")
         occurrences = candidates.copy()
@@ -968,7 +971,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
             st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
 
     if not shown.empty:
-        st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} occurrences · Category applies to the phrase; PSF-AAI applies to this advertisement.")
+        unit = "unique phrases" if review_view == "Unique phrases" else "advertisement occurrences"
+        st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} {unit} · Category applies to the phrase; PSF-AAI applies only to the displayed advertisement.")
     active_taxonomy = storage.read_frame("cleaned_psf_aai")
     reference = active_taxonomy.set_index("competency_id") if not active_taxonomy.empty else pd.DataFrame()
     mapping_available = not reference.empty

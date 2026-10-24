@@ -136,3 +136,9 @@ All 16 configured Streamlit pages passed AppTest in the prior run, and the full 
 - Synthetic AppTest checks verify two-link save/reload, source isolation, blank initial selections, and missing-rationale rejection. Helper checks verify exact extracted context and preservation of distinct legacy references. The full suite passed **250 tests in 69.92 seconds** with `..\.venv\Scripts\python.exe -m pytest -q --disable-warnings --maxfail=2`. A final reference-normalization refinement was checked with all four review-queue tests. Compilation and `git diff --check` passed.
 - Localhost was restarted on 127.0.0.1:8501 and its health endpoint returned `ok`. This confirms server availability, not browser rendering or authenticated shared writes.
 - Browser inspection remains blocked by disabled Local browser use in Work settings. The existing occurrence-mapping Supabase migration remains unapplied/unverified on the live database. No research data or framework definitions were edited by these tests.
+
+## 2026-10-24 — Unique manual-review phrases, v2.0.60
+
+Manual Review now defaults to one row per normalized phrase, using the existing representative-source grouping. All advertisement occurrences remains available for context-specific PSF-AAI review. No source records or frequencies are deleted; category saves still expand across occurrences, while competency links remain advertisement-specific. Related phrases are not merged by fuzzy similarity.
+
+Verification: 96 targeted UI, review-queue and performance tests passed in 43.52 seconds. Tests cover deduplicated pagination, preserved source counts, category propagation and PSF mapping isolation. Compilation, git diff checks and localhost health passed. Synthetic grouping of 98,681 rows into 2,000 distinct phrases took 0.094 seconds; this is grouping-only timing, not school-network performance. Live authenticated shared writes and visual browser interaction were not tested. No research data changed.

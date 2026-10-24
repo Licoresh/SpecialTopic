@@ -2,6 +2,8 @@
 
 This guide covers the research workflow from job-ad upload through reporting. The app does not invent research labels. Researchers must review and save labels before model training is available.
 
+Manual Review defaults to **Unique phrases**, showing each normalized phrase once. **Source ads** counts its advertisements within the current filters. Each row uses one representative advertisement for evidence and PSF-AAI decisions. Select **All advertisement occurrences** and search for a phrase to review its other contexts; turn off **Only show phrases awaiting category review** to include categorized phrases. Category saves still apply across the phrase's occurrences. PSF-AAI links apply only to the displayed advertisement. Grouping changes the review display, not research frequencies or exports; related but distinct phrases remain separate.
+
 ## 1. Start the app
 
 Open PowerShell in the `future_of_work` project folder and run:
