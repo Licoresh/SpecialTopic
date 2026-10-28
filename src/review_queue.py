@@ -3,6 +3,37 @@
 import pandas as pd
 
 
+def archived_job_contexts(root, source_ids, load_archive):
+    """Recover an exact raw upload row, never match different uploads by wording."""
+    import re
+    from pathlib import Path
+    requests = {}
+    for source_id in source_ids:
+        match = re.fullmatch(r"jobs:([0-9a-f]{16}):([0-9]+)", str(source_id))
+        if match and int(match[2]) >= 2:
+            requests.setdefault(match[1], []).append((source_id, int(match[2]) - 2))
+    result = {}
+    for prefix, rows in requests.items():
+        paths = list((Path(root) / "data/raw").glob(f"jobs_{prefix}*.csv"))
+        if len(paths) != 1:
+            continue
+        path = paths[0]
+        source_hash = path.stem.removeprefix("jobs_")
+        if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+            continue
+        stat = path.stat()
+        try:
+            raw = load_archive(str(path), stat.st_mtime_ns, stat.st_size, source_hash, 0, "utf-8-sig")
+        except (ValueError, OSError, UnicodeError):
+            continue
+        for source_id, position in rows:
+            if position < len(raw):
+                result[source_id] = "\n".join(
+                    f"{column}: {value}" for column, value in raw.iloc[position].items()
+                    if str(value).strip())
+    return result
+
+
 def group_candidates_by_phrase(candidates):
     """Return one display row per normalized phrase with a representative source."""
     if candidates.empty:

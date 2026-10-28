@@ -1,5 +1,11 @@
 # Validation record
 
+## 2026-10-28 — Resolve unmarked review evidence, v2.0.62
+
+- Review text recovery now uses the exact source ID for job candidates even when deduplication removed the extraction's `_job_context` marker. Blank original text falls back to that source's stored job description. Existing context is preserved; unknown source IDs remain blocked.
+- Older candidates can recover text from an exact raw CSV archive, verified against its full upload hash and original row. The screenshot source `jobs:a06d0b386aec539e:7` recovered 1,968 characters. This does not add archived ads to the active study dataset.
+- 25 review-queue and UI-performance tests passed after preloading `src.ui`, including rejection of a changed archive. The initial run passed 23 tests but hit the existing AppTest three-second cold-import timeout. Compilation and diff checks passed. Live browser verification was unavailable because local browser control is disabled.
+
 ## 2026-10-28 — Restore evidence for shared extracted occurrences, v2.0.61
 
 - Shared extraction indexes omit long source text to keep reads compact. Manual PSF-AAI review now restores missing evidence from the matching candidate using the same source ID and normalized phrase.

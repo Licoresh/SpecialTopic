@@ -212,23 +212,38 @@ def _build_manual_review_data():
 def _review_contexts(frame):
     """Resolve omitted shared evidence before displaying, suggesting or reviewing it."""
     frame = frame.copy()
-    if "_job_context" in frame and frame._job_context.eq("jobs").any():
-        jobs = storage.read_frame("cleaned_jobs", columns=["source_id", "original_text", "job_description"])
-        if not jobs.empty:
-            context_column = "original_text" if "original_text" in jobs else "job_description"
-            contexts = jobs.drop_duplicates("source_id").set_index("source_id")[context_column]
-            selected = frame._job_context.eq("jobs")
-            frame.loc[selected, "original_text"] = frame.loc[selected, "source_id"].map(contexts).fillna("")
-    if not supabase_store.configured() or "_shared_candidate" not in frame:
-        return frame
-    shared = frame.loc[frame["_shared_candidate"].eq(True)]
-    keys = list(shared[["normalized_phrase", "source_type", "source_id"]].itertuples(index=False, name=None))
+    if "original_text" not in frame:
+        frame["original_text"] = ""
+    shared = (frame.loc[frame["_shared_candidate"].eq(True)]
+              if supabase_store.configured() and "_shared_candidate" in frame else frame.iloc[:0])
+    keys = list(shared[["normalized_phrase", "source_type", "source_id"]].itertuples(index=False, name=None)) if not shared.empty else []
     if keys:
         contexts = supabase_store.candidate_contexts(supabase_store.get_token(), keys)
         for index, row in shared.iterrows():
             key = (row.normalized_phrase, row.source_type, row.source_id)
             if contexts.get(key):
                 frame.loc[index, "original_text"] = contexts[key]
+    # Deduplication can keep a training candidate instead of its extraction row,
+    # so _job_context is not a reliable gate for restoring source evidence.
+    missing = frame.original_text.fillna("").astype(str).str.strip().eq("")
+    job_rows = frame.get("source_type", pd.Series("", index=frame.index)).isin(
+        ["jobs", "Philippine job advertisement"])
+    job_rows |= frame.get("_job_context", pd.Series("", index=frame.index)).eq("jobs")
+    selected = missing & job_rows
+    if selected.any():
+        jobs = storage.read_frame("cleaned_jobs", columns=["source_id", "original_text", "job_description"])
+        if not jobs.empty and "source_id" in jobs:
+            contexts = jobs.get("original_text", pd.Series("", index=jobs.index)).fillna("")
+            descriptions = jobs.get("job_description", pd.Series("", index=jobs.index)).fillna("")
+            contexts = contexts.where(contexts.str.strip().ne(""), descriptions)
+            contexts = pd.Series(contexts.to_numpy(), index=jobs.source_id)
+            contexts = contexts[~contexts.index.duplicated()]
+            frame.loc[selected, "original_text"] = frame.loc[selected, "source_id"].map(contexts).fillna("")
+    missing = frame.original_text.fillna("").astype(str).str.strip().eq("") & job_rows
+    if missing.any():
+        from .review_queue import archived_job_contexts
+        contexts = archived_job_contexts(storage.ROOT, frame.loc[missing, "source_id"], cached_load_path)
+        frame.loc[missing, "original_text"] = frame.loc[missing, "source_id"].map(contexts).fillna("")
     return frame
 
 @st.cache_data(show_spinner=False)

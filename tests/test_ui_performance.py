@@ -113,6 +113,48 @@ def test_review_context_only_resolved_for_visible_job_rows(workspace, monkeypatc
     assert queue.original_text.tolist() == [""]
 
 
+def test_review_restores_unmarked_candidates_and_blank_text_fallback(workspace, monkeypatch):
+    from src.ui import _review_contexts
+    from src.review_queue import manual_mapping_occurrences
+    monkeypatch.setattr(backend.st, "session_state", {})
+    storage.save_frame("cleaned_jobs", pd.DataFrame({
+        "source_id": ["TEST-A", "TEST-B"], "original_text": ["Full SQL evidence", " "],
+        "job_description": ["SQL", "Build data models using Python"],
+    }))
+    queue = pd.DataFrame([
+        dict(source_id="TEST-B", source_type="jobs", normalized_phrase="build data models",
+             phrase="Build data models", original_text=""),
+        dict(source_id="OLD-AD", source_type="jobs", normalized_phrase="sql",
+             phrase="SQL", original_text=""),
+        dict(source_id="TEST-A", source_type="jobs", normalized_phrase="sql",
+             phrase="SQL", original_text="Existing exact evidence"),
+    ], index=[10, 11, 12])
+    restored = _review_contexts(queue)
+    assert restored.original_text.tolist() == [
+        "Build data models using Python", "", "Existing exact evidence"]
+    extracted = restored.iloc[:1].drop(columns="original_text").assign(extraction_id="exact-id")
+    occurrences = manual_mapping_occurrences(restored, extracted)
+    assert occurrences.loc[occurrences.source_id.eq("TEST-B"), "original_text"].item() == "Build data models using Python"
+
+
+def test_review_recovers_exact_archived_ad_and_rejects_changed_archive(workspace, monkeypatch):
+    from src.ui import _review_contexts
+    from src.utils import digest
+    monkeypatch.setattr(backend.st, "session_state", {})
+    content = b"job_title,job_description\nFirst,Uses SQL\nSecond,Build data models\n"
+    upload_hash = digest(content)
+    path = workspace / "data/raw" / f"jobs_{upload_hash}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    queue = pd.DataFrame([dict(source_id=f"jobs:{upload_hash[:16]}:3",
+                               source_type="jobs", original_text="")])
+    restored = _review_contexts(queue)
+    assert "Build data models" in restored.original_text.iloc[0]
+    assert "Uses SQL" not in restored.original_text.iloc[0]
+    path.write_bytes(content + b"Third,Different content\n")
+    assert _review_contexts(queue).original_text.iloc[0] == ""
+
+
 def test_chunk_download_once_per_generation_and_authenticated_session(monkeypatch):
     state = {}
     monkeypatch.setattr(backend.st, "session_state", state)
