@@ -64,3 +64,36 @@ def test_manual_mapping_prefers_exact_extracted_context():
     assert len(rows) == 1
     assert rows.iloc[0].extraction_id == "exact-id"
     assert occurrence_hash(rows.iloc[0]) == occurrence_hash(extracted)
+
+
+def test_manual_mapping_restores_shared_extraction_context_from_same_candidate():
+    from src.review_queue import manual_mapping_occurrences
+    candidate = dict(phrase="Build data models", normalized_phrase="build data models",
+                     source_type="jobs", source_id="SYNTH-2",
+                     original_text="Ad 2: Build data models using Python.")
+    extracted = dict(extraction_id="exact-id", original_phrase="Build data models",
+                     normalized_phrase="build data models", source_type="jobs",
+                     source_id="SYNTH-2")  # Shared extraction index omits long text.
+
+    rows = manual_mapping_occurrences(pd.DataFrame([candidate]), pd.DataFrame([extracted]))
+
+    assert len(rows) == 1
+    assert rows.iloc[0].extraction_id == "exact-id"
+    assert rows.iloc[0].original_text == candidate["original_text"]
+
+
+def test_manual_mapping_never_borrows_context_from_another_ad():
+    from src.review_queue import manual_mapping_occurrences
+    candidates = pd.DataFrame([
+        dict(phrase="SQL", normalized_phrase="sql", source_type="jobs", source_id="SYNTH-1",
+             original_text="Ad 1 mentions SQL."),
+        dict(phrase="SQL", normalized_phrase="sql", source_type="jobs", source_id="SYNTH-2",
+             original_text="Ad 2 mentions SQL."),
+    ])
+    extracted = pd.DataFrame([dict(extraction_id="exact-id", original_phrase="SQL",
+                                   normalized_phrase="sql", source_type="jobs", source_id="SYNTH-2")])
+
+    rows = manual_mapping_occurrences(candidates, extracted)
+
+    context = rows.loc[rows.source_id.eq("SYNTH-2"), "original_text"].item()
+    assert context == "Ad 2 mentions SQL."

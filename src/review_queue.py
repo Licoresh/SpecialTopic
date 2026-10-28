@@ -89,6 +89,20 @@ def manual_mapping_occurrences(candidates, extracted):
     if not extracted.empty:
         active = extracted[extracted.source_type.eq("jobs")].copy()
         active["pending_extraction"] = False
+        # Shared extraction projections omit long ad text to keep database
+        # reads small. Restore it from the exact candidate occurrence before
+        # dropping the duplicate candidate row; never borrow another ad's text.
+        keys = ["source_id", "normalized_phrase"]
+        candidate_evidence = rows.drop_duplicates(keys, keep="last").set_index(keys)
+        active_keys = pd.MultiIndex.from_frame(active[keys])
+        for column in ("original_text", "job_title", "company", "source_url"):
+            if column not in rows:
+                continue
+            evidence = candidate_evidence[column].reindex(active_keys).fillna("").to_numpy()
+            if column not in active:
+                active[column] = ""
+            missing = active[column].fillna("").astype(str).str.strip().eq("")
+            active.loc[missing, column] = evidence[missing.to_numpy()]
         rows = pd.concat([active, rows], ignore_index=True)
     return rows.drop_duplicates(["source_id", "normalized_phrase"], keep="first").fillna("")
 

@@ -1,5 +1,11 @@
 # Validation record
 
+## 2026-10-28 — Restore evidence for shared extracted occurrences, v2.0.61
+
+- Shared extraction indexes omit long source text to keep reads compact. Manual PSF-AAI review now restores missing evidence from the matching candidate using the same source ID and normalized phrase.
+- Existing extracted evidence remains authoritative; context is never copied from a different advertisement.
+- Targeted verification: `tests/test_review_queue.py`.
+
 ## 2026-10-24 — Retry finished extraction saves, v2.0.59
 
 - Finished extraction and diagnostics are retained in the originating job's memory after a connection/file-write failure. Retry saving recomputes input fingerprints and checks cleaning metadata plus local/published model identity before publication, without repeating NLP or matching. Local model guards are separate from the cross-device study signature. A restart, sign-out, dismissal or replacement job discards the in-memory retry copy; this is not durable job recovery.
