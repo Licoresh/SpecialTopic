@@ -372,6 +372,27 @@ def read_annotation_history(token: str) -> list[dict]:
         offset += 1000
 
 
+def restore_candidate_evidence(contexts: dict[str, str], token: str):
+    """Fill missing shared evidence only; never modify labels or existing text."""
+    if check_connection(token) != "admin":
+        raise SupabaseError("Only a workspace admin can restore shared source evidence.")
+    updated = 0
+    for source_id, context in contexts.items():
+        if not context.strip():
+            continue
+        rows = _request("PATCH", "/rest/v1/research_candidates", token=token,
+                        params={"source_id": f"eq.{source_id}",
+                                "source_type": 'in.(jobs,"Philippine job advertisement")',
+                                "original_text": "eq.", "select": "source_id"},
+                        payload={"original_text": context}, prefer="return=representation",
+                        retry_safe=True)
+        if not isinstance(rows, list):
+            raise SupabaseError("The shared evidence update could not be confirmed. Refresh and retry.")
+        updated += len(rows)
+    clear_read_cache()
+    return updated
+
+
 def upsert_candidates(records: list[dict], token: str, *, preserve_existing: bool = False):
     if not records:
         return

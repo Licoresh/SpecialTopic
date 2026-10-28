@@ -1,5 +1,10 @@
 # Validation record
 
+## 2026-10-28 — Share restored source evidence, v2.0.63
+
+- Manual Review → Team updates → Restore shared ad evidence lets an authenticated admin recover verified local raw CSV context into blank shared candidate text. It patches only `original_text` for matching advertisement IDs and job source types. Existing evidence, annotations and active study selection remain unchanged.
+- 85 shared-storage, review-queue and UI-performance checks passed (UI imports preloaded); compilation, diff checks and localhost health passed. Live database repair was not performed: Supabase MCP OAuth refresh failed, and no local server credential was configured. Run the action on the original-upload computer, then refresh the teammates' shared review tables.
+
 ## 2026-10-28 — Resolve unmarked review evidence, v2.0.62
 
 - Review text recovery now uses the exact source ID for job candidates even when deduplication removed the extraction's `_job_context` marker. Blank original text falls back to that source's stored job description. Existing context is preserved; unknown source IDs remain blocked.

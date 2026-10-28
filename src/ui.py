@@ -887,6 +887,23 @@ def labeling():
             with review_tools:
                 with st.popover("Team updates", icon=":material/sync:"):
                     st.caption("Your team can review simultaneously. Saves detect changes made by another reviewer. Refresh before starting a new batch; unsaved table edits will be discarded.")
+                    if action_button("Restore shared ad evidence", help="Admin: run on the computer with the original uploads. Restores missing source text for teammates without changing labels or the active study dataset."):
+                        if not supabase_store.is_admin():
+                            st.error("Ask the workspace admin to run this on the computer with the original uploads.")
+                        else:
+                            from .review_queue import archived_job_contexts
+                            with st.spinner("Restoring original advertisement evidence for the team…"):
+                                token = supabase_store.get_token()
+                                records = supabase_store.read_candidates(token, include_source_text=False)
+                                sources = {row["source_id"] for row in records
+                                           if row.get("source_type") in ("jobs", "Philippine job advertisement")}
+                                contexts = archived_job_contexts(storage.ROOT, sources, cached_load_path)
+                                updated = supabase_store.restore_candidate_evidence(contexts, token) if contexts else 0
+                            st.session_state.pop("_manual_review_queue", None)
+                            if contexts:
+                                st.success(f"Restored missing evidence for {updated:,} shared candidate rows. Teammates can refresh their shared review table.")
+                            else:
+                                st.warning("No matching original uploads were found on this computer. Run this repair on the computer that first uploaded these advertisements.")
                     if action_button("Refresh shared review table"):
                         supabase_store.clear_read_cache()
                         for key in list(st.session_state):
@@ -1104,7 +1121,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                 continue
             with st.expander(f"Evidence: {row['Phrase']} — ad {row['Source advertisement']}", expanded=changed):
                 if not occurrence or not str(occurrence.get("original_text", "")).strip():
-                    st.warning("Source text is missing. Restore the advertisement context before saving competency links.")
+                    st.warning("This advertisement's source text is unavailable on this device. Ask the admin to open Team updates → Restore shared ad evidence on the computer with the original uploads, then refresh this review table.")
                 else:
                     st.text(str(occurrence["original_text"]))
                 if occurrence and occurrence.get("pending_extraction"):

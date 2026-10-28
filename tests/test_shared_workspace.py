@@ -504,3 +504,25 @@ def test_raw_upload_path_ignores_foreign_host_absolute_path(workspace):
 def test_raw_upload_path_rejects_path_traversal(workspace):
     with pytest.raises(ValueError, match="hash"):
         storage.raw_upload_path({"hash": "../../private", "filename": "sample.csv"}, "jobs")
+
+
+def test_restore_shared_evidence_only_patches_blank_text(shared, monkeypatch):
+    monkeypatch.setattr(backend, "check_connection", lambda token: "admin")
+    request = Mock(return_value=[{"source_id": "jobs:synthetic:7"}])
+    monkeypatch.setattr(backend, "_request", request)
+    assert backend.restore_candidate_evidence({"jobs:synthetic:7": "Verified archived ad text"}, "token") == 1
+    assert request.call_args.args == ("PATCH", "/rest/v1/research_candidates")
+    options = request.call_args.kwargs
+    assert options["payload"] == {"original_text": "Verified archived ad text"}
+    assert options["params"]["original_text"] == "eq."
+    assert options["params"]["source_id"] == "eq.jobs:synthetic:7"
+    assert options["retry_safe"] is True
+
+
+def test_reviewers_cannot_restore_shared_evidence(shared, monkeypatch):
+    monkeypatch.setattr(backend, "check_connection", lambda token: "reviewer")
+    request = Mock()
+    monkeypatch.setattr(backend, "_request", request)
+    with pytest.raises(backend.SupabaseError, match="admin"):
+        backend.restore_candidate_evidence({"jobs:synthetic:7": "Evidence"}, "token")
+    request.assert_not_called()
