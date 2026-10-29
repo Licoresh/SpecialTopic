@@ -123,3 +123,17 @@ def test_shared_review_read_flattens_complete_decisions(monkeypatch):
                                      {"extraction_id":"a", "competency_id":"TEST-2"}], "version":2}])
     rows = supabase_store.read_mapping_reviews.__wrapped__("synthetic")
     assert len(rows) == 2 and all(row["version"] == "2" for row in rows)
+
+
+@pytest.mark.parametrize("response", [None, {}, "1", True, 2])
+def test_shared_mapping_save_requires_confirmed_version(monkeypatch, response):
+    monkeypatch.setattr(supabase_store, "_request", lambda *args, **kwargs: response)
+    monkeypatch.setattr(supabase_store, "clear_read_cache", lambda: None)
+    with pytest.raises(supabase_store.SupabaseError, match="could not be confirmed"):
+        supabase_store.save_mapping_review([{"extraction_id": "SYNTHETIC"}], 0, "synthetic-token")
+
+
+def test_shared_mapping_save_accepts_confirmed_version(monkeypatch):
+    monkeypatch.setattr(supabase_store, "_request", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(supabase_store, "clear_read_cache", lambda: None)
+    assert supabase_store.save_mapping_review([{"extraction_id": "SYNTHETIC"}], 1, "synthetic-token") == 2

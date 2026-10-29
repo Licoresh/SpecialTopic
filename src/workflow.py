@@ -13,11 +13,37 @@ from .psf_reviews import REVIEW_TABLE
 from .gap_analysis import calculate_gaps
 from .labeling import apply_corrections
 
+# Bump when extraction/matching/classification semantics change, not for UI fixes.
+EXTRACTION_PIPELINE_VERSION = 1
+_LEGACY_COMPATIBLE_VERSIONS = {1: tuple(f"2.0.{patch}" for patch in range(60, 66))}
+
+
+def _extraction_inputs():
+    return {"datasets": {k: frame_hash(storage.read_frame("cleaned_"+k)) for k in ("jobs", "psf_aai")},
+            "active_uploads": {k:v["hash"] for k,v in storage.read_json("uploads", {}).items() if k in ("jobs", "psf_aai")},
+            "column_mappings": {k:storage.read_json("mapping_"+k, {}) for k in ("jobs", "psf_aai")},
+            "annotations": frame_hash(storage.read_frame("labeled_competencies")),
+            "settings": storage.settings(), "model": storage.read_json("selected_model", {})}
+
+
 def input_signature():
-    return digest({"datasets": {k: frame_hash(storage.read_frame("cleaned_"+k)) for k in ("jobs", "psf_aai")},
-                   "active_uploads": {k:v["hash"] for k,v in storage.read_json("uploads", {}).items() if k in ("jobs", "psf_aai")},
-                   "column_mappings": {k:storage.read_json("mapping_"+k, {}) for k in ("jobs", "psf_aai")},
-                   "annotations": frame_hash(storage.read_frame("labeled_competencies")), "settings": storage.settings(), "model": storage.read_json("selected_model", {}), "version": VERSION})
+    return digest(_extraction_inputs() | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
+
+
+def extraction_freshness(metadata):
+    """Return the active signature and whether the saved inputs still match.
+
+    Old runs kept only a hash containing their app version. Reconstruct those
+    hashes for known compatible releases without rewriting the original record.
+    """
+    inputs = _extraction_inputs()
+    signature = digest(inputs | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
+    if metadata.get("pipeline_version") is not None:
+        return signature, (metadata["pipeline_version"] == EXTRACTION_PIPELINE_VERSION
+                           and metadata.get("signature") == signature)
+    saved = metadata.get("signature")
+    return signature, any(saved == digest(inputs | {"version": version})
+                          for version in _LEGACY_COMPATIBLE_VERSIONS.get(EXTRACTION_PIPELINE_VERSION, ()))
 
 
 def _extraction_retry_signature(signature):
@@ -72,7 +98,9 @@ def run_extraction(progress=None, on_prepared=None):
     if output.empty:
         raise ValueError("No phrases were found. Upload, map and clean text datasets first.")
     prepared = (output, pd.concat(diagnostics, ignore_index=True),
-                {"signature": signature, "retry_signature": retry_signature, "timestamp": timestamp(), "taxonomy_available": matcher is not None, "model_available": model is not None})
+                {"signature": signature, "retry_signature": retry_signature, "timestamp": timestamp(),
+                 "pipeline_version": EXTRACTION_PIPELINE_VERSION, "software_version": VERSION,
+                 "taxonomy_available": matcher is not None, "model_available": model is not None})
     if on_prepared:
         on_prepared(prepared)
     return publish_extraction(prepared, progress)

@@ -1,5 +1,53 @@
 # Validation record
 
+## 2026-10-29 — Tooltip handoff and all count axes, v2.0.72
+
+- User clarified the pointer moves from the bar onto the tooltip. Reproduced native Plotly removal on this transition. A trusted local browser handler now retains a copy of the already-rendered SVG card inside the chart, updates on another hover, and clears on chart exit or redraw. It never calls Python, extraction or storage. One observer attaches handlers to new chart nodes; script layout is hidden. This uses Streamlit's supported JavaScript-enabled HTML API and Plotly DOM/event conventions, which should be rechecked on frontend upgrades.
+- Browser synthetic preview confirmed native hover text became empty while the retained card remained readable under the pointer; it updated to another bar and cleared outside the chart. Rerun and remove/restore checks confirmed handlers reattach. Escape clearing requires keyboard focus inside the chart. Full browser refresh loads script changes during development.
+- All indivisible count scales now use integer ticks: job/demand bars, horizontal distributions, posting totals and heatmap color scales. Decimal metrics remain unchanged. 40 presentation/populated-page tests passed after correcting a helper-name collision caught by the first run; compilation/diff/localhost health passed. Browser checks used synthetic data; no research records changed.
+
+## 2026-10-29 — Exclude unused chat-model checks from study methods, v2.0.70
+
+- Updated the Methodology page to describe the study's actual BGE-M3 suggestion and researcher-review process, and state that no separate chat-model check produced or informed study labels, mappings, or results. The optional software integration remains separate from the analysis method.
+- `METHODOLOGY.md` is rendered directly by the Methodology page. Source inspection and `git diff --check` passed; no research records changed. No tests run for this documentation-only update.
+
+## 2026-10-29 — Methodology page overview, v2.0.69
+
+- Added a concise workflow table to the top of the Methodology page, separating each system stage from the researcher checkpoint and clarifying phrase-wide category labels versus occurrence-level PSF-AAI decisions.
+- The Methodology page reads `METHODOLOGY.md` directly. Source inspection and `git diff --check` passed; browser review confirmed the page renders the updated Markdown. No research records changed.
+
+## 2026-10-29 — Explicit readable result tooltips, v2.0.68
+
+- Result charts now use explicit dark hover backgrounds and white text. Bar and distribution hover templates include wrapped, HTML-escaped category labels and their values; count bars use integer formatting and grouped model metrics preserve decimal values and matching trace labels. Original x/y values, counts and source frames remain unchanged.
+- 19 presentation checks passed, including long-label wrapping/escaping, grouped trace identity and count preservation. An isolated Streamlit browser preview at 420px chart width verified full long job titles and Job ads: 1 on center and edge bars. Computed tooltip colors were rgb(23,59,56) and rgb(255,255,255). This preview used synthetic data; the authenticated results page was not exercised.
+
+## 2026-10-29 — Methodology aligned with current workflow, v2.0.68
+
+- Clarified optional Ollama behavior and fallback, recorded that local inference was not verified because the endpoint was unreachable on 2026-10-29, and corrected the current review-table description. Described phrase-wide category labels separately from occurrence-specific, multi-competency PSF-AAI decisions and required rationales.
+- Documentation/version inspection only; no research records changed. Live Ollama inference remains unverified.
+
+## 2026-10-29 — Methodology aligned with saved-result workflow, v2.0.67
+
+- Added saved extraction provenance, separate software/pipeline revisions, exact legacy compatibility, shared freshness checks, and the distinction between extraction reuse and updated occurrence-level PSF reviews. Corrected the default unique-phrase display description and documented persistent mapping status, server-confirmed saves and integer frequency-axis intervals.
+- The real Streamlit Methodology renderer executed in AppTest without exceptions and included the revised sections; diff checks passed. Documentation was checked against the current implementation. No research data or original extraction metadata changed.
+
+## 2026-10-29 — Reuse compatible saved extraction results, v2.0.66
+
+- Extraction freshness now uses an explicit pipeline revision independently of the app's display version. New runs record both revisions. Legacy v2.0.60–2.0.65 hashes are accepted only when reconstructing the complete current input fingerprint exactly matches the saved hash; this compatibility belongs to pipeline revision 1 only. Historical metadata is never rewritten.
+- Results and Research Readiness use the same compatibility check. Real data/framework/annotation/upload/mapping/settings/model changes, unknown legacy releases and future pipeline changes remain blocked. Successful saved-result loading already invalidates session read caches.
+- 39 focused tests passed: legacy/current freshness, actual input changes, pipeline upgrades, Load saved results → Job Market → Research Readiness without extraction, immutable metadata/output, extraction retry guards and end-to-end exports. Compilation/diff/localhost health passed. Live authenticated shared loading was not exercised; the standalone local backup did not match local-only input state, so no claim of active shared-run freshness is made. No research records changed.
+
+## 2026-10-29 — Whole-number job counts, v2.0.65
+
+- Job-ad and employer-demand bar charts now use integer tick intervals with at most about eight intervals. Decimal model scores keep their original axes. Direct assertions passed for count totals 1, 2, 5 and 500, unchanged source frames, and a decimal score.
+
+## 2026-10-29 — Chart hover and visible saved mappings, v2.0.64
+
+- Removed physical border/padding from Streamlit's measured Plotly node; an inset shadow keeps its border without changing measured size. Installed frontend sizing makes the old decoration a potential redraw trigger; the original flicker was not reproduced conclusively.
+- PSF Mapping now displays persisted competency names (or a reviewed no-match), reviewer and Philippine timestamp on every render; saved decisions use Update competency links. Unsaved competency selections and stale references remain explicit. Removed reference IDs remain visible in stale review summaries.
+- The shared mapping RPC must confirm the expected new integer version before the UI can report success; an uncertain response clears caches and asks the reviewer to inspect persisted status.
+- 39 focused tests passed, including save/revisit/occurrence-switch/no-match, authenticated reviewer identity, RPC confirmation, mapping evidence and chart sizing. UI imports were preloaded to avoid the existing cold-start test timeout. Compilation and diff checks passed; localhost health returned ok. Browser verification used isolated synthetic charts: wrapper heights stayed 450/300 with zero border/padding, and the Python/12 tooltip remained visible across idle samples. Live authenticated research writes were not exercised. No research records changed.
+
 ## 2026-10-28 — Share restored source evidence, v2.0.63
 
 - Manual Review → Team updates → Restore shared ad evidence lets an authenticated admin recover verified local raw CSV context into blank shared candidate text. It patches only `original_text` for matching advertisement IDs and job source types. Existing evidence, annotations and active study selection remain unchanged.

@@ -147,13 +147,28 @@ def test_mapping_review_saves_multiple_links_and_no_match(ui_workspace, jobs, ta
     saved = storage.read_frame(REVIEW_TABLE)
     assert set(saved.competency_id) == {"TEST-1", "TEST-2"}
     assert saved.extraction_id.nunique() == 1
+    saved_id = saved.extraction_id.iloc[0]
+    # Saved status survives both reruns and selecting another advertisement.
+    occurrence_picker = app.selectbox(key="psf_review_occurrence")
+    other_id = next(key for key in occurrence_picker.options if key != occurrence_picker.format_func(saved_id))
+    # AppTest options are formatted labels, so select using its raw index.
+    occurrence_picker.select_index(next(i for i, key in enumerate(occurrence_picker.options) if key == other_id)).run(timeout=60)
+    assert not any(item.value.startswith("Saved competencies:") for item in app.success)
+    app.selectbox(key="psf_review_occurrence").set_value(saved_id).run(timeout=60)
+    app.run(timeout=60)
+    assert any("Saved competencies: Python · SQL" in item.value for item in app.success)
+    assert any("Saved by Synthetic reviewer" in item.value for item in app.caption)
+    assert set(next(item for item in app.multiselect if item.label == "PSF-AAI competencies").value) == {"TEST-1", "TEST-2"}
     next(item for item in app.multiselect if item.label == "PSF-AAI competencies").set_value([]).run(timeout=60)
+    assert any("Unsaved competency changes" in item.value for item in app.info)
     next(item for item in app.text_input if item.label == "Reviewer ID").set_value("Synthetic reviewer")
     next(item for item in app.text_area if item.label == "Reason for no mapping").set_value("Synthetic rejection after review")
     next(item for item in app.checkbox if item.label.startswith("I checked the source context")).check()
-    next(item for item in app.button if item.label == "Save competency links").click().run(timeout=60)
+    next(item for item in app.button if item.label == "Update competency links").click().run(timeout=60)
     assert not app.exception and not app.error
     assert storage.read_frame(REVIEW_TABLE).competency_id.tolist() == [""]
+    app.run(timeout=60)
+    assert any("Saved: no justified competency match." in item.value for item in app.success)
 
 def test_training_disabled_with_no_or_insufficient_labels(ui_workspace, labeled):
     app = page_app("ML Training")
@@ -817,3 +832,40 @@ def test_combined_review_reports_partial_storage_failure(ui_workspace, jobs, tax
     assert any("Partial save: category annotations were saved; 0" in warning.value for warning in app.warning)
     assert not storage.read_frame("labeled_competencies").empty
     assert storage.read_frame("psf_mapping_reviews").empty
+
+
+def test_load_saved_results_opens_results_after_ui_update_without_extraction(ui_workspace, jobs, taxonomy, monkeypatch):
+    from unittest.mock import Mock
+    from src import workflow
+    from src.utils import digest
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    metadata = storage.read_json("extraction_metadata", {})
+    metadata["signature"] = digest(workflow._extraction_inputs() | {"version": "2.0.65"})
+    metadata.pop("pipeline_version")
+    metadata.pop("software_version")
+    storage.save_json("extraction_metadata", metadata)
+    original = (ui_workspace / "data/processed/extractions_original.csv").read_bytes()
+    computation = Mock(side_effect=AssertionError("Loading results must not rerun extraction"))
+    monkeypatch.setattr(workflow, "extract_skills", computation)
+    app = AppTest.from_string("""
+import streamlit as st
+from src.ui import render
+page = st.selectbox("Test page", ["Competency Extraction", "Job Market Analysis", "Research Readiness"])
+render(page)
+""").run(timeout=60)
+    next(button for button in app.button if button.label == "Load saved results").click().run(timeout=60)
+    wait_processing(app)
+    app.run(timeout=60)
+    assert any(metric.label == "Unreviewed extracted phrases" for metric in app.metric)
+    next(item for item in app.selectbox if item.label == "Test page").set_value("Job Market Analysis").run(timeout=60)
+    assert not app.exception and not app.error
+    assert app.get("plotly_chart")
+    assert not any("Run Competency Extraction again" in item.value for item in app.warning)
+    next(item for item in app.selectbox if item.label == "Test page").set_value("Research Readiness").run(timeout=60)
+    assert not app.exception and not app.error
+    assert not any("saved extraction is out of date" in item.value for item in app.warning)
+    assert storage.read_json("extraction_metadata") == metadata
+    assert (ui_workspace / "data/processed/extractions_original.csv").read_bytes() == original
+    computation.assert_not_called()

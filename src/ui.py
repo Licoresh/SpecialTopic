@@ -22,12 +22,12 @@ from .model_training import read_model_metadata, training_data_changed
 from .training_sources import (resolve_training_file, inspect_training_folder, training_candidates,
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
-from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions
+from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness
 from .analytics import demand_matrix
 from .job_profile import job_profile_tables
 from .alignment import STATUSES
 from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
-from .visualization import bar, distribution, heatmap
+from .visualization import bar, distribution, heatmap, count_axis
 from .reporting import export_csv, export_excel, export_html, export_research_report
 from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
@@ -325,10 +325,11 @@ def current_analysis():
     if not meta:
         st.info("Upload, map and clean data, then run Competency Extraction to create results.")
         return False
-    signature = _session_cached_value("_fow_signature_cache", "active", input_signature,
-                                     ttl=15, max_entries=1)
+    signature, current = _session_cached_value(
+        "_fow_signature_cache", (meta.get("signature"), meta.get("pipeline_version")),
+        lambda: extraction_freshness(meta), ttl=15, max_entries=1)
     st.session_state["_current_analysis_signature"] = signature
-    if meta.get("signature") != signature:
+    if not current:
         st.warning("Inputs, labels, settings or the selected model changed. Run Competency Extraction again before interpreting or exporting results.")
         return False
     return True
@@ -1444,8 +1445,6 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
         return
     if "range_of_application" not in taxonomy or taxonomy.range_of_application.fillna("").astype(str).str.strip().eq("").all():
         st.caption("The active TESDA PDF has no separate Range of Application field; no range text is available to compare.")
-    if st.session_state.pop(f"{prefix}_review_saved", False):
-        st.success("Competency links saved. Other advertisements keep their own mappings.")
     occurrences = skills.drop_duplicates("extraction_id").set_index("extraction_id")
     extraction_id = st.selectbox("Source advertisement" if prefix == "manual" else "Skill occurrence", occurrences.index.tolist(),
                                  format_func=lambda key: f"{occurrences.loc[key, 'original_phrase']} — ad {occurrences.loc[key, 'source_id']}",
@@ -1469,15 +1468,27 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
     if not current.empty and current.mapping_review_status.eq("STALE").any():
         st.warning("The source or reference changed. Check the saved choices and update this review.")
     from .psf_reviews import occurrence_hash
-    if not saved.empty and (saved.reference_hash.ne(frame_hash(taxonomy)).any()
-                            or saved.occurrence_hash.ne(occurrence_hash(occurrence)).any()):
-        st.warning("Saved links need review because the source or PSF-AAI reference changed. Check each choice and rationale before saving again.")
+    if not saved.empty:
+        stale = (saved.reference_hash.ne(frame_hash(taxonomy)).any()
+                 or saved.occurrence_hash.ne(occurrence_hash(occurrence)).any())
+        names = [str(reference.loc[key, "competency_name"]) if key in reference.index else f"{key} (outside current reference)"
+                 for key in saved.competency_id if key]
+        if stale:
+            st.warning("Saved links need review because the source or PSF-AAI reference changed. Check each choice and rationale before saving again.")
+            st.write("Previously saved competencies: " + (" · ".join(names) or "No justified match"))
+        else:
+            st.success("Saved competencies: " + " · ".join(names) if names else "Saved: no justified competency match.")
+        saved_at = pd.to_datetime(saved.iloc[0].get("timestamp", ""), utc=True, errors="coerce")
+        when = saved_at.tz_convert("Asia/Manila").strftime("%d %b %Y, %I:%M %p PHT") if pd.notna(saved_at) else "Date unavailable"
+        st.caption(f"Saved by {saved.iloc[0].get('reviewer', '')} · {when}")
     revision = prefix + digest([extraction_id, frame_hash(taxonomy), occurrence_hash(occurrence), frame_hash(saved)])[:16]
     chosen = st.multiselect("PSF-AAI competencies", sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, 'competency_name']).casefold()), default=defaults,
                             format_func=lambda key: f"{reference.loc[key, 'competency_name']} ({key})",
                             key=f"psf_choices_{revision}", placeholder="Search and select one or more competencies",
                             help="Select another option to add it. Remove a selected tag with its × button. Each link needs its own source-based rationale.")
     st.caption(f"{len(chosen)} competencies selected. Broad wording alone does not justify multiple links.")
+    if not saved.empty and set(chosen) != set(defaults):
+        st.info("Unsaved competency changes. Complete the evidence below and update the links.")
     old_reasons = dict(zip(saved.competency_id, saved.rationale)) if not saved.empty else {}
     with st.form(f"psf_review_{revision}"):
         reviewer = reviewer_id
@@ -1499,7 +1510,8 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
                                         help="Explain how the phrase in this advertisement corresponds to this specific competency.")
         no_match_reason = st.text_area("Reason for no mapping", value=old_reasons.get("", "")) if not chosen else ""
         confirmed = st.checkbox("I checked the source context and each selected competency; every link is justified.")
-        if action_form_submit_button("Save competency links", action_id=f"psf_review_{revision}"):
+        save_label = "Update competency links" if not saved.empty else "Save competency links"
+        if action_form_submit_button(save_label, action_id=f"psf_review_{revision}", type="primary"):
             try:
                 save_mapping_review(occurrence, taxonomy, reasons, reviewer,
                                     expected_version=int(saved.version.iloc[0]) if not saved.empty else 0,
@@ -1508,7 +1520,6 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
                 st.error(str(exc))
             else:
                 supabase_store.clear_read_cache()
-                st.session_state[f"{prefix}_review_saved"] = True
                 st.rerun()
 
 
@@ -1566,7 +1577,9 @@ def research_page(page):
         if "posting_date_parsed" in jobs:
             dates = pd.to_datetime(jobs.posting_date_parsed, errors="coerce").dropna().dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
             if not dates.empty:
-                chart(px.line(dates, x="month", y="postings", markers=True, title="Job Posting Trend"))
+                trend = px.line(dates, x="month", y="postings", markers=True, title="Job Posting Trend")
+                trend.update_yaxes(**count_axis(dates.postings.max()), rangemode="tozero")
+                chart(trend)
         display(jobs)
     elif page == "PSF Mapping":
         st.caption("Employer skill → PSF-AAI competency. Roles and levels are reference metadata, not inferred applicant attainment. Similarity scores are heuristic evidence, not calibrated probabilities.")
@@ -1767,7 +1780,7 @@ def research_readiness():
         else:
             st.caption(f"{len(shared_sources)} source ID(s) occur in both the labeled phrase data and the active analysis sample.")
         extraction_meta = storage.read_json("extraction_metadata", {})
-        if not extraction_meta or extraction_meta.get("signature") != input_signature():
+        if not extraction_meta or not extraction_freshness(extraction_meta)[1]:
             st.warning("The saved extraction is out of date. Run Competency Extraction again after finalizing the job sample, reviewed PSF-AAI reference, and selected model before using reports.")
         elif not extraction_meta.get("model_available"):
             st.info("The current extraction was created without the selected classifier. Rerun extraction if you intend to use classifier categories.")

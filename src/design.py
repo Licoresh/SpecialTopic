@@ -1,5 +1,6 @@
 """Shared presentation only; native controls retain their behavior and accessibility."""
 import streamlit as st
+from pathlib import Path
 
 
 def apply_design():
@@ -9,6 +10,8 @@ def apply_design():
         "soft": "secondaryBackgroundColor", "border": "borderColor"}.items()}
     tokens = ";".join(f"--fow-{key}:{value}" for key, value in colors.items() if value)
     st.html("<style>:root{" + tokens + "}" + CSS + "</style>")
+    hover_script = Path(__file__).with_name("chart_hover.js").read_text(encoding="utf-8")
+    st.html('<script data-fow-hover-loader="true">' + hover_script + "</script>", unsafe_allow_javascript=True)
 
 
 def review_workspace_style(fullscreen):
@@ -52,6 +55,8 @@ CSS = """
   --fow-ink: #173B38;
 }
 [data-testid="stAppViewContainer"] { background: #F5F7F8; }
+/* The trusted chart handler has no visible layout content. */
+[data-testid="stElementContainer"]:has(> [data-testid="stHtml"] > script[data-fow-hover-loader]) { display: none; }
 .stMainBlockContainer {
   /* Preserve Streamlit's native top clearance for its fixed toolbar. */
   max-width: 1480px; padding-inline: clamp(1rem, 3vw, 3rem); padding-bottom: 4rem;
@@ -84,10 +89,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 [data-testid="stTextInput"] input { min-height: 44px; }
 [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input { background: var(--fow-surface); }
 [data-testid="stForm"] { padding: 1.5rem; }
-[data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {
+[data-testid="stDataFrame"] {
   border: 1px solid var(--fow-border); border-radius: var(--fow-radius);
 }
-[data-testid="stPlotlyChart"] { padding: .35rem; background: var(--fow-surface); }
+/* Streamlit measures this node to size Plotly. Decoration must not add size. */
+[data-testid="stPlotlyChart"] {
+  border: 0; padding: 0; border-radius: var(--fow-radius);
+  box-shadow: inset 0 0 0 1px var(--fow-border); background: var(--fow-surface);
+}
 [data-testid="stSidebarNav"] a { min-height: 40px; border-radius: .5rem; }
 [data-testid="stSidebarNav"] a[aria-current="page"] { font-weight: 650; background: #E3EFEC; box-shadow: inset 3px 0 #11695F; }
 [data-testid="stSidebarNav"] a:hover { background: #EAF0F1; }

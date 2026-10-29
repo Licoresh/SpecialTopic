@@ -313,6 +313,8 @@ def save_mapping_review(records, expected_version, token):
     result = _request("POST", "/rest/v1/rpc/save_psf_mapping_review", token=token,
                       payload={"rows": records, "expected_version": expected_version})
     clear_read_cache()
+    if type(result) is not int or result != int(expected_version) + 1:
+        raise SupabaseError("The competency save could not be confirmed. Refresh the review to check its saved status before retrying.")
     return result
 
 

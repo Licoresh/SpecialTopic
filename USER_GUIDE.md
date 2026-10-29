@@ -22,11 +22,13 @@ Extraction, classifier training, and AI suggestions run in the background. A sta
 
 From v2.0.57, opening **Extract skill phrases** does not download the saved extraction archive. Choose **Load saved results** to fetch it in the background, then **Refresh view** when ready. The same panel reports connection errors and lets you stop between loading steps. Loaded results remain available while you browse their 100-row pages; **Refresh saved results** fetches a newer snapshot. This changes loading only, not the saved research records or export scope.
 
+From v2.0.66, compatible interface updates do not require extracting again. After **Load saved results**, open the Results pages normally. Results saved with v2.0.60–2.0.65 can also be reused when all research inputs still match. Changes to source data, the framework, labels, settings, selected model or extraction pipeline still require a new extraction. Loading never changes the original run's timestamp or research metadata.
+
 From v2.0.58, the progress bar shows processing stages, advertisement/text counts, saving batches and elapsed time. Stage percentages are not a time estimate. Temporary Supabase connection resets and gateway failures are retried up to three attempts for reads and repeat-safe snapshot writes; the panel indicates retries. Authentication/permission failures and review-save operations are not automatically replayed. If the connection remains unavailable, the job reports failure instead of claiming completion. Existing extraction snapshots remain published until all replacement chunks are saved; keep the server and internet connection running until completion.
 
 From v2.0.59, a connection or file-write failure after computation offers **Retry saving extraction**. It reuses the finished computation after rechecking study inputs, reviewed labels, cleaning metadata, settings and model identity. Changed inputs require a new extraction. The retry copy exists only in the current session: restarting the server, signing out, dismissing the job, or starting another job discards it. Failed result refreshes keep the last displayed table. Invalid server responses show an error rather than being interpreted as empty data.
 
-Keep the local/Docker server running. Jobs are in memory: restarting the server interrupts them, and refreshing the entire browser can lose the progress panel. Completed AI batches stay saved; retry to continue local batches. A worker whose sign-in expires stops before its next authenticated operation; sign in again and retry. First model loading and inference still depend on your hardware. After upgrading, rerun extraction once to publish the smaller shared review index and source-partition metadata. Existing snapshots remain readable, and exports retain all selected research records and evidence.
+Keep the local/Docker server running. Jobs are in memory: restarting the server interrupts them, and refreshing the entire browser can lose the progress panel. Completed AI batches stay saved; retry to continue local batches. A worker whose sign-in expires stops before its next authenticated operation; sign in again and retry. First model loading and inference still depend on your hardware. A new extraction can publish the smaller shared review index and source-partition metadata when needed; it is optional for reading a compatible saved run. Existing snapshots remain readable, and exports retain all selected research records and evidence.
 
 ## 2. Prepare a suitable Philippine job-ad sample
 
@@ -102,6 +104,8 @@ After a reviewed classifier is available, rerun **Competency Extraction** to app
 - **Reports** to download the current research tables, workbook, HTML summary and metadata.
 
 Use **Feedback** to record corrections and usability evaluations. Use **Settings** only when the research team has a documented reason to change thresholds or extraction controls; changing a setting requires rerunning the relevant analysis.
+
+Count charts use whole-number tick intervals, including horizontal distributions, posting totals and heatmap count scales. Percentages and model scores retain decimals. Hover a bar to read its full label and count; the card stays visible while you move onto it inside the chart. Hover another bar to update it, or leave the chart to clear it. These interactions run locally in the browser.
 
 ## 10. Keep a clear research record
 
