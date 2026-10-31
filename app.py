@@ -1,7 +1,7 @@
 import streamlit as st
 from src.auth_ui import require_workspace_access
 
-st.set_page_config(page_title="Future of Work | Philippines", page_icon="🇵🇭", layout="wide")
+st.set_page_config(page_title="Future of Work | Philippines", page_icon=":material/work:", layout="wide")
 
 require_workspace_access()
 
@@ -29,7 +29,7 @@ pages = {
         st.Page("pages/14_Reports.py", title="Reports and downloads", icon=":material/download:"),
     ],
     "Study tools": [
-        st.Page("pages/18_Research_Readiness.py", title="Research readiness", icon=":material/verified:"),
+        st.Page("pages/18_Research_Readiness.py", title="Research readiness", icon=":material/verified:", visibility="hidden"),
         st.Page("pages/16_Methodology.py", title="Methodology", icon=":material/menu_book:"),
         st.Page("pages/15_Feedback.py", title="Feedback and corrections", icon=":material/rate_review:"),
         st.Page("pages/17_Settings.py", title="Settings", icon=":material/settings:"),

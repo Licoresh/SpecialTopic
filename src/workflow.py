@@ -3,11 +3,14 @@ import importlib.metadata
 import pandas as pd
 from . import storage
 from .config import ROOT, VERSION
+from .cleaning import analysis_jobs, analysis_job_values
 from .utils import frame_hash, digest, timestamp
 from .classification import cached_load_model
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
-from .analytics import accepted_skills, filter_frame
+from .analytics import accepted_skills, filter_frame, skill_chart_tables, psf_demand_tables
+from .job_profile import job_profile_tables
+from .geography import location_tables
 from .alignment import calculate_mapping, summarize_alignment
 from .psf_reviews import REVIEW_TABLE
 from .gap_analysis import calculate_gaps
@@ -151,7 +154,7 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
     jobs_source = source_snapshot["jobs"] if "jobs" in source_snapshot else storage.read_frame("cleaned_jobs")
     taxonomy = source_snapshot["taxonomy"] if "taxonomy" in source_snapshot else storage.read_frame("cleaned_psf_aai")
     extracted_source = source_snapshot["extracted"] if "extracted" in source_snapshot else current_extractions()
-    jobs = filter_frame(jobs_source, job_filters or {})
+    jobs = analysis_jobs(filter_frame(jobs_source, job_filters or {}))
     extracted = extracted_source.copy()
     if not extracted.empty:
         extracted = extracted[extracted.source_type.eq("jobs") & extracted.source_id.isin(jobs.get("source_id", []))]
@@ -186,7 +189,7 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
     else:
         reviewed = reviewed.iloc[0:0].copy()
     verified = storage.read_frame("verified_psf_aai")
-    tables = {"cleaned_jobs": jobs, "extracted_job_skills": skills,
+    tables = {"cleaned_jobs": jobs, "normalized_jobs": analysis_job_values(jobs), "extracted_job_skills": skills,
               "labeled_competencies": reviewed,
               "verified_psf_aai": verified if not verified.empty else taxonomy,
               "ml_predictions": extracted.reindex(columns=["extraction_id", "source_id", "source_type", "original_phrase", "human_label", "model_prediction", "ml_confidence", "model_name", "agreement"]).rename(columns={"ml_confidence": "confidence_score"}),
@@ -195,6 +198,16 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
               "alignment_results": alignment, "employer_skill_demand": demand,
               "unmapped_skills": unmapped, "emerging_skills": emerging,
               "all_candidates": extracted}
+    # Chart audit links back to existing full source evidence without copying ad text.
+    columns = ["extraction_id", "source_id", "source_type", "original_phrase", "original_normalized_phrase", "normalized_phrase", "skill_label", "competency_category", "skill_type", "human_label", "review_reason"]
+    allowed_phrases = set(demand.normalized_skill) if statuses and not demand.empty else (set() if statuses else None)
+    chart_tables = skill_chart_tables(extracted, jobs, allowed_phrases=allowed_phrases)
+    for name in ("chart_skill_occurrences", "chart_phrase_review"):
+        chart_tables[name] = chart_tables[name].reindex(columns=columns)
+    tables.update(chart_tables)
+    tables.update(job_profile_tables(jobs))
+    tables.update(location_tables(jobs))
+    tables.update(psf_demand_tables(mapping, jobs, taxonomy))
     metadata = {"timestamp": timestamp(), "software_version": VERSION, "settings": cfg,
                 "dataset_counts": {"jobs": len(jobs), "psf_competencies": len(taxonomy)},
                 "research_sample": {"source": "active cleaned job upload", "selected_rows": len(jobs),
@@ -205,6 +218,12 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
                 "uploads": {k:v for k,v in storage.read_json("uploads", {}).items() if k in ("jobs", "psf_aai")},
                 "model": {k: v for k, v in storage.read_json("selected_model", {}).items() if k != "metrics"}, "extraction": storage.read_json("extraction_metadata", {}),
                 "filters": {"jobs": job_filters, "skills": skill_filters, "alignment_status": statuses},
+                "data_preparation": storage.read_json("cleaning_jobs", {}),
+                "chart_presentation": {"version": 3, "job_ad_denominator": int(jobs.source_id.nunique()) if "source_id" in jobs else 0,
+                    "chartable_skill_ads": int(skills.source_id.nunique()) if "source_id" in skills else 0,
+                    "ads_without_chartable_skill": max(0, int(jobs.source_id.nunique()) - int(skills.source_id.nunique())) if "source_id" in jobs and "source_id" in skills else 0,
+                    "unclear_occurrences": len(chart_tables["chart_phrase_review"]),
+                    "policy": "Lowercase analysis values; original evidence and official reference text retained. Case, Unicode, whitespace, list-format and explicit Power BI/Excel brand aliases are consolidated for charts only; distinct ads count once per skill. Missing placeholders, experience-duration phrases, credentials, irrelevant labels and unclear fragments are kept out of skill and PSF-AAI demand while source evidence remains auditable. Geography uses a dated, exact-name PSGC subset with unresolved locations flagged. No fuzzy synonym merging."},
                 "rates_before_status_display_filter": rates,
                 "denominators": "Demand: distinct selected job ads, including ads with no detection. Each phrase is counted once in alignment rates using its strongest observed status (aligned, partial, not mapped, unclassified). Alignment and partial rates divide by mapped phrases; unmapped rate divides by assessed phrases. UNCLASSIFIED is excluded from assessment rates. Competency demand counts each advertisement once per competency, regardless of its number of skills or links. Rates precede the status display filter.",
                 "limitations": "Thresholds are researcher heuristics, not official PSF standards. Not clearly mapped does not establish absence from the framework. Emerging candidates require human and longitudinal review. Reference roles and levels do not establish applicant proficiency.",

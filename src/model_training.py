@@ -5,7 +5,7 @@ import platform
 from pathlib import Path
 import pandas as pd
 from . import storage
-from .classification import compare_models, select_best_model, save_model, MODEL_FILES, VECTORIZER_CONFIG
+from .classification import compare_models, save_model, MODEL_FILES, VECTORIZER_CONFIG, SELECTION_BASIS
 from .training_data import load_labeled_data, labeled_file_hash
 from .reporting import export_csv
 from .utils import timestamp, frame_hash
@@ -48,7 +48,7 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
     if labeled_file_hash(path) != before_hash:
         raise ValueError("Annotations changed during training. No model was published; retry with the current dataset.")
     ensure_training_lease()
-    selected = select_best_model(results)
+    selected = next(name for name, result in results.items() if result["selected"])
     trained_at = timestamp()
     vectorizer = VECTORIZER_CONFIG | (vectorizer_config or {})
     comparison, reports, matrices, predictions, details = [], [], [], [], {}
@@ -62,7 +62,7 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
         predictions.append(result["predictions"][["phrase", "true_label", "predicted_label", "confidence", "correct"]].assign(model=name))
         details[name] = {"metrics": result["metrics"], "train_count": result["train_count"], "test_count": result["test_count"],
                          "split": result["split"], "cv_note": result.get("cv_note", ""), "cv_scores": result.get("cv_scores", {}),
-                         "test_fraction": test_size, "random_state": 42, "training_hash": frame_hash(labels),
+                         "test_fraction": test_size, "random_state": 42, "selection_basis": SELECTION_BASIS, "training_hash": frame_hash(labels),
                          "training_data_hash": before_hash, "timestamp": trained_at, "features": vectorizer,
                          "config": result["model"].named_steps["classifier"].get_params()}
     winner = results[selected]
@@ -75,7 +75,8 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
                 "selected_model": selected, "tfidf_config": vectorizer, "python_version": platform.python_version(), "scikit_learn_version": importlib.metadata.version("scikit-learn"),
                 **winner["metrics"], "cross_validation_results": {name: {"fold_scores": r.get("cv_scores", {}), "summary": {k:v for k,v in r["metrics"].items() if k.startswith("cv_")}, "note": r.get("cv_note", "")} for name,r in results.items()},
                 "software_versions": {"python": platform.python_version(), **{name: importlib.metadata.version(name) for name in ("scikit-learn", "pandas", "numpy", "joblib", "streamlit")}},
-                "selection_rule": "Highest holdout Macro F1, then Weighted F1, then minimum per-class F1, then lower CV Macro F1 standard deviation; original model order breaks exact ties.",
+                "selection_basis": SELECTION_BASIS,
+                "selection_rule": "Highest training CV mean Macro F1, then training CV mean Weighted F1, then lower training CV Macro F1 standard deviation; original model order breaks exact ties. Holdout metrics are computed after selection and never select the winner.",
                 "include_irrelevant": include_irrelevant, "validation": validation, "split": winner["split"],
                 "interpretation": "Based on the current labeled validation sample. Minimum sample gates do not establish research accuracy; independent validation is still required.",
                 "classifier_config": details[selected]["config"], "refit_on_holdout": False}

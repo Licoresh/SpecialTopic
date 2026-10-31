@@ -1,4 +1,4 @@
-from .category_schema import category_path
+from .category_schema import category_path, category_parent
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
@@ -13,21 +13,22 @@ from . import storage
 from .config import ROOT, FIELDS, LABELS, VERSION
 from .loaders import load_data, map_columns
 from .column_mapping import suggest_column_mapping
-from .cleaning import clean_dataset, duplicate_ids
+from .cleaning import clean_dataset, duplicate_ids, normalize_text, analysis_job_values, analysis_jobs
 from .preprocessing import get_nlp
 from .validation import validate_taxonomy
-from .classification import VECTORIZER_CONFIG, predict_competency_category
+from .classification import VECTORIZER_CONFIG, predict_competency_category, SELECTION_BASIS
 from .training_data import load_labeled_data, validate_labeled_data
 from .model_training import read_model_metadata, training_data_changed
 from .training_sources import (resolve_training_file, inspect_training_folder, training_candidates,
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness
-from .analytics import demand_matrix
+from .analytics import skill_chart_tables, psf_demand_tables
 from .job_profile import job_profile_tables
+from .geography import location_tables
 from .alignment import STATUSES
 from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
-from .visualization import bar, distribution, heatmap, count_axis
+from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar
 from .reporting import export_csv, export_excel, export_html, export_research_report
 from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
@@ -38,7 +39,7 @@ from .review_queue import (labels_by_phrase, expand_phrase_annotations, group_ca
                            manual_mapping_occurrences, preserve_occurrence_references)
 from .loading_ui import load_data_with_skeleton
 
-from .design import apply_design, review_workspace_style
+from .design import apply_design, review_workspace_style, workspace_breadcrumb
 from . import background_tasks
 
 
@@ -248,7 +249,8 @@ def _review_contexts(frame):
 
 @st.cache_data(show_spinner=False)
 def cached_clean(frame, kind, duplicate_list):
-    return clean_dataset(frame, kind, duplicate_list)
+    cleaned, report = clean_dataset(frame, kind, duplicate_list)
+    return (analysis_jobs(cleaned) if kind == "jobs" else cleaned), report
 
 @st.cache_resource(show_spinner=False)
 def cached_nlp():
@@ -287,6 +289,7 @@ def chart(fig):
 
 def page_intro(title, description):
     with st.container(key="page_heading", gap="xsmall"):
+        st.caption("PHILIPPINE JOBS · SKILLS · PSF-AAI")
         st.title(title)
         st.write(description)
 
@@ -372,7 +375,7 @@ def filtered_bundle():
         dataset_hashes = sorted(jobs["_dataset_hash"].dropna().astype(str).unique().tolist()) if "_dataset_hash" in jobs else []
         selected_dataset = st.selectbox("Dataset", dataset_hashes, key="research_dataset_hash") if len(dataset_hashes) > 1 else None
     with st.sidebar.expander("Job filters"):
-        jf = select_filters(jobs, ["job_title", "location", "company", "industry"], "jobs")
+        jf = select_filters(jobs, ["job_family", "job_title", "location", "company", "industry"], "jobs")
         if selected_dataset:
             jf["_dataset_hash"] = [selected_dataset]
         if "posting_date_parsed" in jobs:
@@ -386,7 +389,7 @@ def filtered_bundle():
         if phrase_query.strip():
             sf["normalized_phrase_contains"] = phrase_query.strip()
         status = st.multiselect("Alignment status", STATUSES, key="filter_status")
-    bundle_key = digest({"signature": analysis_revision, "jobs": jf, "skills": sf, "statuses": status})
+    bundle_key = digest({"presentation_version": VERSION, "signature": analysis_revision, "jobs": jf, "skills": sf, "statuses": status})
     return _session_cached_value(
         "_fow_analysis_cache", bundle_key,
         lambda: analysis_bundle(job_filters=jf, skill_filters=sf, statuses=status,
@@ -416,13 +419,16 @@ def home():
     )
 
     with st.container(horizontal=True, key="overview_metrics", gap="medium"):
-        for label, value, icon, help_text in [
+        for index, (label, value, icon, help_text) in enumerate([
             ("Clean job ads", f"{len(jobs):,}", "work", "Advertisements saved after data cleaning."),
             ("Reviewed labels", f"{label_count:,}", "task_alt", "Saved annotation rows; a phrase can occur in several ads."),
             ("PSF-AAI competencies", f"{len(taxonomy):,}", "account_tree", "Competencies in the active reviewed reference."),
             ("Phrase extraction", "Saved" if has_extractions else "Not started", "manage_search", "Analysis pages check that saved extraction inputs are still current."),
-        ]:
-            with st.container(width=240):
+        ], 1):
+            key = f"overview_metric_{index}"
+            if index == 4:
+                key += "_ready" if has_extractions else "_pending"
+            with st.container(width=240, key=key):
                 st.metric(label, value, icon=f":material/{icon}:", help=help_text)
 
     if mapped_jobs.empty:
@@ -694,6 +700,23 @@ def quality():
     if frame.empty:
         st.info("Map this dataset first.")
         return
+    mapped_source_hash = frame_hash(frame)
+    screening = pd.DataFrame(columns=["source_id", "exclude", "exclusion_reason"])
+    if kind == "jobs":
+        prior = storage.read_json("cleaning_jobs", {}).get("screening_exclusions", {})
+        screening = frame.reindex(columns=["source_id", "job_title", "company", "location", "url"]).copy()
+        screening["exclude"] = screening.source_id.isin(prior)
+        screening["exclusion_reason"] = screening.source_id.map(prior).fillna("")
+        screen = st.expander("Screen advertisements and document exclusions", key="quality_screening", on_change="rerun")
+        if screen.open:
+            with screen:
+                st.caption("Exclude ads outside the Philippine AI/analytics scope or without sufficient evidence. Each exclusion needs a reason. The original upload stays archived.")
+                screening = st.data_editor(screening, disabled=["source_id", "job_title", "company", "location", "url"],
+                                           hide_index=True, key="quality_screening_editor", width="stretch")
+        excluded = screening[screening.exclude]
+        frame = frame[~frame.source_id.isin(excluded.source_id)]
+        if not excluded.empty:
+            st.caption(f"{len(excluded):,} ads excluded from this cleaned copy; {len(frame):,} remain.")
     potential = duplicate_ids(frame)
     selected = st.multiselect("Confirm duplicate record IDs to remove from the cleaned copy", potential)
     cleaned, report = load_data_with_skeleton(
@@ -701,13 +724,29 @@ def quality():
     )
     st.caption("Missing text remains empty; it is never invented. Raw columns are retained alongside *_clean columns. Source IDs identify the raw dataset hash and row.")
     display(report)
+    if kind == "jobs":
+        coverage = st.expander("Job-title, location and requirement summaries", key="quality_job_summaries", on_change="rerun")
+        if coverage.open:
+            with coverage:
+                preview = job_profile_tables(cleaned)
+                display(preview["requirement_field_coverage"])
+                st.caption("Result summaries combine case, Unicode and spacing variants. Original fields remain unchanged. Missing requirements stay missing; ambiguous experience wording is retained for review.")
+                display(preview["experience_year_evidence"].drop(columns=["url"], errors="ignore"))
     if potential:
         display(frame[frame.source_id.isin(potential)])
-    display(cleaned.head(100))
+    if kind == "jobs":
+        st.caption("Lowercase cleaned job values (source IDs, dates and case-sensitive links keep their original identity).")
+        display(analysis_job_values(cleaned).head(100))
+        with st.expander("Original source evidence"):
+            display(frame.head(100))
+    else:
+        display(cleaned.head(100))
     scope_reviewed = st.checkbox("I reviewed source evidence and confirm these advertisements have Philippine provenance and relate to AI or analytics") if kind == "jobs" else True
     reviewer = st.text_input("Framework reviewer ID") if kind == "psf_aai" else ""
     confirmed = st.checkbox("I checked this framework table against its cited source pages") if kind == "psf_aai" else True
     if action_button("Save cleaned dataset", type="primary"):
+        if kind == "jobs" and (screening.loc[screening.exclude, "exclusion_reason"].str.strip().eq("").any() or frame.empty):
+            raise ValueError("Provide a reason for every exclusion and retain at least one advertisement.")
         if kind == "jobs" and not scope_reviewed:
             raise ValueError("Review Philippine provenance and AI/analytics relevance before saving the active job-analysis dataset.")
         if kind == "psf_aai":
@@ -718,7 +757,8 @@ def quality():
             return
         storage.save_frame("cleaned_"+kind, cleaned)
         storage.save_frame("quality_"+kind, report)
-        storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": frame_hash(frame), "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False})
+        screening_exclusions = screening.loc[screening.exclude].set_index("source_id").exclusion_reason.to_dict() if kind == "jobs" else {}
+        storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": mapped_source_hash, "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False, "screening_exclusions": screening_exclusions})
         if kind == "jobs" and supabase_store.configured():
             st.success("Cleaned job data and its quality report are saved to the shared workspace. Teammates can refresh to use the same dataset; the original CSV remains on the uploader’s computer.")
         else:
@@ -1355,7 +1395,7 @@ def training():
                  "Multinomial Naive Bayes": {"alpha": 1.0}, "include_irrelevant": include_irrelevant})
     if supabase_store.configured():
         st.caption("Team reviewers label together. Only the administrator starts model training; each run uses a fixed shared-label snapshot.")
-    st.caption("Minimum software gate: 30 distinct phrases, two classes, five examples per class, no conflicting labels, complete provenance and a feasible holdout by job-ad source. These minimums do not establish adequate research validation. Cross-validation is grouped by source where each fold can contain all categories. Models are trained only by the button below.")
+    st.caption("Minimum software gate: 30 distinct phrases, two classes, five examples per class, no conflicting labels, complete provenance and a feasible holdout by job-ad source. These minimums do not establish adequate research validation. Model selection requires valid training-only cross-validation, grouped by source with every category in each fold. Holdout scores never choose the winner. Models are trained only by the button below.")
     if training_data_changed():
         st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     if action_button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
@@ -1400,7 +1440,10 @@ def evaluation():
     a.metric("Selected holdout accuracy", f"{metadata['accuracy']:.3f}")
     b.metric("Selected holdout Macro F1", f"{metadata['macro_f1']:.3f}")
     c.metric("Selected holdout Weighted F1", f"{metadata['weighted_f1']:.3f}")
-    st.caption("Based on the current labeled validation sample. Selection uses Macro F1, then Weighted F1 and minimum per-class F1; accuracy is not the selection criterion.")
+    if metadata.get("selection_basis") == SELECTION_BASIS:
+        st.caption("Model selected by training cross-validation before holdout scoring. Holdout scores do not choose the winner; other model scores are diagnostic comparisons.")
+    else:
+        st.warning("This saved run used the earlier model-selection procedure. Its scores are internal model comparisons, not an independent final evaluation. Retrain to select by training cross-validation; existing artifacts are preserved.")
     if training_data_changed():
         st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     display(metrics)
@@ -1417,7 +1460,7 @@ def evaluation():
         ), height=220
     )
     matrix = matrix.set_index("actual").apply(pd.to_numeric)
-    chart(heatmap(matrix, "Model Confusion Matrix — actual rows, predicted columns"))
+    result_heatmap(matrix, "Model Confusion Matrix — actual rows, predicted columns")
     display(per_class)
     display(predictions)
     st.subheader("Stratified cross-validation (training partition only)")
@@ -1523,9 +1566,485 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
                 st.rerun()
 
 
+def analysis_workflow():
+    stages = [
+        ("Select job ads", "Confirm scope, sources and the study dataset.", "article", "green"),
+        ("Clean and group", "Lowercase analysis text; reconcile title variants.", "auto_awesome", "blue"),
+        ("Extract and review", "Identify skills; clarify ambiguous phrases.", "content_paste_search", "orange"),
+        ("Compare PSF-AAI", "Check competency links against source evidence.", "link", "violet"),
+        ("Describe results", "Count distinct ads; chart and export findings.", "bar_chart", "red"),
+    ]
+    st.markdown("**Analysis pipeline**")
+    with st.container(horizontal=True, gap="small", key="analysis_pipeline"):
+        for index, (title, detail, icon, color) in enumerate(stages, 1):
+            with st.container(border=True, width=150, key=f"pipeline_stage_{index}"):
+                st.badge(str(index), icon=f":material/{icon}:", color=color)
+                st.markdown(f"**{title}**")
+                st.caption(detail)
+    with st.expander("Complete processing workflow"):
+        steps = [
+            ("Collect", "Archive the advertisement, provider, original URL and collection dates."),
+            ("Screen", "Researchers confirm Philippine provenance, role relevance and sufficient text; record exclusions."),
+            ("Remove confirmed duplicates", "Inspect duplicate candidates before excluding repeated advertisements."),
+            ("Clean and standardize", "Lowercase analysis values; preserve source wording and normalization evidence."),
+            ("Extract requirements", "Keep skills, credentials and experience distinct, linked to each advertisement."),
+            ("Classify competencies", "Use documented category rules and researcher labels; count each skill once per ad."),
+            ("Map PSF-AAI", "Inspect definitions and available Range of Application; justify uncertain links."),
+            ("Aggregate", "Calculate distinct-ad counts and proportions within the selected dataset."),
+            ("Visualize", "Explore readable charts by family, title, geography and framework role."),
+            ("Interpret and report", "Export evidence and explain scope, uncertainty and limitations."),
+        ]
+        for number, (title, detail) in enumerate(steps, 1):
+            st.markdown(f"**{number}. {title}** — {detail}")
+
+
+def result_chart_options():
+    with st.container(horizontal=True, gap="medium", vertical_alignment="bottom", key="result_chart_controls"):
+        with st.container(horizontal=True, key="result_chart_selectors"):
+            order = st.selectbox("Chart order", ["Alphabetical", "Highest demand"], index=1, key="result_chart_order", width=240)
+            limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key="result_chart_limit", width=180)
+        with st.container(key="result_chart_note"):
+            st.caption(f"Up to {limit} aggregated categories per chart. Full evidence tables are paginated and exportable. " +
+                       ("Darker bars mark the highest count, including ties." if order == "Highest demand" else "Alphabetical order supports label lookup, rather than demand ranking."))
+    return order, limit
+
+
+def ordered_result_table(frame, label, order, value=None):
+    if frame.empty or label not in frame:
+        return frame
+    out = frame.assign(_display_order=frame[label].map(normalize_text))
+    fields = [value, "_display_order"] if order == "Highest demand" and value in frame else ["_display_order"]
+    return out.sort_values(fields, ascending=[False, True] if len(fields) == 2 else True, kind="stable").drop(columns="_display_order")
+
+
+def result_single_metric(title, label, value, unit, detail, *, key):
+    """Show a single observed value with its category and scope instead of a one-item chart."""
+    with st.container(key=key):
+        st.subheader(title)
+        st.metric(str(label), f"{int(value):,}", help=f"{title}. {detail}")
+        st.caption(" · ".join(part for part in (unit, detail) if part))
+
+
+def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15):
+    if frame.empty:
+        st.caption("No evidence for this chart in the current selection.")
+        return
+    figure = ranked_bar(frame, label, value, title, order=order, limit=limit)
+    if len(frame) != 1:
+        chart(figure)
+        return
+    category = figure.data[0].y[0]
+    count = figure.data[0].x[0]
+    percentage = next((field for field in ("job_ads_pct", "employer_demand_pct") if field in frame), None)
+    detail = "Only one category appears in the current selection."
+    if percentage:
+        share = pd.to_numeric(frame[percentage].iloc[0], errors="coerce")
+        if pd.notna(share):
+            detail = f"{share:.1f}% of selected job advertisements. {detail}"
+    key_part = "".join(character.lower() if character.isalnum() else "_" for character in f"{title}_{category}")[:72]
+    result_single_metric(title, category, count, "Job advertisements", detail,
+                         key=f"result_single_{key_part}")
+
+
+def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denominators=None,
+                   share_label="Share within row group", denominator_label="Row-group advertisements",
+                   row_group_label="row group"):
+    if matrix.empty:
+        st.caption("No evidence for this heatmap in the current selection.")
+    elif matrix.size == 1:
+        label = f"Actual: {matrix.index[0]} · predicted: {matrix.columns[0]}" if "Confusion Matrix" in title else f"{matrix.index[0]} · {matrix.columns[0]}"
+        detail = "Only one cell is present, so there is no category comparison."
+        if share_matrix is not None:
+            share = float(pd.DataFrame(share_matrix).reindex(index=matrix.index, columns=matrix.columns).iat[0, 0])
+            detail = f"{share:.1f}% of advertisements in this {row_group_label}. " + detail
+            if row_denominators is not None:
+                total = int(pd.to_numeric(pd.Series(row_denominators), errors="coerce").reindex(matrix.index).fillna(0).iloc[0])
+                unit = "job ad" if total == 1 else "job ads"
+                detail = f"{share:.1f}% of {total:,} {unit} in this {row_group_label}. Only one cell is present, so there is no category comparison."
+        result_single_metric(title, label, matrix.iat[0, 0], count_label,
+                             detail,
+                             key="result_single_heatmap")
+    else:
+        chart(heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
+                      row_denominators=row_denominators, share_label=share_label,
+                      denominator_label=denominator_label))
+
+
+def _job_market_results(tables, meta):
+    jobs = tables["cleaned_jobs"]
+    profile = tables if "education_level_counts" in tables else job_profile_tables(jobs)
+    geography = tables if "location_evidence" in tables else location_tables(jobs)
+    chart_keys = {"chart_skill_demand", "chart_skill_family_demand", "chart_family_ad_counts"}
+    views = tables if chart_keys.issubset(tables) else skill_chart_tables(tables["extracted_job_skills"], jobs)
+    skills, demand, unclear = (views[key] for key in ("chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review"))
+    denominator = jobs.source_id.nunique() if "source_id" in jobs else 0
+    analysis_workflow()
+    unclear_count = unclear.normalized_phrase.nunique() if not unclear.empty else 0
+    metrics = [
+        ("Selected job advertisements", denominator, "work", "From selected dataset", "green"),
+        ("Distinct skills in charts", len(demand), "bar_chart", "Unique chart skills", "blue"),
+        ("Distinct phrases withheld", unclear_count, "chat_bubble", "Kept in audit" if unclear_count else "No phrases withheld", "orange" if unclear_count else "green"),
+    ]
+    with st.container(horizontal=True, gap="medium", key="result_metrics"):
+        for index, (label, value, icon, badge, color) in enumerate(metrics, 1):
+            with st.container(border=True, key=f"result_metric_{index}"):
+                st.metric(label, f"{value:,}", icon=f":material/{icon}:")
+                st.badge(badge, color=color)
+    order, limit = result_chart_options()
+
+    def plot(frame, label, value, title):
+        result_count_chart(frame, label, value, title, order=order, limit=limit)
+
+    def skill_counts(rows, total):
+        out = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
+        out["job_ads_pct"] = out.job_ads / total * 100 if total else float("nan")
+        return out
+
+    def takeaway(frame, label, value):
+        if not frame.empty and len(frame) > 1:
+            maximum = frame[value].max()
+            names = frame.loc[frame[value].eq(maximum), label].astype(str).sort_values().tolist()
+            st.write(f"Most represented: {', '.join(names[:3])}" +
+                     (f" and {len(names) - 3} other tied entries" if len(names) > 3 else "") +
+                     f" — {maximum:,} {'ad' if maximum == 1 else 'ads'}" + (" each." if len(names) > 1 else "."))
+
+    with st.container(horizontal=True, vertical_alignment="center", key="result_section_toolbar"):
+        st.subheader("Results section")
+        if action_button("Export results", icon=":material/download:", key="results_export", type="primary"):
+            st.switch_page("pages/14_Reports.py")
+    with st.container(key="result_sections"):
+        section = st.segmented_control("Results section", ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"],
+                                       default="Skills", key="result_section", width="stretch", label_visibility="collapsed")
+    if section == "Skills":
+        st.subheader("Which skills do these employers request?")
+        if not demand.empty:
+            leaders = demand.sort_values(["employer_demand_count", "employer_skill"], ascending=[False, True]).head(3)
+            st.write("Among the most frequently observed: " + "; ".join(f"{row.employer_skill} ({row.employer_demand_count:,} {'ad' if row.employer_demand_count == 1 else 'ads'})" for row in leaders.itertuples()) + ".")
+        plot(demand, "employer_skill", "employer_demand_count", "Employer-requested skills")
+        withheld_reasons = unclear.review_reason.fillna("") if not unclear.empty else pd.Series(dtype=str)
+        def ads_for_reason(prefixes):
+            if unclear.empty:
+                return 0
+            return int(unclear.loc[withheld_reasons.str.startswith(tuple(prefixes)), "source_id"].nunique())
+        not_reported_ads = ads_for_reason(("Not reported (missing placeholder)",))
+        experience_phrase_ads = ads_for_reason(("Experience-duration requirement", "Unclear year-duration phrase", "No-experience requirement"))
+        irrelevant_ads = ads_for_reason(("Researcher or classifier marked",))
+        chart_summary = meta.get("chart_presentation", {})
+        no_chartable_ads = int(chart_summary.get("ads_without_chartable_skill", max(0, denominator - skills.source_id.nunique()))) if denominator else 0
+        st.caption(f"Missing / not-mentioned placeholders: {not_reported_ads:,} ads. No chartable skill evidence, regardless of PSF status: {no_chartable_ads:,} of {denominator:,} ads.")
+        st.caption(f"Experience/year wording: {experience_phrase_ads:,} ads; excluded from skills and PSF-AAI demand. Irrelevant labels: {irrelevant_ads:,} ads; excluded.")
+        st.caption(f"One advertisement counts once per skill, including case and list-format variants. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
+        st.caption("Unmapped but skill-like phrases remain in employer demand; their PSF-AAI correspondence is reviewed separately.")
+        for kind, title in (("Technical", "Technical skills"), ("Soft / Enabling", "Enabling and interpersonal skills")):
+            rows = skills[skills.get("skill_type", pd.Series("", index=skills.index)).eq(kind)]
+            plot(skill_counts(rows, denominator), "skill_label", "job_ads", title)
+        if not skills.empty:
+            categories = skills.copy()
+            categories["category_group"] = categories.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
+            counts = categories.groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
+            plot(counts, "category_group", "job_ads", "Broad competency areas")
+            st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
+        with st.expander("How technical and enabling categories are determined"):
+            st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
+            st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
+            st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
+        with st.expander(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)"):
+            st.caption("Missing-value placeholders, experience/year wording, credentials, irrelevant labels and unclear fragments are omitted from skill charts and automatic PSF-AAI demand. Original phrase evidence and saved labels remain in this audit; source-field requirements are summarized separately under Qualifications.")
+            display(unclear)
+        with st.expander("Skill-demand table"):
+            display(demand)
+
+    if section == "Roles and locations":
+        title_view = st.selectbox("Job-title overview", ["Most common job titles", "Related role groups", "Specific titles (alphabetical)"], key="result_title_view")
+        grouped = title_view == "Related role groups"
+        common_titles = title_view == "Most common job titles"
+        alphabetical_titles = title_view == "Specific titles (alphabetical)"
+        title_field = "job_role_group" if grouped else "common_job_title" if common_titles else "job_title"
+        title_counts = (profile["job_role_group_counts"] if grouped else
+                        profile["common_job_title_counts"] if common_titles else profile["job_title_counts"])
+        if not title_counts.empty:
+            chart_title = "Related role groups" if grouped else ("Specific job titles (alphabetical)" if alphabetical_titles else "Most common job titles")
+            title_order = "Alphabetical" if alphabetical_titles else order
+            result_count_chart(title_counts, title_field, "job_ads", chart_title, order=title_order, limit=limit)
+        st.caption("Most-common titles consolidate clear seniority and branch/specialty variants when one recognized occupation is stated. Composite and unrecognized titles stay distinct. Related role groups use source families; specific titles preserve exact normalized wording. Counts are distinct ads, and original titles remain auditable.")
+        with st.expander("Inspect common-title normalization"):
+            display(profile["common_job_title_evidence"])
+        with st.expander("Inspect source-family role grouping"):
+            display(profile["job_title_group_evidence"])
+            display(profile["job_title_family_counts"])
+        takeaway(title_counts, title_field, "job_ads")
+        evidence = profile["job_title_group_evidence"]
+        def reset_exploration():
+            for key in ("result_family", "result_specific_title", "result_region", "result_city"):
+                st.session_state[key] = "All"
+            st.session_state.pop("result_skill_family_heatmap_families", None)
+        st.button("Reset exploration filters", on_click=reset_exploration, icon=":material/restart_alt:")
+
+        st.subheader("How do requested skills vary by occupational family?")
+        family_demand = views.get("chart_skill_family_demand", pd.DataFrame())
+        family_ads = views.get("chart_family_ad_counts", pd.DataFrame())
+        family_options = family_ads.loc[family_ads.job_family.ne("not stated"), "job_family"].tolist() if not family_ads.empty else []
+        top_skills = demand.sort_values(["employer_demand_count", "employer_skill"], ascending=[False, True], kind="stable").head(min(limit, 15)).employer_skill.tolist()
+        if family_options and top_skills:
+            family_sizes = family_ads.set_index("job_family").family_ads
+            heatmap_families_default = sorted(family_options, key=lambda name: (-family_sizes.get(name, 0), name))[:8]
+            family_key = "result_skill_family_heatmap_families"
+            family_selection = [name for name in st.session_state.get(family_key, heatmap_families_default) if name in family_options]
+            if family_selection != st.session_state.get(family_key, heatmap_families_default):
+                st.session_state[family_key] = family_selection
+            chosen_families = st.multiselect("Occupational families in the heatmap", family_options,
+                                             default=heatmap_families_default, key=family_key)
+            selected_family_demand = family_demand[
+                family_demand.job_family.isin(chosen_families) & family_demand.skill_label.isin(top_skills)]
+            if selected_family_demand.empty:
+                st.info("No chartable skill evidence is available for the selected occupational families.")
+            else:
+                matrix = selected_family_demand.pivot(index="job_family", columns="skill_label", values="job_ads")
+                matrix = matrix.reindex(index=chosen_families, columns=top_skills).fillna(0).astype(int)
+                row_denominators = family_sizes.reindex(matrix.index).fillna(0).astype(int)
+                shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
+                result_heatmap(matrix, "Top requested skills by occupational family", count_label="Job advertisements",
+                               share_matrix=shares, row_denominators=row_denominators,
+                               share_label="Share of family ads", denominator_label="Advertisements in family",
+                               row_group_label="occupational family")
+            missing_family_ads = int(family_ads.loc[family_ads.job_family.eq("not stated"), "family_ads"].sum())
+            if missing_family_ads:
+                st.caption(f"Occupational family not stated or classifiable: {missing_family_ads:,} ads; excluded from this comparison.")
+            st.caption("Color compares the share of advertisements in each family that request a skill. Denominators include ads with no chartable skill; skill categories overlap, so row percentages can exceed 100% in total. Hover for counts and family size.")
+            all_family_table = st.expander("View all skill-by-family counts", key="result_all_skill_family_table", on_change="rerun")
+            if all_family_table.open:
+                with all_family_table:
+                    display(family_demand.rename(columns={"job_family": "Occupational family", "skill_label": "Skill",
+                                                           "job_ads": "Job advertisements", "family_ads": "Family advertisements",
+                                                           "job_ads_pct": "Share of family ads (%)"}))
+        elif family_options:
+            st.info("No chartable skill evidence is available for the selected advertisements.")
+        else:
+            st.info("No classifiable occupational families are available for the skill comparison.")
+
+        st.subheader("Explore a selected title")
+        title_evidence = profile["job_title_source_evidence"]
+        family_options = sorted(title_evidence.job_family.unique().tolist())
+        family = st.selectbox("Occupational family", ["All", *family_options], key="result_family")
+        family_rows = title_evidence if family == "All" else title_evidence[title_evidence.job_family.eq(family)]
+        specific_options = ["All", *sorted(family_rows.job_title.unique().tolist())]
+        if st.session_state.get("result_specific_title", "All") not in specific_options:
+            st.session_state["result_specific_title"] = "All"
+        specific = st.selectbox("Specific job title", specific_options, key="result_specific_title")
+        scoped = family_rows if specific == "All" else family_rows[family_rows.job_title.eq(specific)]
+        source_ids = scoped.source_id
+        selected_title_demand = skill_counts(skills[skills.source_id.isin(source_ids)], source_ids.nunique())
+        selected_title_label = specific if specific != "All" else (family if family != "All" else "all selected advertisements")
+        result_count_chart(selected_title_demand, "skill_label", "job_ads", f"Top skills for {selected_title_label}",
+                           order=order, limit=min(limit, 10))
+        st.caption(f"Selected group: {selected_title_label} · {source_ids.nunique():,} advertisements. Percentages use these ads as the denominator.")
+        if 0 < source_ids.nunique() < 10:
+            st.caption("Small group; treat this ranking as descriptive for these advertisements, not a stable estimate for the occupation.")
+        if len(selected_title_demand) > min(limit, 10):
+            all_title_skills = st.expander("View all skills for this selection", key="result_all_title_skills", on_change="rerun")
+            if all_title_skills.open:
+                st.caption("The searchable table includes every chartable skill for the selected group, not only the top bars.")
+                display(ordered_result_table(selected_title_demand, "skill_label", order, "job_ads"))
+        st.subheader("Where are the advertised jobs?")
+        locations = geography["location_evidence"]
+        focused_locations = locations[locations.source_id.isin(source_ids)]
+        region_options = sorted(value for value in focused_locations.region.unique() if value)
+        if st.session_state.get("result_region", "All") not in ["All", *region_options]:
+            st.session_state["result_region"] = "All"
+        selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
+        if selected_region == "All":
+            st.session_state["result_city"] = "All"
+            location_rows = focused_locations[focused_locations.region.ne("")]
+            count_field = "region"
+            denominator_for_locations = source_ids.nunique()
+            location_title = "Advertisements by Philippine region"
+            area_rows = location_rows
+        else:
+            region_rows = focused_locations[focused_locations.region.eq(selected_region)]
+            city_options = sorted(value for value in region_rows.locality.unique() if value)
+            if st.session_state.get("result_city", "All") not in ["All", *city_options]:
+                st.session_state["result_city"] = "All"
+            selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
+            locality_rows = region_rows[region_rows.locality.ne("")]
+            location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
+            count_field = "locality"
+            denominator_for_locations = region_rows.source_id.nunique()
+            location_title = f"Cities and municipalities in {selected_region}"
+            area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
+        location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
+        if denominator_for_locations:
+            location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
+        else:
+            location_counts["job_ads_pct"] = float("nan")
+        plot(location_counts, count_field, "job_ads", location_title)
+        takeaway(location_counts, count_field, "job_ads")
+        location_ids = area_rows.source_id
+        plot(skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique()),
+             "skill_label", "job_ads", "Skills in the selected geographical area")
+        missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
+        unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
+        if selected_region == "All":
+            st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
+        else:
+            st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
+        st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
+        st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
+        all_locations_table = st.expander("View all regional or city counts", key="result_all_location_counts", on_change="rerun")
+        if all_locations_table.open:
+            display(location_counts.rename(columns={count_field: "Region" if selected_region == "All" else "City or municipality",
+                                                    "job_ads": "Job advertisements", "job_ads_pct": "Share of comparison group (%)"}))
+        with st.expander("Location standardization evidence", key="result_location_standardization"):
+            display(focused_locations)
+        trend_jobs = jobs[jobs.source_id.isin(location_ids)]
+        if "posting_date_parsed" in trend_jobs:
+            dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
+            monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
+            if len(monthly) > 1:
+                trend = px.line(monthly, x="month", y="postings", title="Posting months represented in the dataset", labels={"month": "Posting month", "postings": "Job advertisements"})
+                trend.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero")
+                chart(trend)
+            elif len(monthly) == 1:
+                result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
+                                     monthly.postings.iloc[0], "Job advertisements",
+                                     "One month is present; this is coverage, not a time trend.",
+                                     key="result_single_posting_month")
+            if not dates.empty:
+                st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
+            else:
+                st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
+
+    if section == "Qualifications":
+        st.subheader("What qualifications are stated?")
+        for row in profile["requirement_field_coverage"].itertuples():
+            label = row.source_field.removesuffix("_requirement").capitalize()
+            st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads; not stated in {row.not_stated_job_ads:,}.")
+        education = profile["education_level_counts"]
+        if not education.empty:
+            if len(education) == 1:
+                result_count_chart(education, "education_level", "job_ads",
+                                   "Education levels stated in advertisements", order="Highest demand", limit=limit)
+            else:
+                chart(education_bar(education))
+            takeaway(education, "education_level", "job_ads")
+        else:
+            st.info("No unambiguous education level is available; inspect the source evidence below.")
+        coverage = profile["requirement_field_coverage"].set_index("source_field")
+        missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
+        st.caption(f"Education requirements were not specified in {missing_education:,} out of {denominator:,} ads ({100 * missing_education / denominator if denominator else 0:.1f}%). Multiple or unclear education levels are retained for review, outside the ordered chart.")
+        st.caption("Not specified describes the advertisement text; it does not mean that education was not required.")
+        with st.expander("Education standardization evidence"):
+            display(profile["education_level_evidence"])
+        st.subheader("Experience requirements")
+        experience_evidence = profile["experience_year_evidence"]
+        exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
+        exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
+        if len(exact_years) >= 2:
+            exact_pct = 100 * len(exact_years) / denominator if denominator else 0
+            st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")
+        elif len(exact_years) == 1:
+            st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
+        if not profile["experience_band_counts"].empty:
+            display(profile["experience_band_counts"])
+        else:
+            st.caption("No numerical requirement falls unambiguously within a single experience band.")
+        st.caption("Bands include only numerical requirements contained entirely within one interval. Spanning, open-ended and descriptive requirements remain in the evidence table rather than being forced into a band.")
+        years = profile["experience_year_counts"]
+        if years.empty:
+            st.info("No unambiguous experience-year requirement is available in the source fields. Missing years are not treated as zero experience.")
+        else:
+            display(years.rename(columns={"requirement": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
+        st.caption("Year summaries use explicit experience fields only. Missing and ambiguous wording is excluded from the numeric summary and retained below. A stated number is not assumed to be an upper hiring limit.")
+        with st.expander("Requirement fields and parsing evidence"):
+            display(profile["education_requirement_counts"])
+            display(profile["experience_requirement_counts"])
+            display(profile["experience_year_evidence"])
+            display(profile["experience_band_evidence"])
+        with st.expander("Potential requirements found in advertisement text"):
+            st.caption("Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")
+            display(profile["requirement_evidence"])
+
+    if section == "PSF-AAI demand":
+        st.subheader("How does observed demand relate to PSF-AAI?")
+        st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
+        mappings = tables["psf_mapping"]
+        if not mappings.empty:
+            all_linked = mappings[mappings.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) & mappings.psf_competency.fillna("").ne("")].copy()
+            all_linked["psf_competency"] = all_linked.psf_competency.map(normalize_text)
+            all_linked["psf_job_role"] = all_linked.psf_job_role.map(normalize_text)
+            reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
+            if "competency_name" not in reference:
+                reference = reference.rename(columns={"psf_competency": "competency_name"})
+            role_options = sorted(set(role for value in all_linked.psf_job_role for role in value.split("; ") if role))
+            role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
+            linked = all_linked
+            if role != "All":
+                linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
+                linked["psf_job_role"] = role
+            role_denominator = linked.source_id.nunique()
+            psf_views = psf_demand_tables(linked, jobs, reference,
+                                          denominator=role_denominator if role != "All" else denominator)
+            psf_order = st.selectbox("Competency order", ["Highest demand", "Framework order", "Alphabetical"], key="result_psf_order")
+            competence = psf_views["psf_chart_demand"]
+            if not competence.empty:
+                result_count_chart(competence, "psf_competency", "job_ads", "PSF-AAI competencies linked to employer demand", order=psf_order, limit=limit)
+                takeaway(competence, "psf_competency", "job_ads")
+            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Framework order follows the active reference; role links can overlap.")
+            roles = linked.assign(psf_job_role=linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
+            roles = roles[roles.psf_job_role.ne("")]
+            roles = roles.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
+            roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
+            plot(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles")
+            cells = psf_views["psf_role_competency_demand"]
+            if not cells.empty:
+                role_sizes = roles.set_index("psf_job_role").job_ads
+                role_heatmap_options = sorted(cells.psf_job_role.unique(), key=lambda name: (-role_sizes.get(name, 0), name))
+                competency_sizes = competence.set_index("psf_competency").job_ads
+                competency_heatmap_options = sorted(cells.psf_competency.unique(),
+                                                    key=lambda name: (-competency_sizes.get(name, 0), name))
+                chosen_role_default = role_heatmap_options[:8]
+                chosen_competency_default = competency_heatmap_options[:min(limit, 15)]
+                role_key, competency_key = "result_competency_heatmap_roles", "result_competency_heatmap_competencies"
+                chosen_roles_state = [name for name in st.session_state.get(role_key, chosen_role_default) if name in role_heatmap_options]
+                chosen_competencies_state = [name for name in st.session_state.get(competency_key, chosen_competency_default) if name in competency_heatmap_options]
+                if chosen_roles_state != st.session_state.get(role_key, chosen_role_default):
+                    st.session_state[role_key] = chosen_roles_state
+                if chosen_competencies_state != st.session_state.get(competency_key, chosen_competency_default):
+                    st.session_state[competency_key] = chosen_competencies_state
+                chosen_roles = st.multiselect("Reference roles in the heatmap", role_heatmap_options,
+                                              default=chosen_role_default, key=role_key)
+                chosen_competencies = st.multiselect("PSF-AAI competencies in the heatmap", competency_heatmap_options,
+                                                     default=chosen_competency_default, key=competency_key)
+                selected_cells = cells[cells.psf_job_role.isin(chosen_roles) & cells.psf_competency.isin(chosen_competencies)]
+                if selected_cells.empty:
+                    st.info("Select at least one role and competency with reviewed mapping evidence.")
+                else:
+                    matrix = selected_cells.pivot(index="psf_job_role", columns="psf_competency", values="job_ads")
+                    matrix = matrix.reindex(index=chosen_roles, columns=chosen_competencies).fillna(0).astype(int)
+                    row_denominators = roles.set_index("psf_job_role").job_ads.reindex(matrix.index).fillna(0).astype(int)
+                    shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
+                    result_heatmap(matrix, "Reviewed PSF-AAI competencies across reference roles", count_label="Job advertisements",
+                                   share_matrix=shares, row_denominators=row_denominators,
+                                   share_label="Share of role ads", denominator_label="Advertisements linked to role",
+                                   row_group_label="reference role")
+                    st.caption("Cells count distinct advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Color uses the share of all ads linked to that role; hidden competencies stay in the denominator. An ad can support several competencies and roles, so percentages may overlap and cell counts must not be summed into unique ads.")
+                role_competency_table = st.expander("View all role-by-competency counts", key="result_role_competency_table", on_change="rerun")
+                if role_competency_table.open:
+                    display(cells.rename(columns={"psf_job_role": "PSF-AAI reference role", "psf_competency": "PSF-AAI competency",
+                                                  "job_ads": "Job advertisements"}))
+            else:
+                st.info("No role-level PSF-AAI competency evidence is available for this selection.")
+        else:
+            st.info("No PSF-AAI mapping evidence is available for this selection.")
+    records = st.expander("Selected job records", key="job_market_source_records", on_change="rerun")
+    if records.open:
+        with records:
+            st.caption("Lowercase analysis values. Source IDs and case-sensitive links are preserved; original evidence is available in Reports.")
+            display(tables["normalized_jobs"] if "normalized_jobs" in tables else analysis_job_values(jobs))
+
+
 def research_page(page):
     descriptions = {
-        "Job Market Analysis": "Explore employer demand within the selected job-ad sample.",
+        "Job Market Analysis": "Explore skills and career requirements in the selected Philippine job advertisements.",
         "PSF Mapping": "Review each skill in its advertisement context and justify its framework links.",
         "Employer–PSF Alignment": "Compare employer phrases with the reviewed framework reference.",
         "Unmapped / Emerging Skills": "Investigate recurring demand that needs further framework review.",
@@ -1538,58 +2057,25 @@ def research_page(page):
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
-        profile = job_profile_tables(jobs)
-        st.subheader("Occupations and job requirements")
-        st.caption("Counts use distinct selected job advertisements. Requirement categories use source-provided fields; text matches are shown separately as candidates for researcher verification.")
-        for key, title, label in (
-            ("job_title_counts", "Most common job titles", "Job title"),
-            ("job_family_counts", "Source-provided occupational families", "Job family"),
-            ("education_requirement_counts", "Education requirement fields", "Education requirement"),
-            ("experience_requirement_counts", "Experience requirement fields", "Experience requirement"),
-        ):
-            frame = profile[key]
-            if not frame.empty:
-                chart(bar(frame.head(20), frame.columns[0], "job_ads", title))
-                display(frame)
-        with st.expander("Source text candidates for education and experience evidence"):
-            evidence = profile["requirement_evidence"]
-            if evidence.empty:
-                st.info("No matching requirement evidence was found in the selected job records.")
-            else:
-                st.caption("Pattern matches are candidates only. Verify each source field and context before describing it as a job requirement.")
-                display(evidence)
-        if not demand.empty:
-            chart(bar(demand.head(20), "employer_skill", "employer_demand_count", "Top Employer-Demanded Skills"))
-        for kind, title in (("Soft / Enabling", "Top Soft / Enabling Skills"), ("Technical", "Top Technical Skills")):
-            if not skills.empty:
-                chart(distribution(skills[skills.skill_type.eq(kind)], "normalized_phrase", title))
-        if not skills.empty:
-            chart(distribution(skills, "competency_category", "Competency Category Distribution"))
-        for field, title in (("job_title", "Skills by Job Title"), ("location", "Skills by Location")):
-            matrix = demand_matrix(skills, jobs, field)
-            if not matrix.empty:
-                chart(heatmap(matrix.head(30), title))
-        mappings = tables["psf_mapping"]
-        if not mappings.empty:
-            roles = mappings.assign(psf_job_role=mappings.psf_job_role.str.split("; ")).explode("psf_job_role")
-            chart(distribution(roles.drop_duplicates(["source_id", "psf_job_role"]), "psf_job_role", "PSF Job Role Demand"))
-            chart(distribution(mappings.drop_duplicates(["source_id", "psf_competency"]), "psf_competency", "Employer Demand by PSF Competency"))
-        if "posting_date_parsed" in jobs:
-            dates = pd.to_datetime(jobs.posting_date_parsed, errors="coerce").dropna().dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
-            if not dates.empty:
-                trend = px.line(dates, x="month", y="postings", markers=True, title="Job Posting Trend")
-                trend.update_yaxes(**count_axis(dates.postings.max()), rangemode="tozero")
-                chart(trend)
-        display(jobs)
+        _job_market_results(tables, meta)
     elif page == "PSF Mapping":
         st.caption("Employer skill → PSF-AAI competency. Roles and levels are reference metadata, not inferred applicant attainment. Similarity scores are heuristic evidence, not calibrated probabilities.")
         psf_mapping_review(skills, jobs, storage.read_frame("cleaned_psf_aai"),
                            tables["psf_mapping"], tables["psf_mapping_reviews"])
         st.subheader("Competency demand")
         st.caption("Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
-        display(tables["psf_competency_demand"])
+        order, limit = result_chart_options()
+        competence = tables["psf_competency_demand"]
+        if not competence.empty:
+            psf_order = st.selectbox("Competency order", ["Framework order", "Highest demand", "Alphabetical"], key="result_psf_order")
+            plot_competence = tables.get("psf_chart_demand")
+            if plot_competence is None:
+                plot_competence = competence.assign(psf_competency=competence.psf_competency.map(normalize_text), framework_order=range(len(competence)))
+                plot_competence = plot_competence.rename(columns={"job_ad_count": "job_ads"})
+            result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=psf_order, limit=limit)
+        display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
         st.subheader("Occurrence-level mapping evidence")
-        display(tables["psf_mapping"])
+        display(ordered_result_table(tables["psf_mapping"], "psf_competency", order))
     elif page == "Employer–PSF Alignment":
         st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
         active_reference = storage.read_frame("cleaned_psf_aai")
@@ -1601,21 +2087,42 @@ def research_page(page):
         for col, field in zip(cols, ("alignment_rate", "partially_aligned_rate", "unmapped_rate")):
             if rates.get(field) is not None:
                 col.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%")
-        chart(distribution(alignment, "status", "Status of Phrase–Competency Evidence Groups"))
+        order, limit = result_chart_options()
+        chart(distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status", "Status of Phrase–Competency Evidence Groups", limit=limit, order=order))
         st.subheader("Phrase-level results and PSF-AAI basis")
-        display(alignment)
-        display(demand)
+        display(ordered_result_table(alignment, "employer_skill", order))
+        display(ordered_result_table(demand, "employer_skill", order, "employer_demand_count"))
         st.caption(meta["denominators"])
     elif page == "Unmapped / Emerging Skills":
         st.caption("Not clearly mapped to PSF-AAI does not establish that the framework lacks a skill. Emerging candidates require human and longitudinal validation.")
-        for key, title in (("unmapped_skills", "Top Unmapped Skills"), ("emerging_skills", "Emerging Skill Candidates")):
+        order, limit = result_chart_options()
+        for key, title in (("unmapped_skills", "Unmapped skill evidence"), ("emerging_skills", "Recurring unmapped phrases for review")):
             st.subheader(title)
             frame = tables[key]
             if not frame.empty:
-                chart(bar(frame.head(20), "employer_skill", "employer_demand_count", title))
-            display(frame)
+                views = tables if "chart_skill_demand" in tables else skill_chart_tables(skills, jobs)
+                occurrences = views["chart_skill_occurrences"]
+                rows = occurrences[occurrences.original_normalized_phrase.isin(frame.normalized_skill)]
+                # A mapped formatting variant must not inflate an unmapped variant's count.
+                mapped_variants = alignment.loc[alignment.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]), "normalized_skill"]
+                mixed_keys = occurrences.loc[occurrences.original_normalized_phrase.isin(mapped_variants), "normalized_phrase"]
+                rows = rows[~rows.normalized_phrase.isin(mixed_keys)]
+                shown = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
+                if not shown.empty:
+                    result_count_chart(shown, "skill_label", "job_ads", title, order="Highest demand", limit=limit)
+                st.caption("Counts cover the original unmapped phrase variants only, once per selected ad. Groups with mapped evidence in the current results are omitted from this chart; occurrence details remain below. Unclear phrases remain in the chart_phrase_review export.")
+            display(ordered_result_table(frame, "employer_skill", order, "employer_demand_count"))
         st.caption(f"Emerging-candidate screening requires at least {meta['settings']['emerging_min_jobs']} distinct job ads and NOT MAPPED status. Rejected/unreviewed n-grams are not counted as employer skills.")
     elif page == "Reports":
+        meta = dict(meta, chart_view_settings={
+            "order": st.session_state.get("result_chart_order", "Highest demand"),
+            "psf_order": st.session_state.get("result_psf_order", "Framework order"),
+            "job_title_view": st.session_state.get("result_title_view", "Most common job titles"),
+            "items_per_chart": st.session_state.get("result_chart_limit", 15),
+            "focused_job_title": st.session_state.get("result_focus_job_title"),
+            "focused_location": st.session_state.get("result_focus_location"),
+            "note": "Display settings do not limit the complete exported tables or selected-job denominator.",
+        })
         tables.update(job_profile_tables(jobs))
         tables["corrections"] = corrections()
         def load_report_tables():
@@ -1723,6 +2230,7 @@ def feedback():
 
 def methodology():
     page_intro("Methodology", "Definitions, analytical decisions, and limits of the study.")
+    analysis_workflow()
     st.markdown((Path(__file__).resolve().parents[1] / "METHODOLOGY.md").read_text(encoding="utf-8"))
 
 def research_readiness():
@@ -1905,7 +2413,7 @@ def render(page):
     from .auth_ui import render_account_menu
     with st.container(horizontal=True, vertical_alignment="center", key="workspace_toolbar"):
         with st.container(width="stretch"):
-            st.caption("FUTURE OF WORK  /  " + ("OVERVIEW" if page == "Home" else page.upper()))
+            workspace_breadcrumb(page)
         render_account_menu()
     _processing_status()
     try:

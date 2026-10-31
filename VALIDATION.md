@@ -1,5 +1,44 @@
 # Validation record
 
+## 2026-11-01 — Complete chart-guide recommendations and narrow-layout review, v2.0.85
+
+- Audited the supplied guide's selection table, dashboard recommendations, interaction and interpretation rules. Kept optional lollipop, donut/waffle, choropleth, beeswarm, scatter, hexbin and treemap views out because the guide marks them optional and this dashboard lacks a justified comparison/denominator for those views; ranked bars and tables answer the current questions more directly.
+- Added the recommended skill-by-occupational-family overview heatmap. Color is the share of all ads in each family, while hover retains exact skill-ad counts and family totals; unclassified families are counted below, and ads without chartable skills remain in the denominator. Family/title drill-down shows at most ten skills by default, a searchable complete selected-group table, group size and a small-group warning.
+- Replaced the role-by-family PSF heatmap with reviewed competency-by-role evidence, keeping role ranking separate. Counts are unique ads per cell; color uses the within-role share and hover includes the denominator. Role filtering now scopes the competency percentages correctly and preserves multi-role/competency overlap.
+- Changed education to a naturally ordered horizontal bar; missing education remains a count and percentage below it. Experience includes frequency evidence plus median/range only for at least two exact single-value numeric requirements; ranges and open-ended values are not coerced. Location charts now compare regions first, then exact cities within a selected region, and say raw counts are not population-adjusted rates.
+- Added responsive wrapping for overview/result metrics and workflow cards below 900px so fixed-width cards no longer force a clipped horizontal row.
+- Focused results/design/data tests: **59 passed**. Full suite: **453 passed** in 101.14 seconds with one unrelated pandas `FutureWarning` at `src/review_queue.py:138`.
+- Python AST parsing and `git diff --check` passed. No study records, labels or PSF-AAI review decisions changed. Guide text and tables were read; visual DOCX rendering was unavailable because LibreOffice (`soffice.exe`) is not installed. Localhost visual review and health are recorded after refresh.
+
+## 2026-11-01 — Apply PSF-AAI chart-selection guide to role heatmap, v2.0.83
+
+- Read the supplied chart-selection guide. It recommends charting the comparison that is analytically meaningful, keeping missing values as a count outside the graph, and reporting full counts/denominators with percentage heatmaps. The app's existing top-category default is 15, within its recommended 10–15 range.
+- Updated the PSF-AAI role-by-family heatmap to color by each role's within-role family share on a fixed 0–100% scale. Hover retains exact cell job-ad count and the all-family role denominator; the denominator remains stable when families are hidden. One visible cell stays a headline metric with its share and role total.
+- Focused results/design tests: **46 passed**. Full suite: **446 passed** in 100.05 seconds with one unrelated pandas `FutureWarning` at `src/review_queue.py:138`.
+- Python AST parsing and `git diff --check` passed. The project server was restarted from this repository with the project interpreter; `/_stcore/health` returned HTTP 200 (`ok`) and the loaded project version is v2.0.83. No research records, labels, or PSF-AAI review decisions changed. The guide's text/tables were read; visual DOCX rendering was unavailable because LibreOffice (`soffice.exe`) is not installed.
+
+## 2026-11-01 — Exclude non-skill phrases from demand graphs, v2.0.82
+
+- Added explicit handling for missing/not-mentioned placeholders and experience-duration/year fragments (including parsed `3+year` forms and malformed year fragments). They are excluded from employer skill demand, automatic PSF-AAI matching, unmapped and emerging skill outputs. Source occurrences and reasons remain in the phrase audit; explicit experience fields remain in Qualifications.
+- Irrelevant and credential phrases remain excluded. The employer-skill view reports counts below the graph for placeholders, experience/year wording, irrelevant labels and ads with no chartable skill; none become graph categories.
+- Updated workflow status filtering and tests to cover phrase suppression, PSF mapping inputs and truthful per-ad counts. The pipeline integration test confirms SQL remains in demand/mapping while “not mentioned” and `3+year` remain auditable but are excluded from both.
+- Full suite: **445 passed** in 97.00 seconds, with one unrelated pandas `FutureWarning` at `src/review_queue.py:138`. No source data, saved labels or PSF review decisions were modified.
+- Python AST parsing and `git diff --check` passed. Localhost was refreshed to v2.0.82 and health returned HTTP 200. AppTest verified result view captions and chart exclusions; responsive browser screenshots were not reviewed.
+
+## 2026-11-01 — Single-value results and large-dataset chart scaling, v2.0.81
+
+- Results with one category or one heatmap cell now use a large labeled metric; a single posting month is described as coverage, not a trend. Multi-category charts retain their selected visual form and aggregations.
+- Chart controls now explain that charts show at most 10–30 aggregated categories while complete evidence remains paginated and exportable. Single-value metrics reuse the shared responsive metric styling.
+- Added a synthetic 500-ad / 93,622-row regression covering distinct-ad aggregation, 30-bar chart bounds and 100-row table pages. Focused results/design/scale tests: **45 passed**. Full suite: **441 passed** in 104.21 seconds with one unrelated pandas `FutureWarning` at `src/review_queue.py:138`.
+- Applied the descriptive-analysis guide: remove chart clutter, keep labels and units explicit, use consistent emphasis, and prefer a prominent number when no comparison exists. No research data or chart calculations were changed.
+- `git diff --check` and Python AST parsing passed. Localhost health returned HTTP 200 after refresh. Browser screenshot/responsive interaction review was unavailable in this run; Streamlit AppTest covered the results views. Local and uncommitted.
+
+## 2026-11-01 — Remove audience guidance from results, v2.0.80
+
+- Removed the green audience-guidance strip and its scoped CSS from Job Market Analysis. Results metrics, filters, chart controls and methodology remain unchanged.
+- Focused results/design suite passed: 42 tests. Changed Python files passed AST parsing; `git diff --check` passed; source search confirms the removed copy/style is gone.
+- Bytecode compilation via the system Python was blocked while replacing an existing `.pyc`; the AppTest suite ran successfully using the project virtual environment. No full suite or browser screenshot run. No research data changed. Local and uncommitted.
+
 ## 2026-10-29 — Tooltip handoff and all count axes, v2.0.72
 
 - User clarified the pointer moves from the bar onto the tooltip. Reproduced native Plotly removal on this transition. A trusted local browser handler now retains a copy of the already-rendered SVG card inside the chart, updates on another hover, and clears on chart exit or redraw. It never calls Python, extraction or storage. One observer attaches handlers to new chart nodes; script layout is hidden. This uses Streamlit's supported JavaScript-enabled HTML API and Plotly DOM/event conventions, which should be rechecked on frontend upgrades.
@@ -207,3 +246,69 @@ All 16 configured Streamlit pages passed AppTest in the prior run, and the full 
 Manual Review now defaults to one row per normalized phrase, using the existing representative-source grouping. All advertisement occurrences remains available for context-specific PSF-AAI review. No source records or frequencies are deleted; category saves still expand across occurrences, while competency links remain advertisement-specific. Related phrases are not merged by fuzzy similarity.
 
 Verification: 96 targeted UI, review-queue and performance tests passed in 43.52 seconds. Tests cover deduplicated pagination, preserved source counts, category propagation and PSF mapping isolation. Compilation, git diff checks and localhost health passed. Synthetic grouping of 98,681 rows into 2,000 distinct phrases took 0.094 seconds; this is grouping-only timing, not school-network performance. Live authenticated shared writes and visual browser interaction were not tested. No research data changed.
+
+
+## 2026-10-30 — Training-only model selection, v2.0.73
+
+Model selection now uses training CV mean macro F1, mean weighted F1 and lower macro-F1 standard deviation, with stable model order for exact ties. Selection finishes before holdout predictions; publication uses that fixed choice. Both candidates keep holdout diagnostics without using those scores to choose the winner. Missing or nonfinite CV stops the run before holdout evaluation and preserves existing model artifacts. New metadata records selection_basis=training_cross_validation; earlier saved runs stay readable with a legacy comparison notice. No refit on test labels. Review, extraction, PSF-AAI mapping and study-data handling are unchanged.
+
+Verification: 34 focused synthetic tests passed across classifier selection, training persistence, source/conflict validation, evaluation calculations, UI save/load/predict, historical metadata and end-to-end workbook exports. Tests verify the winner cannot change when holdout scores favor the other candidate, and invalid CV leaves saved artifacts byte-for-byte unchanged. Compilation and git diff --check passed. These are software tests in temporary workspaces with live Supabase disabled, not research metrics. No real annotations or saved research models were retrained or changed. Existing grouped-CV behavior remains conservative: a category missing from a fold blocks selection; review more independent sources across categories. Local update, not committed or pushed.
+
+
+## 2026-10-30 — Temporarily hide Research readiness, v2.0.74
+
+Set native st.Page visibility to hidden for Research readiness only. The page remains registered for existing overview links and direct authenticated navigation; its implementation and checks are retained. AppTest verified its hidden state and every other page visible, without live data reads. git diff --check passed. Started localhost on 127.0.0.1:8501; health returned ok. Local, not committed or pushed.
+
+
+## 2026-10-30 — Professor feedback and audience-led result views, v2.0.75
+
+Implemented meeting feedback on duplicate skill labels, overcrowded role/location charts, numeric experience requirements, missing fields, unclear phrases and readable graph values. Results now have Skills, Roles and locations, Qualifications, and PSF-AAI demand views for the chancellor and students. Horizontal bars show integer distinct-ad counts, full labels, zero baselines, highest-demand or alphabetical order, visible chart limits and purposeful emphasis. Focus selectors replace the full role/location matrices. Requirement coverage is text; experience-year tables preserve parsing evidence and missing/ambiguous statuses. Only linked PSF evidence enters competency demand plots.
+
+A separate chart view consolidates case/Unicode/space/list variants without fuzzy synonym merging. Conservative unclear-phrase rules withhold chart labels, preserve source-linked reasons, and leave raw records, reviewed labels and PSF mappings intact. Charts count each selected ad once per phrase, including no-detection ads in denominators. New exports include chart_skill_demand, chart_skill_occurrences, chart_phrase_review, requirement coverage and explicit experience parsing evidence. Display cache revision changes without invalidating an otherwise current extraction. Data-quality preview is deferred until expanded. Methodology and user guide document policies, limitations, the supplied descriptive-analytics slides, ONS and Government Analysis Function references.
+
+Verification: full isolated suite passed 408 tests (103.22 s); compilation and git diff --check passed. Browser inspected synthetic charts and qualification coverage/table; role filters, alphabetical order, audit preservation and mixed mapped/unmapped cases have regression coverage. Synthetic chart preparation of 98,681 occurrences / 2,000 phrases took 0.539 s; this is chart preparation only, not complete app or school-network timing. Localhost health returned ok. No real research records or model artifacts were changed. The supplied PDF was read and its decluttering slide rendered/inspected; unrelated assignment instructions in it were not followed. Synthetic proof image is outside the repo at C:/Users/User/.codex/visualizations/2026/10/10/01a12448-83b3-70a2-bb64-4b9ae314a86c/research-chart-preview.png. Local update, not committed or pushed.
+
+
+## 2026-10-30 — Complete lowercase and meeting-feedback corrections, v2.0.76
+
+User clarified strict lowercase analysis values and related-title grouping or alphabetical specifics. Descriptive job *_clean/cleaned_text fields now lowercase; analysis_jobs refreshes derived fields in a copy for existing uploads, analysis_job_values drives normalized preview/export, and chart labels no longer restore vocabulary capitals. Raw source wording, IDs, dates, case-sensitive link paths, original occurrence evidence and official PSF-AAI records remain intact. Cleaning is idempotent with no repeated *_clean_clean columns. Stored research records were not rewritten.
+
+Related-role counts prioritize meaningful source job_family, then conservative explicit title-head rules. Seniority variants may share a group; ambiguous/composite/unrecognized titles remain specific when no source family overrides them. Original title, normalized title, group and grouping_basis are exported per advertisement. Specific-title counts/charts/selectors are alphabetical even in demand-ranking mode. Role grouping never merges source ads. Added actual five-stage visual workflow cards on Job market and Methodology, consistent alphabetical/highest-demand controls on other result pages, concrete category-dictionary/model provenance, CAR (Context/Approach/Results) report headings, and a meeting concern-to-implementation checklist in Methodology.
+
+Verification: full isolated suite 416 passed (92.01 s), including raw-evidence preservation, annotations, title grouping, alphabetical controls, export scope, mapping behavior and normalized previews. One old capitalization-specific extraction test was updated to assert normalized phrase identity plus preserved original source text and human labels; no production inference change was needed for that assertion. Browser inspected workflow cards, lowercase skill/location labels, related roles and alphabetical specific-title mode using synthetic data. Independent source review found no blocking evidence/hash regression; a source-family override caption was clarified. Compilation and diff checks passed, localhost health ok. Synthetic screenshot: C:/Users/User/.codex/visualizations/2026/10/10/01a12448-83b3-70a2-bb64-4b9ae314a86c/lowercase-titles-preview.png. Local update, not committed or pushed.
+
+
+## v2.0.77 — Revision plan, focused results and extraction performance (31 October 2026)
+
+- Added ten-stage workflow details, reasoned screening exclusions and confirmation-only duplicate candidates based on identical normalized title/employer/location/full description. Screening retains the mapped-upload fingerprint and archived records.
+- Added ordered education-level charts/evidence; bounded experience-band tables/evidence; alphabetical titles within source families with provider/URL evidence; conservative PSA PSGC location hierarchy with explicit unresolved statuses.
+- Added cascading family/title/geography filters and reset, date-coverage summaries, reference-order competency charts and bounded PSF role/family heatmap. Multi-role filtering restricts exploded role rows; counts remain distinct ads. Added exact Power BI/Excel presentation aliases, status colors, data-driven takeaways and exports.
+- Result summaries are precomputed in the cached bundle; only the selected result section constructs charts. spaCy document text is retrieved once per document rather than once per n-gram. Extraction semantics and pipeline revision are unchanged.
+- Full isolated suite: **433 passed**, 2 warnings, 137.10 s. After the final implementation changes, focused result/preprocessing/screening/chart/export checks: **53 passed**, 1 warning, 20.30 s. Benchmark retention tests: **5 passed**. Compilation and git diff --check passed. Live Supabase was disabled in software tests.
+- Actual local first-N benchmarks covered 20/100/250/500 ads. A comparison retaining all 500 rows measured total local processing 114.78→34.13 s and extraction/matching 110.18→29.49 s; source/taxonomy fingerprints, 93,581 candidates, 7,963 accepted occurrences and 2,007 chart labels matched. Full extracted records/diagnostics also matched in a separate 20-long-ad comparison. Full baseline 500-ad frames were not retained, so their complete byte equality is not claimed. Database/auth/browser timing is excluded; cache and concurrent-load conditions limit comparisons. Reports are outside the repo in performance-assessment-2026-10-31 under the visualization workspace.
+- Eleven potential duplicate repostings were flagged in the local source file; the active dataset was not rewritten or reduced. The benchmark now retains all rows and reports candidates separately. No research labels/models were published or trained.
+- Browser visual verification uses synthetic advertisements, not research findings. Localhost restarted on 127.0.0.1:8501; health returned ok. This update is local and uncommitted.
+
+
+## v2.0.78 — Reference styling, shared sizing and flat layouts (31 October 2026)
+
+Shared design applied through render/page_intro and auth states across all16 workspace pages. Added a lightweight decorative SVG header, breadcrumb treatment, consistent Material icons, theme palette, native workflow/KPI components, working Export results action, standard44px controls, shared spacing tokens and flat visual sections. Kept native titles/forms/actionguards, Plotly measurement-node sizing, hover handler and scoped/reversible fullscreen review behavior.
+
+Verification:137 isolated page/auth/presentation/performance-cache checks passed (70.52s), including all empty/populated workspace pages. Following layout changes,61focused checks passed (13.63s); later palette/navigation checks41passed (14.49s); final35chart/auth/export checks passed (6.13s). These runs overlap and are not additive. Compilation and git diff --check passed. Browser verification used synthetic records in a separate temporary workspace with Supabase disabled; no real data or models were changed. At1280px, workflow cards measured158px each, KPI cards153.8px each, selectors44px and export action44px. At390px, workflow cards measured130px each, controls44px and document width390px with no page overflow. Temporary viewport override was reset. Localhost restarted and health returnedok. Changes are local/uncommitted.
+
+
+## 2026-11-01 - Heatmap spacing and nested table rendering, v2.0.87
+
+Moved heatmap x-axis labels below the grid and reserved title/label space; dense matrices receive extra height. Corrected the skill-by-occupational-family dataframe so it is nested inside its disclosure expander. No counts, denominators or research data changed. `tests/test_design.py tests/test_result_views.py`: 56 passed. `compileall`, `git diff --check`, and localhost health all passed. App tests use synthetic fixtures; no authenticated browser screenshot was captured.
+
+## 2026-11-01 - Remove requisition codes from analytical job-title labels, v2.0.88
+
+Leading identifiers matching 2–6 letters followed by at least four digits and a separator are omitted from title-analysis labels (for example, `DE033824-Health Operations Analyst` displays as `health operations analyst`). Original titles remain unchanged in the source data and title-evidence exports. Verified against the active 500-ad file: eight matching ads now share the clean label; source titles are preserved. No research records were rewritten.
+
+Verification: `tests/test_job_profile.py tests/test_result_views.py tests/test_end_to_end.py`: 38 passed. Actual-data title check confirmed eight ads under the clean label and no code in analysis labels. `compileall`, `git diff --check`, and localhost health passed. Streamlit skill discovery found the installed Streamlit version predates the bundled references; this data-layer change uses no new Streamlit APIs. Local and uncommitted.
+
+## 2026-11-01 - Exclude occupational labels and context fragments from skill results, v2.0.89
+
+Skill charts and accepted-skill input now exclude clear occupational labels, incomplete standalone `data`, `industry experience`, and `base` (the lemma produced from source wording `based`). Excluded accepted rows remain visible in phrase-audit evidence with source wording and reviewer decisions; no annotations or source files are rewritten. Valid skill labels such as SQL, Python, data analysis, communication and data engineering remain eligible.
+
+Verification: chart, end-to-end, gap, large-scale, results, revision and extraction suites: 44 passed. On the local extraction file, the chart output contained none of the excluded terms and the phrase audit retained all 8 terms checked. The source extraction frame was unchanged. `compileall`, `git diff --check` and localhost health passed. App tests use software fixtures; no model was retrained. Local and uncommitted.

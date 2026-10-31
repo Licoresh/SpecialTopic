@@ -3,11 +3,14 @@ import re
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 import pandas as pd
-from .config import TEXT_FIELDS
+from .config import TEXT_FIELDS, FIELDS
 from .validation import quality_report
 
 TAGS = re.compile(r"<[^>]+>")
 SPACE = re.compile(r"\s+")
+JOB_LOWERCASE_FIELDS = set(FIELDS["jobs"]) - {"job_id", "posting_date", "url", "collected_at_utc"}
+DERIVED_FIELDS = {"original_text", "cleaned_text", "empty_text", "posting_date_parsed",
+                  "empty_job_description", "education_detected", "experience_detected"}
 EDUCATION = re.compile(r"\b(?:bachelor(?:['’]s)?(?:\s+degree)?|master(?:['’]s)?(?:\s+degree)?|doctoral(?:\s+degree)?|doctorate|ph\.?d\.?|undergraduate|associate(?:['’]s)?\s+degree|high\s+school|certification)\b", re.I)
 EXPERIENCE = re.compile(r"\b\d+(?:\s*[-–]\s*\d+)?\+?\s*(?:years?|yrs?)\s+(?:(?:of|relevant|professional|work|related|prior)\s+){0,3}experience\b", re.I)
 
@@ -19,6 +22,33 @@ def clean_text(value):
 
 def normalize_text(value):
     return clean_text(value).casefold()
+
+
+def analysis_jobs(frame):
+    """Refresh lowercase job-analysis fields without rewriting source evidence."""
+    out = frame.copy()
+    for field in JOB_LOWERCASE_FIELDS.intersection(out.columns):
+        out[field + "_clean"] = out[field].map(normalize_text)
+    fields = [field + "_clean" for field in TEXT_FIELDS["jobs"] if field in out]
+    if fields:
+        out["cleaned_text"] = out[fields].agg("\n".join, axis=1).str.strip()
+    elif "cleaned_text" in out:
+        out["cleaned_text"] = out.cleaned_text.map(normalize_text)
+    return out
+
+
+
+def analysis_job_values(frame):
+    """Return the normalized job-schema view beside the separate source evidence."""
+    refreshed = analysis_jobs(frame)
+    values = pd.DataFrame(index=refreshed.index)
+    identity = {"source_id", "job_id", "posting_date", "collected_at_utc"}
+    for field in ["source_id", *FIELDS["jobs"]]:
+        cleaned = field + "_clean"
+        source = cleaned if field not in identity and cleaned in refreshed else field
+        values[field] = refreshed.get(source, pd.Series("", index=refreshed.index))
+    return values
+
 
 def normalize_url(value):
     value = clean_text(value)
@@ -35,7 +65,14 @@ def normalize_url(value):
 def duplicate_ids(frame):
     cols = [c for c in frame if not c.startswith("_") and c not in ("source_id", "job_id") and not c.endswith("_clean")]
     normalized = frame[cols].map(normalize_text)
-    return frame.loc[normalized.duplicated(keep="first"), "source_id"].tolist()
+    duplicate = normalized.duplicated(keep="first")
+    # Reposted identical content may have different collection dates or URLs.
+    keys = ["job_title", "company", "location", "job_description"]
+    if set(keys).issubset(frame):
+        content = frame[keys].map(normalize_text)
+        complete = content.ne("").all(axis=1)
+        duplicate |= complete & content.duplicated(keep="first")
+    return frame.loc[duplicate, "source_id"].tolist()
 
 def clean_dataset(frame, kind, confirmed_duplicates=()):
     unknown = set(confirmed_duplicates) - set(duplicate_ids(frame))
@@ -43,8 +80,11 @@ def clean_dataset(frame, kind, confirmed_duplicates=()):
         raise ValueError("Only confirmed duplicate records may be removed here.")
     out = frame.loc[~frame.source_id.isin(confirmed_duplicates)].copy().fillna("")
     for col in list(out.columns):
-        if not col.startswith("_") and col != "source_id":
-            out[col + "_clean"] = out[col].map(normalize_url if col in ("url", "source_url") else clean_text)
+        if col.startswith("_") or col == "source_id" or col.endswith("_clean") or col in DERIVED_FIELDS:
+            continue
+        cleaner = (normalize_url if col in ("url", "source_url") else
+                   normalize_text if kind == "jobs" and col in JOB_LOWERCASE_FIELDS else clean_text)
+        out[col + "_clean"] = out[col].map(cleaner)
     if kind in TEXT_FIELDS:
         text_cols = [f + "_clean" for f in TEXT_FIELDS[kind] if f + "_clean" in out]
         out["original_text"] = out[[f for f in TEXT_FIELDS[kind] if f in out]].agg("\n".join, axis=1)

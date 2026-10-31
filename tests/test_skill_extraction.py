@@ -40,7 +40,9 @@ def test_human_label_preserved_and_model_shown_separately(jobs, labeled):
     model = train_model(labeled.phrase, labeled.label)
     human = pd.DataFrame([{"phrase":"Python", "normalized_phrase":"python", "label":"Human Reviewed Category", "psf_competency":""}])
     output, _ = extract_skills(jobs, "jobs", model=model, annotations=human)
-    row = output[output.original_phrase.eq("Python")].iloc[0]
+    row = output[output.normalized_phrase.eq("python")].iloc[0]
+    assert row.original_phrase == "python"  # Phrase spans come from lowercase cleaned text.
+    assert "Python" in row.original_text  # Raw source evidence retains its original wording.
     assert row.competency_category == row.human_label == "Human Reviewed Category"
     assert row.model_prediction in model.classes_
     assert row.agreement == "Mismatch" and 0 <= row.ml_confidence <= 1

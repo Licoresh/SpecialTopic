@@ -13,6 +13,8 @@ from .config import SEED
 from .evaluation import evaluate_model
 from .training_data import validate_labeled_data, source_disjoint_split
 
+SELECTION_BASIS = "training_cross_validation"
+
 MODEL_FILES = {"Multinomial Naive Bayes": "naive_bayes_pipeline.joblib", "Logistic Regression": "logistic_regression_pipeline.joblib"}
 VECTORIZER_CONFIG = {"lowercase": True, "ngram_range": (1, 2), "sublinear_tf": True, "min_df": 1, "max_features": 10000,
                      "token_pattern": r"(?u)(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)"}
@@ -38,7 +40,7 @@ def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_c
         if progress:
             progress(index / 2, f"Training and evaluating {name}")
         model = train_model(train.text, train.label, name, vectorizer_config)
-        evaluation = evaluate_model(model, test.text, test.label)
+        evaluation = {"metrics": {}}
         source_groups = train.source_id.fillna("").astype(str) if "source_id" in train else pd.Series(dtype=str)
         use_grouped_cv = not source_groups.empty and source_groups.str.strip().ne("").all() and source_groups.nunique() >= 2
         folds = min(5, int(train.label.value_counts().min()), int(source_groups.nunique()) if use_grouped_cv else 5)
@@ -65,6 +67,12 @@ def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_c
             evaluation["cv_note"] = "Cross-validation withheld: too few training examples or independent sources."
         evaluation.update(model=model, train_count=len(train), test_count=len(test), split={"strategy": split_strategy, "train_phrases": train.text.tolist(), "test_phrases": test.text.tolist(), "train_source_rows": train.source_row.tolist(), "test_source_rows": test.source_row.tolist(), "train_source_ids": sorted(train.source_id.astype(str).unique().tolist()) if "source_id" in train else [], "test_source_ids": sorted(test.source_id.astype(str).unique().tolist()) if "source_id" in test else []}, test_size=test_size, validation=validation)
         result[name] = evaluation
+    # Require a valid training-only choice before inspecting either model's holdout.
+    selected = select_best_model(result)
+    for name, evaluation in result.items():
+        holdout = evaluate_model(evaluation["model"], test.text, test.label)
+        evaluation["metrics"].update(holdout.pop("metrics"))
+        evaluation.update(holdout, selected=name == selected)
     if progress:
         progress(1., "Both models evaluated")
     return result
@@ -72,8 +80,23 @@ def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_c
 def select_best_model(results):
     if not results:
         raise ValueError("No evaluated models are available for selection.")
-    return max(results, key=lambda name: (results[name]["metrics"]["macro_f1"], results[name]["metrics"]["weighted_f1"],
-                                         float(results[name]["per_class"]["f1-score"].min()), -results[name]["metrics"].get("cv_macro_f1_std", 0.)))
+    keys = ("cv_macro_f1_mean", "cv_weighted_f1_mean", "cv_macro_f1_std")
+    for name, result in results.items():
+        metrics = result.get("metrics", {})
+        if metrics.get("cv_folds", 0) < 2 or any(
+            not isinstance(metrics.get(key), (int, float, np.number)) or not np.isfinite(metrics[key])
+            for key in keys
+        ):
+            raise ValueError(
+                f"Training-only cross-validation is unavailable for {name}. "
+                "Review more distinct job ads across every category, then retry training. "
+                "Holdout scores cannot select a model; existing saved models are unchanged."
+            )
+    return max(results, key=lambda name: (
+        results[name]["metrics"]["cv_macro_f1_mean"],
+        results[name]["metrics"]["cv_weighted_f1_mean"],
+        -results[name]["metrics"]["cv_macro_f1_std"],
+    ))
 
 def predict_category(model, phrases):
     if not len(phrases):

@@ -19,6 +19,7 @@ def get_nlp():
     return nlp
 
 def extract_ngrams(doc, stopwords=(), max_n=3):
+    text = doc.text
     blocked = set(stopwords)
     results = []
     for sentence in doc.sents:
@@ -38,7 +39,7 @@ def extract_ngrams(doc, stopwords=(), max_n=3):
                     continue
                 if n == 1 and (group[0].is_stop or group[0].text.casefold() in blocked):
                     continue
-                phrase = doc.text[group[0].idx:group[-1].idx + len(group[-1])]
+                phrase = text[group[0].idx:group[-1].idx + len(group[-1])]
                 normalized = " ".join((t.lemma_ or t.text).casefold() for t in group)
                 results.append((phrase, normalized, group[0].idx, group[-1].idx + len(group[-1])))
     return results

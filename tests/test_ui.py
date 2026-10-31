@@ -53,6 +53,8 @@ def test_training_selection_and_evaluation(ui_workspace, labeled):
     assert (ui_workspace/"models/competency_classifier.joblib").stat().st_mtime_ns == before
     evaluation = page_app("Model Evaluation")
     assert not evaluation.exception and not evaluation.error
+    assert any("Model selected by training cross-validation" in item.value for item in evaluation.caption)
+    assert not any("earlier model-selection procedure" in item.value for item in evaluation.warning)
     evaluation.text_input[0].set_value("Python programming").run(timeout=60)
     evaluation.button[0].click().run(timeout=60)
     assert not evaluation.exception and not evaluation.error
@@ -869,3 +871,20 @@ render(page)
     assert storage.read_json("extraction_metadata") == metadata
     assert (ui_workspace / "data/processed/extractions_original.csv").read_bytes() == original
     computation.assert_not_called()
+
+
+def test_legacy_evaluation_stays_readable_and_is_not_relabelled(ui_workspace, labeled):
+    import json
+    from src.model_training import train_and_save_models
+    save_annotations(labeled, "Synthetic reviewer")
+    train_and_save_models()
+    path = ui_workspace / "models/model_metadata.json"
+    metadata = json.loads(path.read_text())
+    metadata.pop("selection_basis")
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+    original = path.read_bytes()
+    app = page_app("Model Evaluation")
+    assert not app.exception and not app.error
+    assert any("earlier model-selection procedure" in item.value for item in app.warning)
+    assert any(item.label == "Selected holdout Macro F1" for item in app.metric)
+    assert path.read_bytes() == original

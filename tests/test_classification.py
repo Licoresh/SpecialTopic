@@ -36,3 +36,15 @@ def test_invalid_model(tmp_path):
     path.write_text("invalid")
     with pytest.raises(ValueError):
         load_model(path)
+
+
+def test_cv_category_omission_blocks_before_holdout(labeled):
+    from unittest.mock import patch
+    # Three distinct ads per category allow a holdout, but its training partition
+    # cannot also represent both categories in every grouped CV fold.
+    labeled = labeled.copy()
+    labeled["source_id"] = [f"SYNTHETIC-GROUP-{index // 5}" for index in range(len(labeled))]
+    with patch("src.classification.evaluate_model") as evaluate:
+        with pytest.raises(ValueError, match="Training-only cross-validation is unavailable"):
+            compare_models(labeled, test_size=.34)
+        evaluate.assert_not_called()

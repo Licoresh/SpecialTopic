@@ -88,11 +88,11 @@ Each teammate runs their own copy of the project and uses a unique **Reviewer ID
 
 Open **ML Training**. The page reports the usable phrase count, class counts and validation errors. Training becomes available only when the data has at least 30 distinct usable phrases, at least two categories, at least five phrases per category, complete provenance, no conflicting labels and a valid stratified split.
 
-These are minimum software checks, not a guarantee that the research sample is large or representative enough. With source IDs, the app holds out entire job ads and blocks training when every category cannot be represented on both sides. It compares TF-IDF + Multinomial Naive Bayes with TF-IDF + balanced Logistic Regression. Automatic refreshes use the default 20% holdout and are for iterative development; they are not final research evaluation. Freeze a separate human-reviewed sample for final reporting.
+These are minimum software checks, not a guarantee that the research sample is large or representative enough. With source IDs, the app holds out entire job ads and blocks training when every category cannot be represented on both sides. It compares TF-IDF + Multinomial Naive Bayes with TF-IDF + balanced Logistic Regression. The winner is chosen using training-only cross-validation (mean macro F1, mean weighted F1, then macro-F1 stability), before holdout scoring. If valid cross-validation is unavailable, review more distinct ads across every category; the run stops and preserves saved models instead of choosing by test scores. Automatic refreshes use the default 20% holdout and are for iterative development; they are not final research evaluation. Freeze a separate human-reviewed sample for final reporting.
 
 ## 8. Review model results
 
-Open **Model Evaluation** to inspect eligible holdout metrics, per-class results, confusion matrices, grouped cross-validation and individual predictions. Scores are withheld when the saved split shares job ads between training and test data or holds out fewer than two independent ads. Visit **Research readiness** for source coverage, reviewer-ID, phrase-quality and independent-review checks. These checks guide the team; they do not certify a study as publishable. Review errors and use an independently collected validation sample before making research claims.
+Open **Model Evaluation** to inspect eligible holdout metrics, per-class results, confusion matrices, grouped cross-validation and individual predictions. Holdout diagnostics are retained for both candidates, but do not select the winner. Earlier saved runs are marked as internal comparisons until retrained; their scores and models are not silently rewritten. Scores are withheld when the saved split shares job ads between training and test data or holds out fewer than two independent ads. Visit **Research readiness** for source coverage, reviewer-ID, phrase-quality and independent-review checks. These checks guide the team; they do not certify a study as publishable. Review errors and use an independently collected validation sample before making research claims.
 
 ## 9. Run the research analysis
 
@@ -118,3 +118,57 @@ Each save replaces only that occurrence's links. Other advertisements retain the
 **Shared deployment:** apply `supabase/migrations/20261018090000_occurrence_psf_mappings.sql` to the existing Supabase project before deploying this version. Fresh installations can use the updated `supabase_schema.sql`. The migration adds reviewer-accessible mapping decisions, version checks and an audit history; it does not change existing annotations or memberships. Local-only use stores current decisions in `data/processed/psf_mapping_reviews.csv` and requires no database migration.
 
 Keep original source files and URLs, reviewer IDs, collection dates, framework review decisions and sampling rules. Distinguish candidate extractions from accepted labels. Do not report metrics from test fixtures, automated suggestions or any model trained on unreviewed data.
+
+
+## Reading the job-market results
+
+The Job market page starts with the selected-ad count and workflow. Use Skills for demand rankings, Roles and locations for title, family and location comparisons, Qualifications for stated/missing requirements and experience summaries, and PSF-AAI demand for reviewed reference links. Chart order defaults to descending demand and can switch to alphabetical lookup; Items per chart limits the picture only. Numbers count distinct advertisements, not repeated phrase mentions. A source ad can request multiple skills, so skill counts need not sum to the number of ads. “Not mentioned” placeholders, experience/year-only phrases, occupational labels, incomplete fragments such as “data” or “base” (lemmatized from “based”), irrelevant labels and other non-skill text stay out of the skill and PSF-AAI charts; accepted excluded phrases remain visible in the phrase audit with their original evidence and saved label.
+
+Roles and locations opens with the most common job-title ranking. The alphabetical title view is for lookup; the related-role grouping uses a source family or documented title rule. The skill heatmap shows the top 15 skills across selected occupational families. Color is the percentage of advertisements in that family; hover shows the exact count and family size. Ads without chartable skills remain in each family denominator. Choose an occupational family and title to see the top ten skills and their share of that selected group. Open **View all skills for this selection** for the searchable full table. Groups with fewer than ten ads are flagged as small and descriptive. These counts describe the selected postings, not the entire occupation or Philippine labor market.
+
+Location charts show regional counts first. Choose a region to inspect its cities and municipalities. Exact-location counts may not cover ads with only a region, broad or remote locations, or unresolved text; those are reported separately. These are raw advertisement counts, not employment rates adjusted for population or labor force. Posting-month trends use chronological months and report missing dates and the observation range.
+
+In PSF-AAI demand, the role ranking is separate from the role-by-competency heatmap. Heatmap counts use distinct advertisements; color is the share within each role, and hover shows the role denominator. One ad can map to several competencies and roles, so percentages can overlap and must not be added to estimate unique ads. Displayed links are existing researcher-reviewed decisions, not automatic confirmations.
+
+Open Phrases needing clarification to inspect labels withheld from skill charts. Formatting duplicates are consolidated for display, but synonyms are not automatically merged. Original phrases, source IDs, saved labels and PSF-AAI decisions are retained. Correct ambiguous wording in Review and label phrases; a display screen is not a substitute for reviewing context. Category needs review identifies unresolved analytical categorization rather than a new skill type.
+
+Missing requirements are reported as text, not zero years. Education uses a horizontal chart ordered from lower to higher credential level; unspecified values stay below it as a count and percentage. Not specified does not mean not required. Experience-year frequency tables use explicit source fields and retain original wording. A median and observed range appear only when at least two advertisements provide exact single-value year requirements; ranges and open-ended wording are excluded from these statistics, not forced to a number. Open **Requirement fields and parsing evidence** to inspect missing or ambiguous entries; description matches remain unverified candidates. Reports exports include chart_skill_demand, source-linked phrase and family audits, role-by-competency counts, requirement coverage and experience parsing evidence. Full original result tables remain available alongside chart summaries. Display preferences do not narrow the complete exported tables.
+
+
+### Lowercase data and job-title grouping
+
+Review data quality now previews lowercase cleaned values first. Expand Original source evidence to see the untouched source wording. Results apply the lowercase analysis view to existing uploads as well; normalized_jobs exports contain the cleaned values. Case-sensitive IDs, dates and link paths are preserved, as are official PSF-AAI source records. No source file or saved researcher annotation is overwritten by a display change.
+
+In Roles and locations, Most common job titles consolidates clear seniority and branch/specialty variants when one recognized occupation is stated (for example, Junior Business Analyst - Banking Branch counts as business analyst). Clear leading requisition codes are omitted from analysis labels, while original titles remain in evidence. Source job families do not override this title-based chart. Composite or unrecognized titles stay distinct. Related role groups uses source-provided families; Specific titles (alphabetical) preserves normalized title wording for lookup. Inspect the common-title and role-group evidence tables to see each original title and grouping basis. Counts remain distinct advertisements; charts never merge job records.
+
+Chart order and Items per chart also appear in PSF Mapping, Employer–PSF Alignment and Unmapped results. Specific titles are alphabetized only in their explicit lookup view; the common-title ranking follows the chosen demand order. The visual pipeline is available before results and in Methodology. The written report download follows Context, Approach and Results.
+
+
+## Revision workflow and focused exploration (v2.0.77)
+
+Open Complete processing workflow before reading the results. It documents collection, screening, confirmed duplicate removal, cleaning, extraction, classification, PSF mapping, aggregation, visualization and interpretation.
+
+In Review data quality, open Screen advertisements and document exclusions to exclude out-of-scope or insufficient ads. Give a reason for every exclusion, confirm provenance and save. Original uploads remain archived. Duplicate candidates include identical title, employer, location and full description even when URLs or collection dates differ; inspect and confirm removals. Similar titles alone never remove an ad.
+
+Results builds charts only for the selected section. In Roles and locations, choose an occupational family, then an alphabetically listed title. Island group, region and city selectors narrow that selection; Reset exploration filters restores All. Broad, remote, conflicting and unknown places stay identified separately. The offline location lookup is a curated PSA PSGC subset, verified 31 October 2026; unfamiliar addresses require researcher review. Source wording and the geographical source/date are exportable.
+
+Qualifications shows unambiguous education levels from lowest to highest, with missing education reported separately. Alternative or multiple degrees remain in the evidence table. Experience bands contain only bounded numerical requirements wholly inside one band; minimum-only, spanning, month-only or descriptive wording remains reviewable. Original requirements are retained.
+
+Skills use distinct-ad counts and explicit Power BI/Excel spelling aliases; Python, R and other distinct tools remain separate. PSF-AAI competencies default to the active framework row order. The role heatmap counts distinct ads per linked reference role and source family; select manageable role/family sets. One ad may support several roles, so cells are not additive. Heatmap roles describe competency reference links, not inferred equivalence between job titles.
+
+### Repeatable local timing assessment
+
+Run from the project folder:
+
+```powershell
+..\.venv\Scripts\python.exe scripts/benchmark_analysis.py --jobs data/processed/mapped_jobs.csv --taxonomy data/processed/cleaned_psf_aai.csv --sizes 20 100 250 500 --output-dir benchmark-results
+```
+
+The script retains all input rows, reports potential duplicates separately, measures copies and writes timing files only. It never publishes labels, changes the active dataset or trains a model. It reports text volume, stage times, candidate limits and skipped classifier inference. Initial runs include initialization; later samples reuse caches. Database transfer, sign-in and browser rendering need separate measurements on the school devices/network. Keep benchmark outputs local; do not interpret them as research model quality.
+
+
+## Shared interface design (v2.0.78)
+
+All workspace pages and sign-in states share the same theme, heading treatment, outlined cards, control styling and focus indicators. The reference design is adapted into one visible card layer per section. Workflow steps and metric cards use equal heights within their rows. Standard controls use44px minimum heights; shared spacing tokens govern gaps and card padding. Decorative local SVG artwork appears on wide page headers and is hidden on narrower screens. It does not represent research findings or cause a model or image download.
+
+Interactive icons use Material Symbols. Primary actions use emerald; informational cues use blue, review cues amber, errors red and framework accents violet. Numbered workflow phases use a consistent phase palette. Chart highlights and alignment statuses use the same theme settings. These rules are recorded in AGENTS.md for future changes. Research tables, filters, saved labels and exported findings keep their existing behavior.

@@ -70,10 +70,10 @@ def export_research_report(tables, metadata):
         "",
         "**Report status:** descriptive draft generated from the currently selected records. Researcher review is required before citing findings.",
         "",
-        "## Study focus",
+        "## Context",
         "This analysis describes skills stated in Philippine AI- and analytics-related job advertisements and compares observed employer terminology with the TESDA Philippine Skills Framework for Analytics and Artificial Intelligence (PSF-AAI). It does not analyze curricula or infer worker proficiency.",
         "",
-        "## Dataset and method",
+        "## Approach",
         f"- Selected job advertisements: {metadata.get('dataset_counts', {}).get('jobs', 'Not recorded')}",
         f"- PSF-AAI competencies in the active reference: {metadata.get('dataset_counts', {}).get('psf_competencies', 'Not recorded')}",
         f"- Generated: {metadata.get('timestamp', 'Not recorded')}",
@@ -82,26 +82,53 @@ def export_research_report(tables, metadata):
         "- The psf_mapping table preserves each phrase-and-advertisement occurrence, its source text and advertisement URL, and each competency link. Reference URLs are stored separately. Competency demand counts unique advertisements per competency.",
         "- PSF alignment is a heuristic comparison against the active reference. Similarity thresholds are configurable research settings, not official TESDA standards.",
         "- Requirement phrases found by text patterns are evidence candidates. Researchers must inspect the cited source context before treating them as requirements.",
+        "- The common-title chart consolidates variants only when one recognized occupation is explicit; original titles and grouping basis remain in common_job_title_evidence. Composite or unrecognized titles stay distinct.",
         "",
-        "## Findings",
+        "## Results",
         "The tables below report observed counts in the selected sample. They do not estimate the full Philippine labor market.",
         "",
     ]
     preferred = [
-        ("employer_skill_demand", "Most frequently observed employer skills"),
-        ("job_title_counts", "Job titles"),
+        ("chart_skill_demand" if "chart_skill_demand" in tables else "employer_skill_demand", "Most frequently observed employer skills (distinct advertisements)"),
+        ("common_job_title_counts", "Most common normalized job titles (distinct advertisements)"),
+        ("common_job_title_evidence", "Common-title normalization and original wording"),
+        ("job_title_counts", "Specific job titles (alphabetical)"),
+        ("job_role_group_counts", "Related role groups"),
+        ("job_title_group_evidence", "Job-title grouping basis and original wording"),
         ("job_family_counts", "Source-provided occupational families"),
         ("education_requirement_counts", "Education requirements stated in source fields"),
+        ("education_level_counts", "Standardized education levels (ascending progression)"),
+        ("education_level_evidence", "Education normalization evidence and review flags"),
         ("experience_requirement_counts", "Experience requirements stated in source fields"),
+        ("requirement_field_coverage", "Requirement-field coverage (missing values remain missing)"),
+        ("experience_year_counts", "Unambiguous experience-year expressions in source fields"),
+        ("experience_band_counts", "Bounded experience groups"),
+        ("experience_band_evidence", "Experience grouping basis and unresolved requirements"),
+        ("job_title_family_counts", "Alphabetical specific titles within occupational families"),
+        ("location_hierarchy_counts", "Verified geographical groups and unresolved locations"),
+        ("location_evidence", "Location source wording and geographical basis"),
         ("employer_psf_alignment", "Employer skill comparison with PSF-AAI"),
         ("alignment_results", "Phrase-level PSF-AAI alignment results"),
         ("psf_competency_demand", "Distinct advertisements and skill phrases per PSF-AAI competency"),
+        ("psf_role_competency_demand", "Reviewed PSF-AAI competency demand by reference role"),
+        ("psf_role_family_demand", "Reference-role demand by source occupational family"),
+        ("chart_skill_family_demand", "Skill demand by occupational family"),
         ("unmapped_skills", "Frequently observed phrases not clearly mapped"),
     ]
     for key, heading in preferred:
         frame = tables.get(key)
         if frame is not None and not frame.empty:
             lines.extend([f"### {heading}", "", markdown_table(frame.head(100)), ""])
+    chart_review = tables.get("chart_phrase_review")
+    if chart_review is not None and not chart_review.empty:
+        lines.extend(["### Chart phrase-clarity audit", "",
+            f"{len(chart_review):,} source occurrences were withheld from the skill charts by conservative phrase-clarity rules. Original evidence and saved researcher labels remain unchanged. Review these phrases before interpreting them as skills; the screen cannot detect every ambiguity.", "",
+            markdown_table(chart_review.drop(columns=["original_text"], errors="ignore").head(100)), ""])
+    years = tables.get("experience_year_evidence")
+    if years is not None and not years.empty:
+        lines.extend(["### Experience-year parsing evidence", "",
+            "Only explicit experience fields contribute to parsed-year summaries. Missing and ambiguous rows stay visible here and are not treated as zero. Parsed stated years describe wording, not an inferred hiring limit.", "",
+            markdown_table(years.head(250)), ""])
     evidence = tables.get("requirement_evidence")
     if evidence is not None and not evidence.empty:
         lines.extend([

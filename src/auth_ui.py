@@ -11,6 +11,7 @@ def _login_panel(*, busy=False, email=""):
     suffix = "_busy" if busy else ""
     with st.container(key=f"login_shell{suffix}", horizontal_alignment="center"):
         with st.container(key=f"login_panel{suffix}", width=480, border=True):
+            st.html('''<div class="login-brand-mark" aria-hidden="true"></div>''')
             st.caption("FUTURE OF WORK / PHILIPPINES")
             st.title("Research team sign in")
             st.write("Your shared workspace for job-ad skills, framework mapping, and research review.")
@@ -23,6 +24,7 @@ def _login_panel(*, busy=False, email=""):
                 submitted = action_form_submit_button(
                     "Signing in…" if busy else "Sign in", key="team_sign_in_busy_submit" if busy else "team_sign_in_submit", cooldown=3.0,
                     type="primary", width="stretch", disabled=busy,
+                    icon=":material/progress_activity:" if busy else ":material/login:",
                 )
             with st.container(key=f"login_status{suffix}"):
                 status = st.empty()
@@ -80,8 +82,10 @@ def login_page():
 
 
 def require_workspace_access():
+    from .design import apply_design
     if not backend.configured():
         if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+            apply_design()
             st.title("Sign-in configuration required")
             st.error(
                 "This deployment requires Supabase sign-in, but SUPABASE_URL or "
@@ -93,6 +97,7 @@ def require_workspace_access():
     try:
         token = backend.get_token()
     except backend.SupabaseError as exc:
+        apply_design()
         st.error(str(exc))
         if action_button("Retry session connection"):
             st.rerun()
@@ -108,6 +113,7 @@ def require_workspace_access():
             st.session_state["_fow_login_error"] = "Your session has expired. Sign in again to continue."
             st.navigation([st.Page(login_page, title="Sign in", default=True)], position="hidden").run()
             st.stop()
+        apply_design()
         st.title("Workspace unavailable")
         st.error(str(exc))
         if action_button("Retry connection"):
@@ -136,10 +142,6 @@ def render_account_menu():
                 <h3>Your account</h3>
                 <div class="account-profile-identity">
                     <span class="account-profile-avatar" aria-hidden="true">
-                        <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
-                            <circle cx="20" cy="11" r="6"/>
-                            <path d="M8 35v-3a12 12 0 0 1 24 0v3Z"/>
-                        </svg>
                     </span>
                     <div class="account-profile-details"><div class="account-profile-email">{escape(str(email))}</div>
                     <div class="account-profile-role">{role_text}</div></div>

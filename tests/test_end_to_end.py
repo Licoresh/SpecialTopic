@@ -20,6 +20,13 @@ def test_input_to_workbook(workspace, jobs, taxonomy, labeled):
     assert extracted.psf_competency.ne("").any()
     tables, meta = analysis_bundle()
     assert not tables["employer_skill_demand"].empty
+    assert {"chart_skill_demand", "chart_skill_occurrences", "chart_phrase_review", "normalized_jobs"} <= set(tables)
+    assert tables["normalized_jobs"].job_title.eq(tables["normalized_jobs"].job_title.str.casefold()).all()
+    pd.testing.assert_series_equal(storage.read_frame("cleaned_jobs").job_title, jobs.job_title)
+    assert "original_text" not in tables["chart_skill_occurrences"]
+    assert "original_text" not in tables["chart_phrase_review"]
+    assert meta["chart_presentation"]["job_ad_denominator"] == len(jobs)
+    assert tables["chart_skill_demand"].employer_demand_count.le(len(jobs)).all()
     assert {"psf_mapping", "alignment_results", "unmapped_skills", "emerging_skills", "verified_psf_aai", "extracted_job_skills"} <= set(tables)
     assert meta["extraction"]["signature"] == input_signature()
     snapshot = {"jobs": storage.read_frame("cleaned_jobs"),
@@ -41,6 +48,34 @@ def test_changed_upload_requires_cleaning(workspace, jobs):
     assert input_signature() != before
     with pytest.raises(ValueError, match="mapped and cleaned"):
         run_extraction()
+
+
+def test_requirement_and_missing_phrases_remain_auditable_but_never_enter_skill_or_psf_demand(workspace, jobs, taxonomy):
+    from src.workflow import analysis_bundle
+    source_id = jobs.source_id.iloc[0]
+    extracted = pd.DataFrame([
+        {"extraction_id": "SYNTHETIC-SQL", "source_id": source_id, "source_type": "jobs",
+         "original_phrase": "SQL", "normalized_phrase": "sql", "accepted": True,
+         "competency_category": "Data / Analytics"},
+        {"extraction_id": "SYNTHETIC-MISSING", "source_id": source_id, "source_type": "jobs",
+         "original_phrase": "not mentioned", "normalized_phrase": "not mentioned", "accepted": True,
+         "competency_category": "Technical / Digital"},
+        {"extraction_id": "SYNTHETIC-YEARS", "source_id": source_id, "source_type": "jobs",
+         "original_phrase": "3+year", "normalized_phrase": "3+year", "accepted": True,
+         "competency_category": "Technical / Digital"},
+    ])
+
+    tables, meta = analysis_bundle(source_snapshot={
+        "jobs": jobs.iloc[:1], "taxonomy": taxonomy, "extracted": extracted,
+    })
+
+    assert tables["chart_skill_demand"].employer_skill.tolist() == ["sql"]
+    assert tables["psf_mapping"].normalized_skill.tolist() == ["sql"]
+    reasons = tables["chart_phrase_review"].set_index("original_phrase").review_reason
+    assert reasons["not mentioned"].startswith("Not reported")
+    assert reasons["3+year"] == "Experience-duration requirement, not a skill"
+    assert meta["chart_presentation"]["chartable_skill_ads"] == 1
+    assert meta["chart_presentation"]["ads_without_chartable_skill"] == 0
 
 
 def test_unreviewed_job_provenance_blocks_extraction(workspace, jobs):
