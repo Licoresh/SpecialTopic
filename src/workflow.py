@@ -219,7 +219,7 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
                 "model": {k: v for k, v in storage.read_json("selected_model", {}).items() if k != "metrics"}, "extraction": storage.read_json("extraction_metadata", {}),
                 "filters": {"jobs": job_filters, "skills": skill_filters, "alignment_status": statuses},
                 "data_preparation": storage.read_json("cleaning_jobs", {}),
-                "chart_presentation": {"version": 6, "job_ad_denominator": int(jobs.source_id.nunique()) if "source_id" in jobs else 0,
+                "chart_presentation": {"version": 9, "job_ad_denominator": int(jobs.source_id.nunique()) if "source_id" in jobs else 0,
                     "chartable_skill_ads": int(skills.source_id.nunique()) if "source_id" in skills else 0,
                     "ads_without_chartable_skill": max(0, int(jobs.source_id.nunique()) - int(skills.source_id.nunique())) if "source_id" in jobs and "source_id" in skills else 0,
                     "unclear_occurrences": len(chart_tables["chart_phrase_review"]),

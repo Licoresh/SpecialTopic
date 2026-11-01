@@ -18,18 +18,36 @@ _TITLE_ROLE_RULES = {
     "data analyst": r"\bdata(?:\s+analytics)?\s+analysts?\b",
     "data scientist": r"\bdata\s+scientists?\b",
     "data engineer": r"\bdata\s+engineers?\b",
+    "data analytics engineer": r"\bdata\s+analytics\s+engineers?\b",
     "business analyst": r"\bbusiness\s+analysts?\b",
-    "business intelligence analyst": r"\b(?:business\s+intelligence|bi)\s+analysts?\b",
+    "business intelligence analyst": r"\b(?:business\s+intelligence(?:\s*\(\s*bi\s*\))?|bi)\s+analysts?\b",
     "business intelligence developer": r"\b(?:business\s+intelligence|bi)\s+developers?\b",
     "machine learning engineer": r"\b(?:machine\s+learning|ml)\s+engineers?\b",
     "artificial intelligence engineer": r"\b(?:artificial\s+intelligence|ai)\s+engineers?\b",
+    "actuarial analyst": r"\bactuarial\s+analysts?\b",
+    "analytics consultant": r"\banalytics\s+consultants?\b",
+    "analytics engineer": r"(?<!data )\banalytics\s+engineers?\b",
+    "business analytics analyst": r"\bbusiness\s+analytics\s+analysts?\b",
+    "credit analyst": r"\bcredit\s+analysts?\b",
+    "financial analyst": r"\bfinancial\s+analysts?\b",
+    "financial planning analyst": r"\bfinancial\s+planning\s+analysts?\b",
+    "operations analyst": r"\boperations\s+analysts?\b",
+    "pricing analyst": r"\bpricing\s+analysts?\b",
+    "reporting analyst": r"\breporting\s+analysts?\b",
+    "risk analyst": r"\brisk\s+analysts?\b",
+    "sales analyst": r"\bsales\s+analysts?\b",
+    "statistical specialist": r"\bstatistical\s+specialists?\b",
+    "statistician": r"\bstatisticians?\b",
 }
 _TITLE_OCCUPATIONS = re.compile(
     r"\b(?:analysts?|scientists?|engineers?|developers?|specialists?|officers?|assistants?|consultants?|"
     r"architects?|designers?|managers?|coordinators?|administrators?|owners?|recruiters?|trainers?|"
-    r"instructors?|teachers?|auditors?|technicians?|operators?|executives?|directors?)\b"
+    r"instructors?|teachers?|auditors?|technicians?|operators?|executives?|directors?|statisticians?)\b"
 )
 _TITLE_OTHER_ROLE = re.compile(r"\b(?:manager|recruiter|trainer|instructor|teacher|owner|director|head)\b")
+_COMMON_TITLE_ALIASES = {
+    "business analyst (erp functional consultant)": "business analyst",
+}
 
 
 def _missing(value):
@@ -40,6 +58,30 @@ def _analysis_title(value):
     """Drop a clear leading requisition code from analysis labels, not source evidence."""
     original = "" if value is None or pd.isna(value) else str(value)
     return normalize_text(_JOB_CODE_PREFIX.sub("", original, count=1))
+
+
+def _explicit_title_role(value):
+    matches = [name for name, pattern in _TITLE_ROLE_RULES.items() if re.search(pattern, value)]
+    occupations = _TITLE_OCCUPATIONS.findall(value)
+    if len(matches) == 1 and len(occupations) == 1 and not _TITLE_OTHER_ROLE.search(value):
+        return matches[0]
+    return ""
+
+
+def _common_title_label(title):
+    alias = _COMMON_TITLE_ALIASES.get(title)
+    if alias:
+        return alias, "documented occupation alias"
+    parts = [part for part in re.split(r"\s*/\s*", title) if part]
+    if len(parts) > 1:
+        roles = [_COMMON_TITLE_ALIASES.get(part) or _explicit_title_role(part) for part in parts]
+        if all(roles) and len(set(roles)) == 1:
+            return roles[0], "repeated same occupation; modifiers consolidated"
+    role = _explicit_title_role(title)
+    if role:
+        basis = "explicit occupation match; modifiers consolidated" if title != role else "explicit occupation match"
+        return role, basis
+    return title, "specific or composite title retained"
 
 
 def _counts(frame, column, output_name):
@@ -69,11 +111,9 @@ def _job_role_groups(jobs):
         if not _missing(family) and family not in {"other", "unclassified", "general"}:
             group, basis = family, "source-provided job family"
         elif not _missing(title):
-            matches = [name for name, pattern in _TITLE_ROLE_RULES.items() if re.search(pattern, title)]
-            composite = re.search(r"[/|;&,]|\b(?:and|or|cum|manager|trainer|recruiter|instructor|teacher)\b", title)
-            role_heads = re.findall(r"\b(?:analysts?|scientists?|engineers?|developers?|specialists?|officers?|assistants?|consultants?)\b", title)
-            if len(matches) == 1 and len(role_heads) == 1 and not composite:
-                group, basis = matches[0], "explicit title rule: " + matches[0]
+            group, basis = _common_title_label(title)
+            if basis.startswith("explicit occupation match"):
+                basis = "explicit title rule: " + group
         else:
             group, basis = "", "missing title placeholder"
         rows.append({"source_id": job.get("source_id", str(index)), "original_job_title": original,
@@ -94,13 +134,7 @@ def _common_job_title_tables(jobs):
                          "normalized_job_title": title, "common_job_title": "",
                          "grouping_basis": "missing title placeholder"})
             continue
-        matches = [name for name, pattern in _TITLE_ROLE_RULES.items() if re.search(pattern, title)]
-        occupations = _TITLE_OCCUPATIONS.findall(title)
-        if title and len(matches) == 1 and len(occupations) == 1 and not _TITLE_OTHER_ROLE.search(title):
-            common_title = matches[0]
-            basis = "explicit occupation match; modifiers consolidated" if title != common_title else "explicit occupation match"
-        else:
-            common_title, basis = title, "specific or composite title retained"
+        common_title, basis = _common_title_label(title)
         rows.append({"source_id": job.get("source_id", str(index)), "original_job_title": original,
                      "normalized_job_title": title, "common_job_title": common_title, "grouping_basis": basis})
     evidence = pd.DataFrame(rows, columns=["source_id", "original_job_title", "normalized_job_title",

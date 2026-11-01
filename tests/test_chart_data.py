@@ -59,9 +59,50 @@ def test_technical_symbols_and_distinct_skill_meanings_are_preserved():
     phrases = ["C++", "C#", ".NET", "R", "SQL", "Power BI", "communication", "communication skills"]
     tables = skill_chart_tables(rows([("A", phrase, "Technical / Digital") for phrase in phrases]),
                                pd.DataFrame({"source_id": ["A"]}))
-    assert set(tables["chart_skill_demand"].employer_skill) == {phrase.casefold() for phrase in phrases}
-    assert len(tables["chart_skill_demand"]) == len(phrases)
+    assert set(tables["chart_skill_demand"].employer_skill) == {
+        "c++", "c#", ".net", "r", "sql", "power bi", "communication"
+    }
+    assert len(tables["chart_skill_demand"]) == len(phrases) - 1
     assert tables["chart_phrase_review"].empty
+
+
+def test_clear_skill_wording_variants_share_one_chart_label_across_views():
+    skills = rows([
+        ("A", "communication", "Soft / Enabling"),
+        ("A", "communication skills", "Soft / Enabling"),
+        ("A", "strong communication skills", "Soft / Enabling"),
+        ("B", "communication skill", "Soft / Enabling"),
+        ("A", "problem solve", "Soft / Enabling"),
+        ("A", "problem-solving", "Soft / Enabling"),
+        ("B", "problem solving skills", "Soft / Enabling"),
+        ("A", "collaboration", "Soft / Enabling"),
+        ("A", "strong collaboration", "Soft / Enabling"),
+        ("B", "collaboration skills", "Soft / Enabling"),
+        ("C", "written communication", "Soft / Enabling"),
+        ("C", "verbal communication", "Soft / Enabling"),
+        ("D", "communication and train", "Soft / Enabling"),
+    ])
+    skills["accepted"] = True
+    before = skills.copy(deep=True)
+    jobs = pd.DataFrame({"source_id": list("ABCD"), "job_family": ["analytics"] * 4})
+
+    charts = skill_chart_tables(skills, jobs)
+    demand = charts["chart_skill_demand"].set_index("employer_skill").employer_demand_count
+    family = charts["chart_skill_family_demand"].set_index("skill_label").job_ads
+
+    assert demand["communication"] == family["communication"] == 2
+    assert demand["problem solving"] == family["problem solving"] == 2
+    assert demand["collaboration"] == family["collaboration"] == 2
+    assert demand["written communication"] == demand["verbal communication"] == 1
+    assert not {"communication skills", "communication skill", "strong communication skills",
+                "problem solve", "problem-solving", "problem solving skills",
+                "strong collaboration", "collaboration skills"} & set(demand.index)
+    occurrences = charts["chart_skill_occurrences"]
+    for label, expected_ads in (("communication", 2), ("problem solving", 2), ("collaboration", 2)):
+        assert occurrences.loc[occurrences.skill_label.eq(label), "source_id"].nunique() == expected_ads
+    review = charts["chart_phrase_review"].set_index("original_phrase").review_reason
+    assert review["communication and train"].startswith("Duty wording")
+    pd.testing.assert_frame_equal(skills, before)
 
 
 def test_chart_aliases_merge_same_concept_without_rewriting_phrase_evidence():
@@ -91,6 +132,34 @@ def test_chart_aliases_merge_same_concept_without_rewriting_phrase_evidence():
     pd.testing.assert_frame_equal(skills, before)
 
 
+def test_learning_phrases_share_broader_chart_label_and_count_each_ad_once():
+    skills = rows([
+        ("A", "ability to learn", "Soft / Enabling"),
+        ("A", "learn and apply", "Soft / Enabling"),
+        ("B", "learn and apply", "Soft / Enabling"),
+        ("C", "ability to learn", "Soft / Enabling"),
+        ("D", "ability to learn and apply", "Soft / Enabling"),
+        ("E", "willingness to learn", "Soft / Enabling"),
+    ])
+    before = skills.copy(deep=True)
+    jobs = pd.DataFrame({"source_id": list("ABCDE"), "job_family": ["analytics"] * 5})
+
+    charts = skill_chart_tables(skills, jobs)
+    counts = charts["chart_skill_demand"].set_index("employer_skill").employer_demand_count
+    learning_rows = charts["chart_skill_occurrences"].loc[
+        charts["chart_skill_occurrences"].skill_label.eq("learning and application")]
+
+    assert counts["learning and application"] == 4
+    assert counts["willingness to learn"] == 1
+    assert learning_rows.source_id.nunique() == 4  # A has both variants but counts once.
+    family = charts["chart_skill_family_demand"].set_index("skill_label")
+    assert family.loc["learning and application", "job_ads"] == 4
+    assert set(skills.normalized_phrase) == {
+        "ability to learn", "learn and apply", "ability to learn and apply", "willingness to learn"
+    }
+    pd.testing.assert_frame_equal(skills, before)
+
+
 def test_legal_boilerplate_duty_fragments_and_outcome_metrics_stay_out_of_skill_charts():
     skills = rows([
         ("A", "protect by applicable", "Functional Skills and Competencies"),
@@ -103,7 +172,7 @@ def test_legal_boilerplate_duty_fragments_and_outcome_metrics_stay_out_of_skill_
     original = skills.copy(deep=True)
     tables = skill_chart_tables(skills, pd.DataFrame({"source_id": list("ABCDE")}))
 
-    assert tables["chart_skill_demand"].employer_skill.tolist() == ["ability to learn"]
+    assert tables["chart_skill_demand"].employer_skill.tolist() == ["learning and application"]
     reasons = tables["chart_phrase_review"].set_index("normalized_phrase").review_reason
     assert reasons["protect by applicable"].startswith("Equal-employment legal boilerplate")
     assert reasons["activities and work"].startswith("Generic duty wording")
@@ -111,6 +180,29 @@ def test_legal_boilerplate_duty_fragments_and_outcome_metrics_stay_out_of_skill_
     assert reasons["adoption insight"].startswith("Success-metric wording")
     # These additions affect graph presentation only; saved extraction/mapping eligibility is unchanged.
     assert set(accepted_skills(skills).normalized_phrase) == set(skills.normalized_phrase)
+    pd.testing.assert_frame_equal(skills, original)
+
+
+def test_company_copy_title_fragments_and_occupational_wording_stay_out_of_skill_charts():
+    phrases = ["allow individual", "allow individuals", "analyst work", "asset across strategy",
+               "assets across strategy", "ai base", "ai based", "ai prompt", "SQL"]
+    skills = rows([("A", phrase, "Technical / Digital") for phrase in phrases])
+    skills["accepted"] = True
+    original = skills.copy(deep=True)
+
+    charts = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A"]}))
+
+    assert charts["chart_skill_demand"].employer_skill.tolist() == ["sql"]
+    audit = charts["chart_phrase_review"].set_index("normalized_phrase").review_reason
+    assert audit["allow individual"].startswith("Company marketing wording")
+    assert audit["allow individuals"].startswith("Company marketing wording")
+    assert audit["analyst work"].startswith("Occupational experience wording")
+    assert audit["asset across strategy"].startswith("Employer corporate-profile wording")
+    assert audit["assets across strategy"].startswith("Employer corporate-profile wording")
+    assert audit["ai base"].startswith("Malformed")
+    assert audit["ai based"].startswith("Malformed")
+    assert audit["ai prompt"].startswith("Job-title fragment")
+    assert set(accepted_skills(skills).normalized_phrase) == set(phrases)
     pd.testing.assert_frame_equal(skills, original)
 
 
@@ -206,7 +298,7 @@ def test_vague_and_unfinished_wording_is_withheld_from_every_skill_chart():
     views = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A", "B"],
                                                       "job_family": ["analytics", "analytics"]}))
 
-    expected = {"sql", "python", "advanced sql", "communication skills"}
+    expected = {"sql", "python", "advanced sql", "communication"}
     assert set(views["chart_skill_demand"].employer_skill) == expected
     assert set(views["chart_skill_family_demand"].skill_label) == expected
     audit = views["chart_phrase_review"].set_index("original_phrase").review_reason
@@ -216,7 +308,9 @@ def test_vague_and_unfinished_wording_is_withheld_from_every_skill_chart():
     assert audit["Python, SQL, etc."].startswith("Unfinished list wording")
     assert audit["IT experience"].startswith("Vague wording")
     assert audit["Various"].startswith("Vague wording")
-    assert set(accepted_skills(skills).normalized_phrase.str.casefold()) == expected
+    assert set(accepted_skills(skills).normalized_phrase.str.casefold()) == {
+        "sql", "python", "advanced sql", "communication skills"
+    }  # Chart aliases do not rewrite the reviewed or training phrase.
 
 
 def test_status_filtered_skill_charts_keep_only_allowed_original_phrase_variants():

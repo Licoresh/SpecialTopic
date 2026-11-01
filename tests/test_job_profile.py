@@ -162,7 +162,7 @@ def test_related_titles_group_auditably_without_merging_distinct_or_composite_ro
     evidence = tables["job_title_group_evidence"]
     assert evidence.original_job_title.tolist() == values
     assert evidence.iloc[0].grouping_basis == "explicit title rule: data analyst"
-    assert evidence.iloc[8:].grouping_basis.eq("specific title retained").all()
+    assert evidence.iloc[8:].grouping_basis.eq("specific or composite title retained").all()
     labels = tables["job_title_counts"].job_title.tolist()
     assert labels == sorted(value.lower() for value in values)
     pd.testing.assert_frame_equal(jobs, original)
@@ -188,6 +188,40 @@ def test_common_titles_collapse_clear_seniority_and_branch_variants_only():
     assert evidence.loc["0", "grouping_basis"] == "explicit occupation match; modifiers consolidated"
     assert tables["job_role_group_counts"].iloc[0].job_role_group == "banking branch"
     pd.testing.assert_frame_equal(jobs, original)
+
+
+def test_documented_title_aliases_collapse_same_occupation_and_keep_source_evidence():
+    titles = ["Business Analyst (ERP Functional Consultant)", "Business Analyst",
+              "Data Engineer / Senior Data Engineer", "Data Engineer", "Senior Data Engineer",
+              "Business Analyst / Data Analyst"]
+    jobs = pd.DataFrame({"source_id": [str(i) for i in range(len(titles))], "job_title": titles})
+    original = jobs.copy(deep=True)
+
+    tables = job_profile_tables(jobs)
+    counts = tables["common_job_title_counts"].set_index("common_job_title").job_ads
+    evidence = tables["common_job_title_evidence"].set_index("source_id")
+
+    assert counts["business analyst"] == 2
+    assert counts["data engineer"] == 3
+    assert counts["business analyst / data analyst"] == 1
+    assert counts.sum() == len(titles)
+    assert evidence.loc["0", "original_job_title"] == titles[0]
+    assert evidence.loc["0", "common_job_title"] == "business analyst"
+    assert evidence.loc["0", "grouping_basis"] == "documented occupation alias"
+    assert evidence.loc["2", "original_job_title"] == titles[2]
+    assert evidence.loc["2", "common_job_title"] == "data engineer"
+    assert evidence.loc["2", "grouping_basis"] == "repeated same occupation; modifiers consolidated"
+    pd.testing.assert_frame_equal(jobs, original)
+
+
+def test_statistician_is_a_recognized_role_and_mixed_roles_stay_specific():
+    titles = ["Statistician", "Senior Statistician", "Statistician / Data Analyst"]
+    jobs = pd.DataFrame({"source_id": list("ABC"), "job_title": titles})
+
+    counts = job_profile_tables(jobs)["common_job_title_counts"].set_index("common_job_title").job_ads
+
+    assert counts["statistician"] == 2
+    assert counts["statistician / data analyst"] == 1
 
 
 def test_exact_missing_titles_are_not_graph_categories_but_source_evidence_is_retained():
