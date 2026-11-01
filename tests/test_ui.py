@@ -17,6 +17,34 @@ def wait_processing(app):
 def page_app(title):
     return AppTest.from_string(f"from src.ui import render\nrender({title!r})").run(timeout=60)
 
+
+def test_psf_heatmap_fragment_renders_empty_and_selected_states(ui_workspace):
+    source = '''
+import pandas as pd
+from src.ui import _competency_heatmap_view
+cells = pd.DataFrame([
+    {"psf_job_role": "synthetic analyst", "psf_competency": "python", "job_ads": 2},
+    {"psf_job_role": "synthetic analyst", "psf_competency": "sql", "job_ads": 1},
+    {"psf_job_role": "synthetic developer", "psf_competency": "python", "job_ads": 1},
+    {"psf_job_role": "synthetic developer", "psf_competency": "sql", "job_ads": 1},
+])
+roles = pd.DataFrame([
+    {"psf_job_role": "synthetic analyst", "job_ads": 2},
+    {"psf_job_role": "synthetic developer", "job_ads": 1},
+])
+competence = pd.DataFrame([
+    {"psf_competency": "python", "job_ads": 2},
+    {"psf_competency": "sql", "job_ads": 2},
+])
+_competency_heatmap_view(cells, roles, competence, 15)
+'''
+    app = AppTest.from_string(source).run(timeout=30)
+    assert not app.exception and not app.error
+    app.multiselect(key="result_competency_heatmap_competencies").set_value([]).run(timeout=30)
+    assert not app.exception and not app.error
+    assert any("Select at least one role and competency" in item.value for item in app.info)
+
+
 @pytest.fixture
 def ui_workspace(workspace, monkeypatch):
     monkeypatch.setattr(ui, "ROOT", workspace)
@@ -77,6 +105,7 @@ def test_overview_reports_actual_counts_and_keeps_all_workflow_actions(ui_worksp
 
 def test_upload_page_can_select_psf_reference(ui_workspace):
     app = page_app("Job Data Upload")
+    assert app.title[0].value == "Upload job data"
     selector = next(item for item in app.selectbox if item.label == "Dataset to upload")
     assert selector.options == ["Job advertisements (500-study dataset)", "TESDA PSF-AAI reference"]
     selector.set_value("TESDA PSF-AAI reference").run(timeout=60)

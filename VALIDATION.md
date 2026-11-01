@@ -1,12 +1,39 @@
 # Validation record
 
+## 2026-11-01 — Finish shared design and chart presentation, v2.0.108
+
+- Applied the warm ivory, maroon, gold and charcoal design across theme, shared page styling and charts. Included consistent sizing/spacing, compact workflow strip, overview icon alignment, readable heatmap axes, current hover-label behavior, and the visual direction/reference image.
+- Full suite: **476 passed** in 129.51 seconds, with one existing pandas `FutureWarning` at `src/review_queue.py:138`. Python compilation, `node --check src/chart_hover.js`, and `git diff --check` passed.
+- Live browser confirmation remains pending because the local workspace is interrupted by a Supabase connection error. No research records, reviewed labels, PSF-AAI mappings, or exports were changed.
+
+## 2026-11-01 — Exclude source-audited fragments from skill graphs, v2.0.107
+
+- Traced “allow individual” to company marketing about customers; also screened “analyst work” occupation/experience wording, “asset across strategy” corporate profile text, malformed “AI based,” and “AI prompt” from a job-title fragment. These now stay out of every skill graph with source-linked reasons in `chart_phrase_review`.
+- This is a chart-only screen. Ads, extraction rows, reviewer labels, training data, title counts, and PSF-AAI mappings remain unchanged. Chart presentation version advanced to 9.
+- Verification: 136 focused working-tree chart/profile/results/end-to-end/UI/scale tests passed in 63.53 seconds; the commit-specific chart/profile suite passed 33 tests in 1.30 seconds. Python compilation and `git diff --check` passed. Live chart verification is blocked by the running app's Supabase connection interruption. Commit `1bea8c7` was pushed to GitHub main.
+
+## 2026-11-01 — Consolidate repeated chart wording and role variants, v2.0.106
+
+- Employer-skill graphs share documented aliases for communication skills, collaboration variants, and problem-solving variants. Each ad counts once under its broader label. Written/verbal communication and distinct constructs remain separate. Chart aliases are presentation-only; original phrase evidence, researcher categories, training labels, and PSF-AAI mappings do not change.
+- Common job-title display combines “business analyst (erp functional consultant)” with “business analyst” and the same-role slash pair “data engineer / senior data engineer.” Distinct-role composites remain separate; original titles stay in evidence.
+- Updated the unmapped/emerging chart explanation and chart-presentation cache version. The local saved extraction still contains 20 source IDs and has 0 overlap with the 500-ad cleaned dataset, so current 500-ad skill counts cannot be verified until extraction is refreshed.
+- Read-only audit of the selected 500-ad `cleaned_jobs.csv`: the documented ERP title is grouped under `business analyst`; the same-role slash title is grouped under `data engineer`. Resulting chart counts are 61 and 45 distinct ads respectively. Original titles remain in `common_job_title_evidence`.
+- The local `extractions_original.csv` still contains only 20 source IDs, with 0 overlap against the selected 500 ads. Skill aliases are verified by synthetic regression tests, but updated skill totals for the final 500 cannot be confirmed until that dataset is extracted again.
+- Verification: 56 focused chart/profile/results/end-to-end tests and 79 UI/scale tests passed. Python compilation and `git diff --check` passed. No research labels, source data, training data, or PSF-AAI mappings were changed. Local and uncommitted.
+
+## 2026-11-01 — Group learning wording under a broader chart label, v2.0.105
+
+- The explicit chart aliases “ability to learn,” “learn and apply,” and direct normalized variants display as “learning and application” across shared employer-skill graphs. Each ad counts once under this label even if it contains both phrases. Other related concepts, such as willingness to learn or adaptability, remain separate unless researchers document the same construct.
+- Original phrase evidence, reviewer category labels, training inputs and PSF-AAI mappings are unchanged. Chart presentation schema advanced to version 7.
+- Focused graph suite: **36 passed** (`tests/test_chart_data.py tests/test_result_views.py tests/test_end_to_end.py`). Python compilation and `git diff --check` passed. No new extraction or visual-browser claim was made.
+
 ## 2026-11-01 — Apply chart relevance rules across result graphs, v2.0.104
 
 - One chart-eligible skill table feeds employer-skill rankings, categories, occupational-family comparisons, selected-title/location skills and unmapped/emerging charts. Added exact missing-placeholder handling for job-title labels and geography; source evidence is retained. Requisition codes, clear title variants, exact geography, structured education/experience and valid posting dates continue to use field-specific rules.
 - PSF-AAI reference labels and mapping decisions, and model-evaluation classes/metrics, keep their separate validated evidence rules. No broad text filter is applied to them. No research data, labels, mappings or training inputs were changed.
 - Read-only audit of the selected 500 ads: 220 common-title categories, no missing-title labels or leading requisition codes, and the seven intended source job families. Location evidence contains 248 exact localities, 98 region-only locations, 144 unfamiliar locations needing review, 9 broad/remote values, and 1 conflicting value; only resolved regions/localities enter those comparisons. Education has 1 unambiguous parsed level, 466 not-stated values and 33 review-needed values. All 500 explicit experience fields are blank, so no numeric experience distribution is invented. Posting dates have 239 usable ads across 28 months; the remaining 261 are not plotted as dates.
 - The saved local phrase extraction still has 0/500 source-ID overlap, so current 500-ad skill graph counts cannot be visually confirmed until extraction is refreshed.
-- Verification: full suite **471 passed** in 110.73 seconds, with one existing pandas `FutureWarning` at `src/review_queue.py:138`. Python compilation and `git diff --check` passed. No browser screenshot was used to claim refreshed 500-ad skill output. Included in the v2.0.104 commit.
+- Verification: full suite **471 passed** in 110.73 seconds, with one existing pandas `FutureWarning` at `src/review_queue.py:138`. Python compilation and `git diff --check` passed. No browser screenshot was used to claim refreshed 500-ad skill output. Local and uncommitted.
 
 ## 2026-11-01 — Screen questionable chart phrases and consolidate Scrum aliases, v2.0.103
 
@@ -15,7 +42,25 @@
 - Read-only scan of `cleaned_jobs.csv`: 500 unique ads. “Agile Scrum” occurs in 1 ad and is explicitly requested as understanding of Agile Scrum methodologies; “activities and work” occurs in 8; legal boilerplate in 74; “adoption of insights” in 1; “ability to learn” in 11; “data governance” in 39; literal “datum” in 0. The methodology phrase is treated as a requested work-method/knowledge competency, not a programming tool.
 - Important local-data limitation: `extractions_original.csv` contains 3,388 rows for 20 source IDs, with **0 IDs overlapping** the current 500-ad cleaned file. No final-500 chart totals or browser appearance are claimed from this stale extraction snapshot. Refresh phrase extraction for the 500 ads before relying on its displayed counts.
 - Chart exclusions/aliases affect presentation and audit only; no saved phrase labels, source text, PSF-AAI links, reviewer decisions, training records or job records were rewritten. PSF-AAI matching logic is unchanged.
-- Full suite before the final KPI-normalization edge: **469 passed** in 110.25 seconds, with one existing pandas `FutureWarning` in `src/review_queue.py:138`. Post-edge focused suite: **34 passed** (`tests/test_chart_data.py tests/test_result_views.py tests/test_end_to_end.py`). Python compilation and `git diff --check` passed. The Streamlit skill’s version-matched docs were unavailable because this environment has a pre-1.57 Streamlit install; no Streamlit APIs were changed. Included in the v2.0.104 commit.
+- Full suite before the final KPI-normalization edge: **469 passed** in 110.25 seconds, with one existing pandas `FutureWarning` in `src/review_queue.py:138`. Post-edge focused suite: **34 passed** (`tests/test_chart_data.py tests/test_result_views.py tests/test_end_to_end.py`). Python compilation and `git diff --check` passed. The Streamlit skill’s version-matched docs were unavailable because this environment has a pre-1.57 Streamlit install; no Streamlit APIs were changed. Local and uncommitted.
+
+## 2026-11-01 — Make result heatmaps and date coverage easier to read, v2.0.102
+
+- Put long skill and PSF-AAI competency labels on heatmap rows and comparison groups in columns. Counts, percentage denominators, hover evidence, and full tables are unchanged.
+- Multi-month posting-date coverage now uses chronological integer bars. A single month remains a metric; neither view presents sample coverage as market growth.
+- Updated the methodology and user guide to match chart order and interpretation.
+- Focused checks: **62 passed** (`tests/test_design.py tests/test_result_views.py`). Python compilation, `git diff --check`, and localhost health passed. The authenticated chart page could not be visually reviewed because localhost was signed out at the rerun prompt. No study data, labels, or PSF-AAI decisions changed. Local and uncommitted.
+
+## 2026-11-01 — Isolate PSF-AAI heatmap filters from page loading, v2.0.101
+
+- Moved heatmap role/competency controls, chart and evidence table into a Streamlit fragment. Editing these controls reruns only the heatmap, not the full Job Market page's shared-data loader. No chart definitions, data, labels or PSF-AAI mappings changed.
+- Focused synthetic UI check: **1 passed**, including clearing all selected competencies and rendering the empty-state message. Python compilation and `git diff --check` passed. Browser verification of the authenticated Job Market remains pending because localhost is signed out. Local and uncommitted.
+
+## 2026-11-01 — Keep overview metric icons inside their cards, v2.0.100
+
+- Overview metric icons now flow within the padded label row instead of sitting at the card's outer top-left edge. The icon tile is 40 px and aligned with the label; semantic icon colors, values, and metric definitions are unchanged.
+- Added a CSS regression assertion to the existing overview icon test. Focused design test: **1 passed**. Python compilation and `git diff --check` passed. Visual verification is pending because the local browser is signed out.
+- No research data, calculations, labels, or PSF-AAI mappings changed. Local and uncommitted.
 
 ## 2026-11-01 — Flag questionable benefit wording and learning variants, v2.0.99
 
@@ -23,6 +68,41 @@
 - “Ability to learn” and “learn and apply” are recorded as a human-review candidate pair. They remain separate until researchers compare source context and document whether they represent the same construct; chart changes do not rewrite saved labels or mappings.
 - `python -m py_compile src/analytics.py src/config.py src/workflow.py` and `git diff --check` passed. No extraction rows, reviewer labels or PSF mappings were modified.
 - A focused phrase-rule check confirmed the access-benefit wording is withheld while “ability to learn,” “learn and apply,” Python and SQL remain chart-eligible. The local server restarted at v2.0.99 and health returned `ok`. The restarted browser session required sign-in; the authenticated chart could not be visually rechecked because the shared-workspace connection was interrupted.
+
+## 2026-11-01 — Keep chart tooltips anchored and persistent, v2.0.98
+
+- The live page kept a prior hover observer after Streamlit reruns; it removed newer tooltip copies, causing the label to flicker or disappear. The current handler uses version-specific state and a distinct retained-label marker, so the older observer cannot remove it.
+- The retained label is cloned inside Plotly's original SVG group to preserve the exact chart coordinates. It updates on a new bar/cell and clears when the pointer leaves the chart.
+- Manually checked the real local Job Market page: bar tooltip stayed visible after moving onto it and waiting five seconds; heatmap tooltip stayed visible after moving onto it and waiting nearly two seconds. In both cases it stayed anchored beside the hovered mark. No data was edited.
+- `node --check src/chart_hover.js`, Python compilation, localhost health and `git diff --check` passed. No research data, labels, mappings or chart calculations changed.
+
+## 2026-11-01 — Use the visual reference and refine the research pipeline, v2.0.95
+
+- Created `DESIGN_REFERENCE_JOB_MARKET.png` as a project design benchmark. Its visible example counts are explicitly illustrative, not research findings. `DESIGN_DIRECTION.md` records which visual choices are adopted and which are intentionally adapted for filter scope, full evidence, exports and long chart labels.
+- Reworked the five-stage analysis overview into one compact bordered strip with unboxed stages. It reduces vertical space without treating the static workflow as progress or implying completion.
+- Responsive check at 390 px showed the steps using full-width rows; the compact breakpoint now fits two steps per row and keeps the final step in a readable row.
+- Focused design tests: **42 passed** in 5.31 seconds. Full suite: **464 passed** in 106.47 seconds. One pre-existing pandas `FutureWarning` remains at `src/review_queue.py:138`.
+- Python `compileall` and `git diff --check` passed. The isolated synthetic Job Market preview returned HTTP 200 and was screenshot-reviewed at 1280 × 720; it rendered all five steps within one surface and kept the stage copy readable.
+- The 390 px review had exposed single-column steps. The final responsive rule sets a 160 px stage basis and is covered by a regression assertion; a second narrow-viewport screenshot was not captured after that last adjustment. No real job ads, reviewed labels, PSF mappings, credentials or exports were used in the preview.
+- No packages were installed. Research calculations and stored data were unchanged. Local and uncommitted.
+
+## 2026-11-01 — Route-by-route UI and chart audit, v2.0.93
+
+- Visually reviewed synthetic previews for Overview, Upload, Data Quality, Competency Extraction, Manual Labeling, Training, Evaluation, Job Market Analysis, PSF Mapping, Employer–PSF Alignment, Unmapped Skills, Reports, Feedback, Methodology, Research Readiness, and Settings. Also inspected Job Market Analysis role/location and qualification views. The previews used 18 fictional postings and five fictional framework rows; no real data or credentials were used.
+- Kept the upload route heading above the dataset selector so the page purpose is clear before choosing a file type.
+- Upload heading now follows the selected dataset type on rerun; a full-suite failure exposed that the PSF-AAI selection retained a generic/stale title.
+- Fixed the sequential chart palette configuration (Streamlit requires 10 color stops; seven had caused fallback to default colors). Kept the categorical palette and chart values unchanged.
+- Shortened the selected-sample KPI label to avoid truncation; made the quality summary, source-ad context table and experience-band table use plain labels. The experience sort key is hidden from the page view; stored and report source tables are unchanged.
+- The default upload heading now names the selected dataset and updates on selection; a full-suite regression found the PSF-AAI selection had kept a generic title. Browser verification confirmed both Job Data and PSF-AAI headings.
+- Synthetic preview health returned HTTP 200. The refreshed chart used the configured maroon/taupe series with integer job-ad ticks; no sequential-palette fallback warning appeared. Data Quality headings were checked in the rendered table, and the upload, quality and results views were screenshot-reviewed at 1280 × 720.
+- Full suite: **463 passed** in 104.48 seconds. One existing pandas `FutureWarning` remains at `src/review_queue.py:138`. Python compileall and `git diff --check` passed. The visual preview is not a mobile-device or school-network benchmark.
+
+## 2026-11-01 — Apply shared visual direction across the research workspace, v2.0.91
+
+- Added DESIGN_DIRECTION.md with a route-by-route design brief inspired by academic campus colors; it explicitly avoids implying MSU-IIT affiliation. Applied a deep maroon, gold and warm-neutral theme across sign-in, workspace chrome, controls, tables, workflow steps and charts. Reduced oversized headings, standardized surfaces, 44 px controls and spacing, and made chart palette consistent without changing chart values.
+- Full suite: **461 passed** in 103.81 seconds. Includes empty and populated AppTest coverage for every route. One existing pandas FutureWarning remains at src/review_queue.py:138. Python compileall and git diff --check passed.
+- Localhost /_stcore/health returned ok. Visually inspected the sign-in page in the in-app browser at a narrow viewport; no credentials were entered. Authenticated route layout was checked through synthetic AppTest fixtures, not a real signed-in browser session.
+- No research data, labels, mappings, calculations, permission checks, routes or export scopes changed. Local and uncommitted.
 
 ## 2026-11-01 — Withhold vague and unfinished phrases from skill graphs, v2.0.90
 

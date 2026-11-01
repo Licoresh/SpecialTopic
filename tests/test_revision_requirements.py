@@ -48,6 +48,9 @@ def test_screening_keeps_mapped_fingerprint_and_archived_records(workspace,jobs)
     storage.save_json('cleaning_jobs',{'screening_exclusions':{excluded:'outside the selected occupation scope'}})
     app = AppTest.from_string('from src.ui import quality\nquality()').run(timeout=30)
     assert not app.exception
+    quality_view = app.dataframe[0].value
+    assert quality_view.columns.tolist() == ["Quality check", "Count"]
+    assert "Missing: job description" in quality_view["Quality check"].tolist()
     next(item for item in app.checkbox if 'Philippine provenance' in item.label).check().run(timeout=30)
     next(item for item in app.button if item.label == 'Save cleaned dataset').click().run(timeout=30)
     assert not app.exception and not app.error

@@ -116,6 +116,41 @@ def test_theme_primary_button_meets_text_contrast():
     assert (luminance(theme["backgroundColor"])+.05)/(luminance(theme["textColor"])+.05) >= 4.5
 
 
+def test_shared_visual_direction_is_present_in_theme_css_and_page_guide():
+    from src.design import CSS
+    root = Path(__file__).resolve().parents[1]
+    theme = tomllib.loads((root/".streamlit/config.toml").read_text())["theme"]
+    direction = (root/"DESIGN_DIRECTION.md").read_text(encoding="utf-8")
+    assert theme["primaryColor"] == "#78182B"
+    assert theme["chartCategoricalColors"][:2] == ["#78182B", "#D6A33D"]
+    assert theme["backgroundColor"] == "#FBF8F4"
+    assert theme["orangeColor"] != theme["violetColor"]
+    assert theme["orangeTextColor"] != theme["violetTextColor"]
+    assert "max-width: 1440px" in CSS
+    assert "--fow-control-height: 44px" in CSS
+    assert "min-height: 185px" not in CSS
+    assert "Sign in" in direction and "Review and label phrases" in direction
+    assert "Methodology" in direction and "Settings" in direction
+
+
+def test_sequential_chart_palette_has_supported_number_of_steps():
+    root = Path(__file__).resolve().parents[1]
+    theme = tomllib.loads((root/".streamlit/config.toml").read_text())["theme"]
+    assert len(theme["chartSequentialColors"]) == 10
+
+
+def test_pipeline_uses_one_outer_surface_and_keeps_all_stages_readable():
+    from src.design import CSS
+    app = AppTest.from_string("from src.ui import analysis_workflow\nanalysis_workflow()").run()
+    assert not app.exception
+    visible = " ".join(item.value for item in app.markdown) + " " + " ".join(item.value for item in app.caption)
+    for stage in ("Select job ads", "Clean and group", "Extract and review", "Compare PSF-AAI", "Describe results"):
+        assert stage in visible
+    assert "min-height: 112px" in CSS
+    assert "border-top: 3px solid var(--fow-accent)" not in CSS
+    assert "min-width: min(100%, 160px); flex: 1 1 160px;" in CSS
+
+
 def test_main_content_preserves_native_toolbar_clearance_at_all_breakpoints():
     import re
     from src.design import CSS
@@ -142,9 +177,9 @@ def test_review_fullscreen_styles_are_scoped_and_reversible():
 
 
 @pytest.mark.parametrize("foreground,background", [
-    ("#FFFFFF", "#173B38"), ("#BDE3D8", "#173B38"),
-    ("#173B38", "#F1F8F5"), ("#52666B", "#F5F7F8"),
-    ("#11695F", "#FFFFFF"),
+    ("#FFFFFF", "#4D1020"), ("#F4DFAF", "#4D1020"),
+    ("#4D1020", "#FBF3E1"), ("#647184", "#FBF8F4"),
+    ("#78182B", "#FFFFFF"),
 ])
 def test_product_design_text_pairs_meet_aa_contrast(foreground, background):
     def luminance(color):
@@ -168,6 +203,10 @@ def test_overview_metric_icons_use_shared_semantic_palette():
     from unittest.mock import patch
     from src.design import CSS, apply_design
     assert ".st-key-overview_metrics [data-testid=\"stMetricIcon\"]" in CSS
+    assert "position: static !important" in CSS
+    assert "inset: auto !important" in CSS
+    assert "transform: none !important" in CSS
+    assert ".st-key-overview_metrics [data-testid=\"stMetricLabel\"] { display: flex; align-items: center;" in CSS
     for selector in (
         ".st-key-overview_metric_1 [data-testid=\"stMetricIcon\"]",
         ".st-key-overview_metric_2 [data-testid=\"stMetricIcon\"]",
@@ -180,10 +219,10 @@ def test_overview_metric_icons_use_shared_semantic_palette():
     with patch("src.design.st.html") as html:
         apply_design()
     theme_css = html.call_args_list[0].args[0]
-    assert "--fow-accent-bg:#E8F4EE" in theme_css
-    assert "--fow-info-bg:#EDF4FD" in theme_css
-    assert "--fow-review-bg:#FFF3E8" in theme_css
-    assert "--fow-framework-bg:#F2EDFA" in theme_css
+    assert "--fow-accent-bg:#F7EDEF" in theme_css
+    assert "--fow-info-bg:#EEF4FA" in theme_css
+    assert "--fow-review-bg:#FBF3E1" in theme_css
+    assert "--fow-framework-bg:#FBF3E1" in theme_css
 
 
 def test_narrow_horizontal_workspaces_wrap_before_clipping_content():
@@ -206,7 +245,7 @@ def test_result_hover_is_explicit_readable_wrapped_and_preserves_counts():
     hover = figure.data[0].customdata[0][0]
     assert "<br>" in hover and "&lt;Research &amp; Test&gt;" in hover
     assert "%{y:,d}" in figure.data[0].hovertemplate
-    assert figure.layout.hoverlabel.bgcolor == "#173B38"
+    assert figure.layout.hoverlabel.bgcolor == "#4D1020"
     assert figure.layout.hoverlabel.font.color == "#FFFFFF"
     assert figure.layout.hovermode == "closest"
     pd.testing.assert_frame_equal(frame, before)
@@ -262,7 +301,7 @@ def test_ranked_bars_sort_aggregate_counts_after_selection_and_preserve_inputs()
     assert "%{customdata[1]:.1f}%" in figure.data[0].hovertemplate
     alphabetic = ranked_bar(frame, "skill", "job_ads", "Synthetic alphabetical", order="Alphabetical", limit=2)
     assert alphabetic.data[0].y.tolist() == ["alpha", "Beta"]
-    assert list(alphabetic.data[0].marker.color) == ["#71A89E", "#71A89E"]
+    assert list(alphabetic.data[0].marker.color) == ["#96857A", "#96857A"]
     pd.testing.assert_frame_equal(frame, before)
 
 
@@ -334,6 +373,27 @@ def test_role_family_heatmap_uses_within_role_share_and_keeps_counts():
     assert colorbar.title.text == "Share within role"
     assert colorbar.tickmode == "linear" and colorbar.tick0 == 0 and colorbar.dtick == 20
     assert colorbar.ticksuffix == "%" and figure.layout.coloraxis.cmin == 0 and figure.layout.coloraxis.cmax == 100
+
+
+def test_transposed_heatmap_keeps_group_denominators_and_readable_axes():
+    from src.visualization import heatmap
+    counts = pd.DataFrame([[25, 75], [5, 5]], index=["Analyst", "Engineer"], columns=["SQL", "communication and stakeholder management"])
+    counts.index.name = "occupational_family"
+    counts.columns.name = "skill_label"
+    shares = pd.DataFrame([[25, 75], [50, 50]], index=counts.index, columns=counts.columns)
+    totals = pd.Series([100, 10], index=counts.index)
+    figure = heatmap(counts, "Synthetic skill-family shares", share_matrix=shares,
+                     row_denominators=totals, share_label="Share of family ads",
+                     denominator_label="Advertisements in family", transpose=True)
+    trace = figure.data[0]
+    assert trace.y.tolist() == counts.columns.tolist()
+    assert trace.x.tolist() == counts.index.tolist()
+    assert trace.z.tolist() == [[25.0, 50.0], [75.0, 50.0]]
+    assert trace.customdata[0][1] == ["SQL", "Engineer", 5, 50.0, 10]
+    assert figure.layout.xaxis.tickangle == 0
+    assert figure.layout.xaxis.title.text == "Occupational family"
+    assert figure.layout.yaxis.title.text == "Skill label"
+    assert "<br>" in figure.layout.yaxis.ticktext[1]
 
 
 def test_heatmap_default_units_do_not_mislabel_model_evaluation_as_job_ads():

@@ -70,7 +70,7 @@ def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
     focused = figure_with_title(figures, "Top skills for all selected advertisements")
     assert dict(zip(focused.data[0].y, focused.data[0].x)) == {"sql": 2, "c++": 1, "collaboration": 1}
     metrics = {item.label: item.value for item in app.metric}
-    assert metrics["Selected job advertisements"] == "4"
+    assert metrics["Job ads in sample"] == "4"
     assert metrics["Distinct phrases withheld"] == "1"
     assert not any("Experience requirement fields" == fig.layout.title.text for fig in figures)
     app.selectbox(key="result_title_view").set_value("Specific titles (alphabetical)").run(timeout=30)
@@ -79,6 +79,16 @@ def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
     assert not any(fig.layout.title.text == "Top skills for engineer" for fig in figures)
     assert any(item.label == "c++" and item.value == "1" for item in app.metric)
     pd.testing.assert_frame_equal(tables["extracted_job_skills"], before)
+
+
+def test_experience_band_table_uses_readable_labels_and_hides_sort_key(monkeypatch):
+    tables = result_tables()
+    tables["cleaned_jobs"]["experience_requirement"] = ["2 years", "3 years", "2 years", "3 years"]
+    app, _ = result_app(monkeypatch, tables)
+    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
+    bands = next(frame.value for frame in app.dataframe if "Experience requirement" in frame.value.columns
+                 and "1–2 years" in frame.value["Experience requirement"].astype(str).tolist())
+    assert bands.columns.tolist() == ["Experience requirement", "Job advertisements", "Share of selected ads (%)"]
 
 
 def test_alphabetical_chart_order_and_linked_psf_counts(monkeypatch):
@@ -165,8 +175,8 @@ def test_skill_family_heatmap_uses_all_ads_in_each_family_as_denominator(monkeyp
     app.multiselect(key="result_skill_family_heatmap_families").set_value(["analytics"]).run(timeout=30)
     figure = figure_with_title(figures, "Top requested skills by occupational family")
     trace = figure.data[0]
-    row = trace.y.tolist().index("analytics")
-    column = trace.x.tolist().index("sql")
+    column = trace.x.tolist().index("analytics")
+    row = trace.y.tolist().index("sql")
     assert trace.z[row][column] == 100.0
     assert list(trace.customdata[row][column][2:]) == [2, 100.0, 2]
     assert "Advertisements in family: %{customdata[4]:,d}" in trace.hovertemplate
@@ -255,18 +265,18 @@ def test_psf_heatmap_compares_reviewed_competencies_with_role_denominators(monke
     app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
     figure = figure_with_title(figures, "Reviewed PSF-AAI competencies across reference roles")
     trace = figure.data[0]
-    analyst = trace.y.tolist().index("analyst")
-    sql = trace.x.tolist().index("sql")
-    visualization = trace.x.tolist().index("visualization")
-    assert trace.z[analyst][sql] == 100.0
-    assert trace.z[analyst][visualization] == 50.0
-    assert list(trace.customdata[analyst][visualization][2:]) == [1, 50.0, 2]
+    analyst = trace.x.tolist().index("analyst")
+    sql = trace.y.tolist().index("sql")
+    visualization = trace.y.tolist().index("visualization")
+    assert trace.z[sql][analyst] == 100.0
+    assert trace.z[visualization][analyst] == 50.0
+    assert list(trace.customdata[visualization][analyst][2:]) == [1, 50.0, 2]
     assert any("An ad can support several competencies" in item.value for item in app.caption)
     figures.clear()
     app.selectbox(key="result_psf_role").select("scientist").run(timeout=30)
     focused = figure_with_title(figures, "Reviewed PSF-AAI competencies across reference roles")
-    assert focused.data[0].y.tolist() == ["scientist"]
-    assert all("analyst" not in str(value) for value in focused.data[0].y)
+    assert focused.data[0].x.tolist() == ["scientist"]
+    assert all("analyst" not in str(value) for value in focused.data[0].x)
 
 
 def test_single_category_uses_headline_metric_with_scope(monkeypatch):
@@ -287,6 +297,19 @@ def test_single_posting_month_is_a_metric_not_a_trend(monkeypatch):
     assert not any(fig.layout.title.text == "Posting months represented in the dataset" for fig in figures)
     assert any(item.label == "2026-02" and item.value == "4" for item in app.metric)
     assert any("One month is present; this is coverage, not a time trend." in item.value for item in app.caption)
+
+
+def test_multiple_posting_months_use_chronological_count_bars(monkeypatch):
+    tables = result_tables()
+    tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-03-01", "2026-01-04", "2026-03-14", "2026-02-12"]
+    app, figures = result_app(monkeypatch, tables)
+    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
+    figure = figure_with_title(figures, "Posting months represented in the dataset")
+    assert figure.data[0].type == "bar"
+    assert figure.data[0].x.tolist() == ["2026-01", "2026-02", "2026-03"]
+    assert figure.data[0].y.tolist() == [1, 1, 2]
+    assert figure.layout.yaxis.tickformat == ",d"
+    assert any("This shows collection coverage, not market growth." in item.value for item in app.caption)
 
 
 

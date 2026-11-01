@@ -501,19 +501,25 @@ def home():
 
 def upload(kind=None):
     if kind is None:
+        upload_types = ["jobs", "psf_aai"]
+        selected_kind = st.session_state.get("upload_dataset_choice", "jobs")
+        if selected_kind not in upload_types:
+            selected_kind = "jobs"
+        title = "Upload job data" if selected_kind == "jobs" else "Upload PSF-AAI reference"
+        page_intro(title, "Upload the selected study dataset. The original file is archived unchanged; review its column matches before saving.")
         kind = st.selectbox(
             "Dataset to upload",
-            ["jobs", "psf_aai"],
+            upload_types,
+            index=upload_types.index(selected_kind),
+            key="upload_dataset_choice",
             format_func=lambda value: {
                 "jobs": "Job advertisements (500-study dataset)",
                 "psf_aai": "TESDA PSF-AAI reference",
             }[value],
         )
-    title = "Upload job data" if kind == "jobs" else "Upload PSF-AAI reference"
-    description = (
-        "Upload the selected study dataset. The original file is archived unchanged; review its column matches before saving."
-    )
-    page_intro(title, description)
+    else:
+        title = "Upload job data" if kind == "jobs" else "Upload PSF-AAI reference"
+        page_intro(title, "Upload the selected study dataset. The original file is archived unchanged; review its column matches before saving.")
     if kind == "jobs":
         st.caption("The original CSV stays on the computer that uploaded it. After cleaning, the active job dataset is shared through Supabase with signed-in teammates.")
     template = (Path(__file__).resolve().parents[1] / "data/templates" / f"{kind}_template.csv")
@@ -723,7 +729,11 @@ def quality():
         lambda: cached_clean(frame, kind, tuple(selected)), height=220
     )
     st.caption("Missing text remains empty; it is never invented. Raw columns are retained alongside *_clean columns. Source IDs identify the raw dataset hash and row.")
-    display(report)
+    report_view = report.rename(columns={"check": "Quality check", "count": "Count"}).copy()
+    report_view["Quality check"] = report_view["Quality check"].astype(str).map(
+        lambda value: "Total records" if value == "records" else value.replace("_", " ").capitalize()
+    )
+    display(report_view)
     if kind == "jobs":
         coverage = st.expander("Job-title, location and requirement summaries", key="quality_job_summaries", on_change="rerun")
         if coverage.open:
@@ -1495,7 +1505,12 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
     occurrence = occurrences.loc[extraction_id].to_dict() | {"extraction_id": extraction_id}
     source = jobs[jobs.source_id.eq(occurrence["source_id"])] if not jobs.empty else jobs
     if not source.empty:
-        display(source.reindex(columns=[key for key in ("source_id", "job_title", "company", "url") if key in source]))
+        source_record = source.reindex(columns=[key for key in ("source_id", "job_title", "company", "url") if key in source])
+        source_record = source_record.rename(columns={"source_id": "Source ad ID", "job_title": "Job title",
+                                                     "company": "Employer", "url": "Source URL"})
+        st.dataframe(source_record, width="stretch", hide_index=True, row_height=38, height=100,
+                     column_config={"Source URL": st.column_config.LinkColumn("Source URL")},
+                     alt="Source advertisement record for the selected competency review")
     with st.expander("Source advertisement text", expanded=True):
         st.text(str(occurrence.get("original_text", "")))
     if occurrence.get("pending_extraction") is True:
@@ -1568,17 +1583,17 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
 
 def analysis_workflow():
     stages = [
-        ("Select job ads", "Confirm scope, sources and the study dataset.", "article", "green"),
-        ("Clean and group", "Lowercase analysis text; reconcile title variants.", "auto_awesome", "blue"),
-        ("Extract and review", "Identify skills; clarify ambiguous phrases.", "content_paste_search", "orange"),
-        ("Compare PSF-AAI", "Check competency links against source evidence.", "link", "violet"),
-        ("Describe results", "Count distinct ads; chart and export findings.", "bar_chart", "red"),
+        ("Select job ads", "Confirm scope, sources and the study dataset.", "article"),
+        ("Clean and group", "Lowercase analysis text; reconcile title variants.", "auto_awesome"),
+        ("Extract and review", "Identify skills; clarify ambiguous phrases.", "content_paste_search"),
+        ("Compare PSF-AAI", "Check competency links against source evidence.", "link"),
+        ("Describe results", "Count distinct ads; chart and export findings.", "bar_chart"),
     ]
     st.markdown("**Analysis pipeline**")
-    with st.container(horizontal=True, gap="small", key="analysis_pipeline"):
-        for index, (title, detail, icon, color) in enumerate(stages, 1):
-            with st.container(border=True, width=150, key=f"pipeline_stage_{index}"):
-                st.badge(str(index), icon=f":material/{icon}:", color=color)
+    with st.container(horizontal=True, gap="small", key="analysis_pipeline", border=True, vertical_alignment="center"):
+        for index, (title, detail, icon) in enumerate(stages, 1):
+            with st.container(width="stretch", key=f"pipeline_stage_{index}"):
+                st.badge(str(index), icon=f":material/{icon}:", color="violet")
                 st.markdown(f"**{title}**")
                 st.caption(detail)
     with st.expander("Complete processing workflow"):
@@ -1648,7 +1663,7 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
 
 def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denominators=None,
                    share_label="Share within row group", denominator_label="Row-group advertisements",
-                   row_group_label="row group"):
+                   row_group_label="row group", transpose=False):
     if matrix.empty:
         st.caption("No evidence for this heatmap in the current selection.")
     elif matrix.size == 1:
@@ -1667,7 +1682,50 @@ def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row
     else:
         chart(heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
                       row_denominators=row_denominators, share_label=share_label,
-                      denominator_label=denominator_label))
+                      denominator_label=denominator_label, transpose=transpose))
+
+
+@st.fragment
+def _competency_heatmap_view(cells, roles, competence, limit):
+    """Rerun only this chart when its role or competency filters change."""
+    role_sizes = roles.set_index("psf_job_role").job_ads
+    role_options = sorted(cells.psf_job_role.unique(), key=lambda name: (-role_sizes.get(name, 0), name))
+    competency_sizes = competence.set_index("psf_competency").job_ads
+    competency_options = sorted(cells.psf_competency.unique(),
+                                key=lambda name: (-competency_sizes.get(name, 0), name))
+    role_default = role_options[:8]
+    competency_default = competency_options[:min(limit, 15)]
+    role_key = "result_competency_heatmap_roles"
+    competency_key = "result_competency_heatmap_competencies"
+    selected_roles = [name for name in st.session_state.get(role_key, role_default) if name in role_options]
+    selected_competencies = [name for name in st.session_state.get(competency_key, competency_default)
+                             if name in competency_options]
+    if selected_roles != st.session_state.get(role_key, role_default):
+        st.session_state[role_key] = selected_roles
+    if selected_competencies != st.session_state.get(competency_key, competency_default):
+        st.session_state[competency_key] = selected_competencies
+
+    chosen_roles = st.multiselect("Reference roles in the heatmap", role_options,
+                                  default=role_default, key=role_key)
+    chosen_competencies = st.multiselect("PSF-AAI competencies in the heatmap", competency_options,
+                                         default=competency_default, key=competency_key)
+    selected_cells = cells[cells.psf_job_role.isin(chosen_roles) & cells.psf_competency.isin(chosen_competencies)]
+    if selected_cells.empty:
+        st.info("Select at least one role and competency with reviewed mapping evidence.")
+    else:
+        matrix = selected_cells.pivot(index="psf_job_role", columns="psf_competency", values="job_ads")
+        matrix = matrix.reindex(index=chosen_roles, columns=chosen_competencies).fillna(0).astype(int)
+        row_denominators = roles.set_index("psf_job_role").job_ads.reindex(matrix.index).fillna(0).astype(int)
+        shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
+        result_heatmap(matrix, "Reviewed PSF-AAI competencies across reference roles", count_label="Job advertisements",
+                       share_matrix=shares, row_denominators=row_denominators,
+                       share_label="Share of role ads", denominator_label="Advertisements linked to role",
+                       row_group_label="reference role", transpose=True)
+        st.caption("Cells count distinct advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Color uses the share of all ads linked to that role; hidden competencies stay in the denominator. An ad can support several competencies and roles, so percentages may overlap and cell counts must not be summed into unique ads.")
+    table = st.expander("View all role-by-competency counts", key="result_role_competency_table", on_change="rerun")
+    if table.open:
+        display(cells.rename(columns={"psf_job_role": "PSF-AAI reference role", "psf_competency": "PSF-AAI competency",
+                                      "job_ads": "Job advertisements"}))
 
 
 def _job_market_results(tables, meta):
@@ -1681,7 +1739,7 @@ def _job_market_results(tables, meta):
     analysis_workflow()
     unclear_count = unclear.normalized_phrase.nunique() if not unclear.empty else 0
     metrics = [
-        ("Selected job advertisements", denominator, "work", "From selected dataset", "green"),
+        ("Job ads in sample", denominator, "work", "From selected dataset", "green"),
         ("Distinct skills in charts", len(demand), "bar_chart", "Unique chart skills", "blue"),
         ("Distinct phrases withheld", unclear_count, "chat_bubble", "Kept in audit" if unclear_count else "No phrases withheld", "orange" if unclear_count else "green"),
     ]
@@ -1749,7 +1807,7 @@ def _job_market_results(tables, meta):
             st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
             st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
         with st.expander(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)"):
-            st.caption("Missing-value placeholders, experience/year wording, credentials, irrelevant labels and unclear fragments are omitted from skill charts and automatic PSF-AAI demand. Original phrase evidence and saved labels remain in this audit; source-field requirements are summarized separately under Qualifications.")
+            st.caption("Missing values, experience wording, vague-only descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. Original phrases and saved labels stay here for review; specific skill mentions remain counted.")
             display(unclear)
         with st.expander("Skill-demand table"):
             display(demand)
@@ -1806,7 +1864,7 @@ def _job_market_results(tables, meta):
                 result_heatmap(matrix, "Top requested skills by occupational family", count_label="Job advertisements",
                                share_matrix=shares, row_denominators=row_denominators,
                                share_label="Share of family ads", denominator_label="Advertisements in family",
-                               row_group_label="occupational family")
+                               row_group_label="occupational family", transpose=True)
             missing_family_ads = int(family_ads.loc[family_ads.job_family.eq("not stated"), "family_ads"].sum())
             if missing_family_ads:
                 st.caption(f"Occupational family not stated or classifiable: {missing_family_ads:,} ads; excluded from this comparison.")
@@ -1900,9 +1958,16 @@ def _job_market_results(tables, meta):
             dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
             monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
             if len(monthly) > 1:
-                trend = px.line(monthly, x="month", y="postings", title="Posting months represented in the dataset", labels={"month": "Posting month", "postings": "Job advertisements"})
-                trend.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero")
-                chart(trend)
+                coverage = px.bar(monthly, x="month", y="postings", title="Posting months represented in the dataset",
+                                  labels={"month": "Posting month", "postings": "Job advertisements"},
+                                  color_discrete_sequence=[st.get_option("theme.primaryColor")])
+                coverage.update_traces(texttemplate="%{y:,d}", textposition="outside", cliponaxis=False,
+                                       hovertemplate="<b>%{x}</b><br>Job advertisements: %{y:,d}<extra></extra>")
+                coverage.update_xaxes(type="category", categoryorder="array", categoryarray=monthly.month.tolist(),
+                                      title="Posting month", automargin=True)
+                coverage.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero",
+                                      title="Job advertisements", showgrid=False, zeroline=False)
+                chart(coverage)
             elif len(monthly) == 1:
                 result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
                                      monthly.postings.iloc[0], "Job advertisements",
@@ -1944,7 +2009,11 @@ def _job_market_results(tables, meta):
         elif len(exact_years) == 1:
             st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
         if not profile["experience_band_counts"].empty:
-            display(profile["experience_band_counts"])
+            bands = profile["experience_band_counts"].drop(columns="band_order", errors="ignore").rename(
+                columns={"experience_band": "Experience requirement", "job_ads": "Job advertisements",
+                         "job_ads_pct": "Share of selected ads (%)"}
+            )
+            display(bands)
         else:
             st.caption("No numerical requirement falls unambiguously within a single experience band.")
         st.caption("Bands include only numerical requirements contained entirely within one interval. Spanning, open-ended and descriptive requirements remain in the evidence table rather than being forced into a band.")
@@ -1996,41 +2065,7 @@ def _job_market_results(tables, meta):
             plot(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles")
             cells = psf_views["psf_role_competency_demand"]
             if not cells.empty:
-                role_sizes = roles.set_index("psf_job_role").job_ads
-                role_heatmap_options = sorted(cells.psf_job_role.unique(), key=lambda name: (-role_sizes.get(name, 0), name))
-                competency_sizes = competence.set_index("psf_competency").job_ads
-                competency_heatmap_options = sorted(cells.psf_competency.unique(),
-                                                    key=lambda name: (-competency_sizes.get(name, 0), name))
-                chosen_role_default = role_heatmap_options[:8]
-                chosen_competency_default = competency_heatmap_options[:min(limit, 15)]
-                role_key, competency_key = "result_competency_heatmap_roles", "result_competency_heatmap_competencies"
-                chosen_roles_state = [name for name in st.session_state.get(role_key, chosen_role_default) if name in role_heatmap_options]
-                chosen_competencies_state = [name for name in st.session_state.get(competency_key, chosen_competency_default) if name in competency_heatmap_options]
-                if chosen_roles_state != st.session_state.get(role_key, chosen_role_default):
-                    st.session_state[role_key] = chosen_roles_state
-                if chosen_competencies_state != st.session_state.get(competency_key, chosen_competency_default):
-                    st.session_state[competency_key] = chosen_competencies_state
-                chosen_roles = st.multiselect("Reference roles in the heatmap", role_heatmap_options,
-                                              default=chosen_role_default, key=role_key)
-                chosen_competencies = st.multiselect("PSF-AAI competencies in the heatmap", competency_heatmap_options,
-                                                     default=chosen_competency_default, key=competency_key)
-                selected_cells = cells[cells.psf_job_role.isin(chosen_roles) & cells.psf_competency.isin(chosen_competencies)]
-                if selected_cells.empty:
-                    st.info("Select at least one role and competency with reviewed mapping evidence.")
-                else:
-                    matrix = selected_cells.pivot(index="psf_job_role", columns="psf_competency", values="job_ads")
-                    matrix = matrix.reindex(index=chosen_roles, columns=chosen_competencies).fillna(0).astype(int)
-                    row_denominators = roles.set_index("psf_job_role").job_ads.reindex(matrix.index).fillna(0).astype(int)
-                    shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
-                    result_heatmap(matrix, "Reviewed PSF-AAI competencies across reference roles", count_label="Job advertisements",
-                                   share_matrix=shares, row_denominators=row_denominators,
-                                   share_label="Share of role ads", denominator_label="Advertisements linked to role",
-                                   row_group_label="reference role")
-                    st.caption("Cells count distinct advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Color uses the share of all ads linked to that role; hidden competencies stay in the denominator. An ad can support several competencies and roles, so percentages may overlap and cell counts must not be summed into unique ads.")
-                role_competency_table = st.expander("View all role-by-competency counts", key="result_role_competency_table", on_change="rerun")
-                if role_competency_table.open:
-                    display(cells.rename(columns={"psf_job_role": "PSF-AAI reference role", "psf_competency": "PSF-AAI competency",
-                                                  "job_ads": "Job advertisements"}))
+                _competency_heatmap_view(cells, roles, competence, limit)
             else:
                 st.info("No role-level PSF-AAI competency evidence is available for this selection.")
         else:
@@ -2110,7 +2145,7 @@ def research_page(page):
                 shown = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
                 if not shown.empty:
                     result_count_chart(shown, "skill_label", "job_ads", title, order="Highest demand", limit=limit)
-                st.caption("Counts cover the original unmapped phrase variants only, once per selected ad. Groups with mapped evidence in the current results are omitted from this chart; occurrence details remain below. Unclear phrases remain in the chart_phrase_review export.")
+                st.caption("Documented wording variants share one label; each ad counts once. This table retains original phrase evidence. Mapped groups are omitted; unclear phrases remain in the chart audit.")
             display(ordered_result_table(frame, "employer_skill", order, "employer_demand_count"))
         st.caption(f"Emerging-candidate screening requires at least {meta['settings']['emerging_min_jobs']} distinct job ads and NOT MAPPED status. Rejected/unreviewed n-grams are not counted as employer skills.")
     elif page == "Reports":

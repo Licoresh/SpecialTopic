@@ -15,7 +15,12 @@ def style_chart(fig):
     if is_heatmap:
         ticktext = fig.layout.xaxis.ticktext or ()
         longest_tick = max((len(line) for label in ticktext for line in str(label).split("<br>")), default=12)
-        margin = dict(l=70, r=110, t=75, b=min(225, max(135, 90 + 4 * longest_tick)))
+        if fig.layout.xaxis.tickangle == 0:
+            max_lines = max((str(label).count("<br>") + 1 for label in ticktext), default=1)
+            bottom = min(170, max(85, 55 + 18 * max_lines))
+        else:
+            bottom = min(225, max(135, 90 + 4 * longest_tick))
+        margin = dict(l=70, r=110, t=75, b=bottom)
     fig.update_layout(font=dict(family="Arial, sans-serif", size=13, color=st.get_option("theme.textColor")),
                       paper_bgcolor=st.get_option("theme.backgroundColor"),
                       plot_bgcolor=st.get_option("theme.backgroundColor"),
@@ -23,7 +28,8 @@ def style_chart(fig):
                       title=dict(font=dict(size=17), x=.02, xanchor="left"),
                       legend=dict(orientation="h", y=-.2, x=0),
                       hovermode="closest",
-                      hoverlabel=dict(bgcolor="#173B38", bordercolor="#173B38",
+                      colorway=st.get_option("theme.chartCategoricalColors"),
+                      hoverlabel=dict(bgcolor="#4D1020", bordercolor="#4D1020",
                                       font=dict(color="#FFFFFF", size=13), align="left", namelength=-1))
     fig.update_xaxes(automargin=True, title_font_size=12)
     fig.update_yaxes(automargin=True, title_font_size=12)
@@ -46,7 +52,8 @@ def bar(frame, x, y, title, color=None):
         data["_hover_group"] = frame[color].map(_hover_text)
         custom.append("_hover_group")
         group = "%{customdata[1]}<br>"
-    fig = px.bar(data, x=x, y=y, color=color, title=title, template="plotly_white", custom_data=custom)
+    fig = px.bar(data, x=x, y=y, color=color, title=title, template="plotly_white", custom_data=custom,
+                 color_discrete_sequence=st.get_option("theme.chartCategoricalColors"))
     is_count = y in ("job_ads", "employer_demand_count")
     value = "%{y:,d}" if is_count else "%{y}"
     fig.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>" + group + escape(y.replace("_", " ").capitalize()) + ": " + value + "<extra></extra>")
@@ -65,7 +72,8 @@ def distribution(frame, field, title, limit=20, *, order="Highest demand"):
     # Horizontal bars keep category and competency names readable on narrow screens.
     data["_hover_label"] = data[field].map(_hover_text)
     fig = px.bar(data, x="count", y=field, orientation="h", title=title, custom_data=["_hover_label"],
-                 labels={"count": "Count", field: field.replace("_", " ").capitalize()})
+                 labels={"count": "Count", field: field.replace("_", " ").capitalize()},
+                 color_discrete_sequence=st.get_option("theme.chartCategoricalColors"))
     fig.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>Count: %{x:,d}<extra></extra>")
     if field == "status":
         colors = {"aligned": st.get_option("theme.primaryColor"), "partially aligned": st.get_option("theme.orangeColor"),
@@ -103,10 +111,11 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
         custom.append(percentage)
         hover += "<br>Share of selected ads: %{customdata[1]:.1f}%"
     fig = px.bar(data, x=value, y=label, orientation="h", custom_data=custom,
-                 title=title, labels={value: "Job advertisements", label: label.replace("_", " ").capitalize()})
-    colors = [st.get_option("theme.primaryColor") if order == "Highest demand" and count == data[value].max() else "#71A89E" for count in data[value]]
+                 title=title, labels={value: "Job advertisements", label: label.replace("_", " ").capitalize()},
+                 color_discrete_sequence=st.get_option("theme.chartCategoricalColors"))
+    colors = [st.get_option("theme.primaryColor") if order == "Highest demand" and count == data[value].max() else "#96857A" for count in data[value]]
     fig.update_traces(marker_color=colors, texttemplate="%{x:,d}", textposition="outside",
-                      textfont=dict(color="#173B38"), cliponaxis=False,
+                      textfont=dict(color="#24303D"), cliponaxis=False,
                       hovertemplate=hover + "<extra></extra>")
     maximum = data[value].max() if not data.empty else 0
     fig.update_xaxes(**count_axis(maximum), range=[0, max(1, maximum * 1.18)], title="Job advertisements",
@@ -126,7 +135,7 @@ def education_bar(frame):
     fig = px.bar(data, x="job_ads", y="education_level", orientation="h", custom_data=["job_ads_pct"],
                  title="Education levels stated in advertisements",
                  labels={"education_level": "Education level", "job_ads": "Job advertisements"})
-    fig.update_traces(marker_color="#71A89E", texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
+    fig.update_traces(marker_color=st.get_option("theme.primaryColor"), texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
                       hovertemplate="<b>%{y}</b><br>Job advertisements: %{x:,d}<br>Share of selected ads: %{customdata[0]:.1f}%<extra></extra>")
     maximum = data.job_ads.max() if not data.empty else 0
     fig.update_xaxes(**count_axis(maximum), range=[0, max(1, maximum * 1.18)], title="Job advertisements",
@@ -139,7 +148,7 @@ def education_bar(frame):
 
 
 def heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denominators=None,
-            share_label="Share within row group", denominator_label="Row-group advertisements"):
+            share_label="Share within row group", denominator_label="Row-group advertisements", transpose=False):
     if matrix.empty:
         return go.Figure().update_layout(title=title)
     display_matrix = matrix
@@ -152,10 +161,14 @@ def heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denomi
         display_matrix = shares
         if row_denominators is not None:
             denominators = pd.to_numeric(pd.Series(row_denominators), errors="coerce").reindex(matrix.index).fillna(0)
-    x_label = str(matrix.columns.name or "Category").replace("_", " ").capitalize()
-    y_label = str(matrix.index.name or "Category").replace("_", " ").capitalize()
+    plot_matrix = display_matrix.T if transpose else display_matrix
+    plot_counts = matrix.T if transpose else matrix
+    x_categories = matrix.index if transpose else matrix.columns
+    y_categories = matrix.columns if transpose else matrix.index
+    x_label = str(x_categories.name or "Category").replace("_", " ").capitalize()
+    y_label = str(y_categories.name or "Category").replace("_", " ").capitalize()
     color_label = share_label if shares is not None else count_label
-    fig = px.imshow(display_matrix, aspect="auto", title=title, color_continuous_scale=st.get_option("theme.chartSequentialColors"),
+    fig = px.imshow(plot_matrix, aspect="auto", title=title, color_continuous_scale=st.get_option("theme.chartSequentialColors"),
                     labels={"x": x_label, "y": y_label, "color": color_label})
     if shares is not None:
         fig.update_coloraxes(cmin=0, cmax=100,
@@ -163,20 +176,22 @@ def heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denomi
                                           tickformat=".0f", ticksuffix="%"))
     else:
         fig.update_coloraxes(colorbar=count_axis(matrix.to_numpy().max()))
-    fig.update_xaxes(type="category", tickmode="array", tickvals=matrix.columns.tolist(),
-                     ticktext=[_hover_text(value) for value in matrix.columns], side="bottom",
-                     tickangle=-45, automargin=True)
-    fig.update_yaxes(type="category", tickmode="array", tickvals=matrix.index.tolist(),
-                     ticktext=[_hover_text(value) for value in matrix.index])
+    x_ticktext = (["<br>".join(escape(part) for part in wrap(str(value), 18)) for value in x_categories]
+                  if transpose else [_hover_text(value) for value in x_categories])
+    y_ticktext = [_hover_text(value) for value in y_categories]
+    fig.update_xaxes(type="category", tickmode="array", tickvals=list(x_categories),
+                     ticktext=x_ticktext, side="bottom", tickangle=0 if transpose else -45, automargin=True)
+    fig.update_yaxes(type="category", tickmode="array", tickvals=list(y_categories), ticktext=y_ticktext)
     custom = []
-    for row_index, row in enumerate(matrix.index):
+    for row in plot_counts.index:
         row_data = []
-        for column_index, column in enumerate(matrix.columns):
+        for column in plot_counts.columns:
+            source_row, source_column = (column, row) if transpose else (row, column)
             cell = [_hover_text(row), _hover_text(column)]
             if shares is not None:
-                cell.extend([int(matrix.iat[row_index, column_index]), shares.iat[row_index, column_index]])
+                cell.extend([int(matrix.at[source_row, source_column]), float(shares.at[source_row, source_column])])
                 if denominators is not None:
-                    cell.append(int(denominators.iloc[row_index]))
+                    cell.append(int(denominators.loc[source_row]))
             row_data.append(cell)
         custom.append(row_data)
     hover = escape(y_label) + ": %{customdata[0]}<br>" + escape(x_label) + ": %{customdata[1]}<br>"
@@ -187,6 +202,8 @@ def heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denomi
     else:
         hover += escape(count_label) + ": %{z:,d}"
     fig.update_traces(customdata=custom, hovertemplate=hover + "<extra></extra>")
-    label_space = 100 if len(matrix.columns) > 8 else 0
-    fig.update_layout(height=min(1000, max(340, 170 + 32 * len(matrix)) + label_space))
+    label_space = 100 if not transpose and len(plot_matrix.columns) > 8 else 0
+    row_lines = max((label.count("<br>") + 1 for label in y_ticktext), default=1)
+    row_height = max(32, 18 * row_lines + 10)
+    fig.update_layout(height=min(1000, max(340, 170 + row_height * len(plot_matrix)) + label_space))
     return fig
