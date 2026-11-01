@@ -18,14 +18,15 @@ def test_exact_aliases_current_regions_and_original_evidence():
 
 
 def test_broad_ambiguous_unknown_and_missing_are_not_guessed():
-    evidence = locations("Manila", "Cebu", "Metro Manila", "Davao", "Naga City", "Remote, Philippines", "Atlantis", "", None)["location_evidence"]
+    evidence = locations("Manila", "Cebu", "Metro Manila", "Davao", "Naga City", "Remote, Philippines", "Atlantis", "", None,
+                         "Unknown", "Not available", "-")["location_evidence"]
     assert evidence.locality.eq("").all()
     assert evidence.iloc[0].region == "national capital region"
     assert evidence.iloc[1].region == "central visayas"
     assert evidence.iloc[3].location_status == "needs review"
     assert evidence.iloc[4].location_status == "needs review"  # Naga has multiple city names.
     assert evidence.iloc[5].location_status == "broad or remote location"
-    assert evidence.iloc[7].location_status == evidence.iloc[8].location_status == "not stated"
+    assert evidence.iloc[7:12].location_status.eq("not stated").all()
 
 
 def test_conflicting_multiple_and_unknown_address_parts_require_review():

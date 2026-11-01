@@ -64,6 +64,78 @@ def test_technical_symbols_and_distinct_skill_meanings_are_preserved():
     assert tables["chart_phrase_review"].empty
 
 
+def test_chart_aliases_merge_same_concept_without_rewriting_phrase_evidence():
+    skills = rows([
+        ("A", "Agile scrum", "Technical / Digital"),
+        ("A", "Agile scrum methodology", "Technical / Digital"),
+        ("A", "Scrum methodology", "Technical / Digital"),
+        ("B", "Scrum", "Technical / Digital"),
+        ("A", "Agile", "Technical / Digital"),
+        ("A", "data governance", "Technical / Digital"),
+        ("A", "datum governance", "Technical / Digital"),
+        ("B", "datum governance", "Technical / Digital"),
+    ])
+    before = skills.copy(deep=True)
+    tables = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A", "B"]}))
+    counts = tables["chart_skill_demand"].set_index("employer_skill").employer_demand_count
+
+    assert counts["agile scrum"] == 2
+    assert counts["agile"] == 1  # Agile alone is broader than the Scrum framework.
+    assert counts["data governance"] == 2  # Duplicate variants in one ad count once.
+    assert "datum governance" not in counts.index
+    aliases = tables["chart_skill_occurrences"]
+    assert aliases.normalized_phrase.eq("agile scrum").sum() == 2  # One displayed occurrence per ad.
+    assert set(skills.loc[skills.normalized_phrase.str.contains("governance"), "normalized_phrase"]) == {
+        "data governance", "datum governance"
+    }
+    pd.testing.assert_frame_equal(skills, before)
+
+
+def test_legal_boilerplate_duty_fragments_and_outcome_metrics_stay_out_of_skill_charts():
+    skills = rows([
+        ("A", "protect by applicable", "Functional Skills and Competencies"),
+        ("B", "activities and work", "Functional Skills and Competencies"),
+        ("C", "adoption of insight", "Enabling Skills and Competencies"),
+        ("D", "ability to learn", "Enabling Skills and Competencies"),
+        ("E", "adoption insight", "Enabling Skills and Competencies"),
+    ])
+    skills["accepted"] = True
+    original = skills.copy(deep=True)
+    tables = skill_chart_tables(skills, pd.DataFrame({"source_id": list("ABCDE")}))
+
+    assert tables["chart_skill_demand"].employer_skill.tolist() == ["ability to learn"]
+    reasons = tables["chart_phrase_review"].set_index("normalized_phrase").review_reason
+    assert reasons["protect by applicable"].startswith("Equal-employment legal boilerplate")
+    assert reasons["activities and work"].startswith("Generic duty wording")
+    assert reasons["adoption of insight"].startswith("Success-metric wording")
+    assert reasons["adoption insight"].startswith("Success-metric wording")
+    # These additions affect graph presentation only; saved extraction/mapping eligibility is unchanged.
+    assert set(accepted_skills(skills).normalized_phrase) == set(skills.normalized_phrase)
+    pd.testing.assert_frame_equal(skills, original)
+
+
+def test_shared_phrase_gate_feeds_every_employer_skill_chart_table():
+    skills = rows([
+        ("A", "agile scrum", "Technical / Digital"),
+        ("A", "agile scrum methodology", "Technical / Digital"),
+        ("A", "protect by applicable", "IRRELEVANT"),
+        ("A", "activities and work", "IRRELEVANT"),
+        ("B", "SQL", "Data / Analytics"),
+        ("B", "adoption insight", "IRRELEVANT"),
+    ])
+    skills["accepted"] = True
+    jobs = pd.DataFrame({"source_id": ["A", "B"], "job_family": ["Data Analytics", "Business Intelligence"]})
+
+    charts = skill_chart_tables(skills, jobs)
+
+    assert set(charts["chart_skill_demand"].employer_skill) == {"agile scrum", "sql"}
+    assert set(charts["chart_skill_family_demand"].skill_label) == {"agile scrum", "sql"}
+    assert set(charts["chart_skill_occurrences"].normalized_phrase) == {"agile scrum", "sql"}
+    assert set(charts["chart_phrase_review"].normalized_phrase) >= {
+        "protect by applicable", "activities and work", "adoption insight"
+    }
+
+
 def test_not_reported_and_experience_phrases_are_counts_not_skills_or_psf_inputs():
     skills = rows([("A", "SQL", "Technical / Digital"),
                    ("B", "Not mentioned.", "IRRELEVANT"),
@@ -114,6 +186,37 @@ def test_job_titles_and_context_fragments_are_not_skill_demand():
         "sql", "data analysis", "python", "communication", "data engineering"
     }
     pd.testing.assert_frame_equal(skills, original)
+
+
+def test_vague_and_unfinished_wording_is_withheld_from_every_skill_chart():
+    skills = rows([
+        ("A", "SQL", "Data / Analytics"),
+        ("A", "Python", "Technical / Digital"),
+        ("A", "Strong", "Soft / Enabling"),
+        ("A", "Business experience", "Business / Domain"),
+        ("A", "SQL and others", "Technical / Digital"),
+        ("B", "Python, SQL, etc.", "Technical / Digital"),
+        ("B", "IT experience", "Business / Domain"),
+        ("B", "Advanced SQL", "Data / Analytics"),
+        ("B", "Communication skills", "Soft / Enabling"),
+        ("B", "Various", "IRRELEVANT"),
+    ])
+    skills["accepted"] = [True, True, True, True, True, True, True, True, True, False]
+
+    views = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A", "B"],
+                                                      "job_family": ["analytics", "analytics"]}))
+
+    expected = {"sql", "python", "advanced sql", "communication skills"}
+    assert set(views["chart_skill_demand"].employer_skill) == expected
+    assert set(views["chart_skill_family_demand"].skill_label) == expected
+    audit = views["chart_phrase_review"].set_index("original_phrase").review_reason
+    assert audit["Strong"].startswith("Vague wording")
+    assert audit["Business experience"].startswith("Vague wording")
+    assert audit["SQL and others"].startswith("Unfinished list wording")
+    assert audit["Python, SQL, etc."].startswith("Unfinished list wording")
+    assert audit["IT experience"].startswith("Vague wording")
+    assert audit["Various"].startswith("Vague wording")
+    assert set(accepted_skills(skills).normalized_phrase.str.casefold()) == expected
 
 
 def test_status_filtered_skill_charts_keep_only_allowed_original_phrase_variants():

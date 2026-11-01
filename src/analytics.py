@@ -13,6 +13,29 @@ _OCCUPATIONAL_LABEL = re.compile(
     r"technicians?|operators?|executives?|directors?)$"
 )
 _GENERIC_NON_SKILL_PHRASES = {"base", "based", "data", "industry experience"}
+_BENEFIT_ACCESS_WORDING = re.compile(r"^access(?:\s+to)?\s+benefits?$", re.I)
+_LEGAL_BOILERPLATE_PHRASE = re.compile(r"^protect(?:ed)?\s+by\s+applicable(?:\s+laws?)?$", re.I)
+_ADOPTION_OUTCOME_PHRASE = re.compile(r"^adoption(?:\s+of)?\s+insights?$", re.I)
+_CHART_ONLY_NON_SKILL_PHRASES = {
+    "activity and work": "Generic duty wording; no identifiable skill",
+    "activities and work": "Generic duty wording; no identifiable skill",
+}
+_CHART_PHRASE_ALIASES = {
+    "powerbi": "power bi", "microsoft power bi": "power bi",
+    "ms excel": "excel", "microsoft excel": "excel",
+    "agile scrum methodology": "agile scrum", "agile scrum methodologies": "agile scrum",
+    "agile scrum method": "agile scrum", "agile scrum methods": "agile scrum",
+    "scrum": "agile scrum", "scrum methodology": "agile scrum",
+    "scrum methodologies": "agile scrum", "scrum method": "agile scrum",
+    "scrum methods": "agile scrum",
+}
+_VAGUE_ONLY_WORDS = {
+    "ability", "advanced", "basic", "background", "business", "computer", "different", "digital",
+    "domain", "excellent", "experience", "expertise", "exposure", "familiarity", "good", "industry",
+    "intermediate", "it", "knowledge", "proficiency", "proven", "related", "relevant", "skills", "software",
+    "solid", "strong", "technical", "technologies", "technology", "understanding", "various",
+}
+_UNCLEAR_LIST_TAIL = re.compile(r"\b(?:etc\.?|and more|among others|and others|and related(?:\s+(?:skills?|areas?|fields?))?)$", re.I)
 _SKILL_ACTIONS = {
     "ability", "skill", "skills", "experience", "knowledge", "proficiency",
     "build", "develop", "identify", "maintain", "monitor", "ensure", "perform",
@@ -41,6 +64,13 @@ def _skill_phrase_reason(value):
         return experience_reason
     if phrase in _GENERIC_NON_SKILL_PHRASES:
         return "Incomplete or context-only wording; not a skill"
+    if _BENEFIT_ACCESS_WORDING.fullmatch(placeholder):
+        return "Benefit-access wording; verify source context before treating it as a skill"
+    if _UNCLEAR_LIST_TAIL.search(placeholder):
+        return "Unfinished list wording; verify the named skills before charting"
+    words = set(re.findall(r"[a-z]+", placeholder))
+    if words and words <= _VAGUE_ONLY_WORDS:
+        return "Vague wording without an identifiable competency; check source context"
     if _OCCUPATIONAL_LABEL.fullmatch(phrase):
         return "Job title or occupational wording; not a skill"
     if not any(char.isalpha() for char in phrase):
@@ -53,6 +83,19 @@ def _skill_phrase_reason(value):
     if is_incomplete_phrase(phrase):
         return "Incomplete connector phrase; check the advertisement context"
     return ""
+
+
+def _chart_phrase_reason(value):
+    """Apply conservative graph-only exclusions to source wording already extracted."""
+    phrase = _CHART_BULLETS.sub("", normalize_text(value).translate(
+        {0x200b: None, 0xfeff: None, 0x2060: None})).strip()
+    if phrase in _CHART_ONLY_NON_SKILL_PHRASES:
+        return _CHART_ONLY_NON_SKILL_PHRASES[phrase]
+    if _LEGAL_BOILERPLATE_PHRASE.fullmatch(phrase):
+        return "Equal-employment legal boilerplate; not an employer competency"
+    if _ADOPTION_OUTCOME_PHRASE.fullmatch(phrase):
+        return "Success-metric wording; review before treating as a competency"
+    return _skill_phrase_reason(phrase)
 
 def filter_frame(frame, filters):
     mask = pd.Series(True, index=frame.index)
@@ -92,12 +135,13 @@ def demand_matrix(skills, jobs, group):
 
 def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     """Create an auditable chart view without changing stored research evidence."""
-    # List formatting and invisible separators are display artifacts, not synonyms.
-    aliases = {"powerbi": "power bi", "microsoft power bi": "power bi",
-               "ms excel": "excel", "microsoft excel": "excel"}
     def key(value):
         phrase = _CHART_BULLETS.sub("", normalize_text(value).translate({0x200b: None, 0xfeff: None, 0x2060: None})).strip()
-        return aliases.get(phrase, phrase)
+        # spaCy lemmatization can turn source "data" into "datum". In this
+        # 500-ad corpus no source description uses "datum"; restore its surface
+        # form only in chart labels, retaining original and normalized evidence.
+        phrase = re.sub(r"\bdatum\b", "data", phrase)
+        return _CHART_PHRASE_ALIASES.get(phrase, phrase)
 
     ids = jobs.get("source_id", pd.Series(dtype=str)).dropna().astype(str)
     ids = ids[ids.str.strip().ne("")]
@@ -110,7 +154,7 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     view["original_normalized_phrase"] = original
     view["normalized_phrase"] = original.where(original.astype(str).str.strip().ne(""), surface).map(key)
     view["skill_label"] = view.normalized_phrase
-    reasons = {phrase: _skill_phrase_reason(phrase) for phrase in view.normalized_phrase.unique()}
+    reasons = {phrase: _chart_phrase_reason(phrase) for phrase in view.normalized_phrase.unique()}
     view["review_reason"] = view.normalized_phrase.map(reasons)
     categories = view.get("competency_category", pd.Series("", index=view.index)).fillna("")
     needs_category_reason = view.review_reason.eq("")
@@ -118,11 +162,7 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     view.loc[needs_category_reason & categories.astype(str).str.casefold().eq("irrelevant"), "review_reason"] = "Researcher or classifier marked this phrase irrelevant"
     accepted = view.get("accepted", pd.Series(True, index=view.index)).astype(str).str.casefold().eq("true")
     reason = view.review_reason.fillna("").astype(str)
-    special = reason.str.startswith(("Blank phrase", "Not reported (missing placeholder)", "Experience-duration requirement",
-                                     "Unclear year-duration phrase", "No-experience requirement",
-                                     "Credential requirement", "Job title or occupational wording",
-                                     "Incomplete or context-only wording", "Researcher or classifier marked"))
-    review = view.loc[(accepted & reason.ne("") ) | special].copy()
+    review = view.loc[reason.ne("")].copy()
     eligible = view.loc[accepted & reason.eq("")].copy()
     if allowed_phrases is not None:
         eligible = eligible[eligible.original_normalized_phrase.isin(allowed_phrases)]
@@ -136,6 +176,8 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     family_source = jobs.reindex(columns=["source_id", "job_family"]).fillna("").drop_duplicates("source_id")
     family_source["job_family"] = family_source.job_family.map(normalize_text).replace(
         {"": "not stated", "not specified": "not stated", "not provided": "not stated",
+         "not available": "not stated", "none": "not stated", "null": "not stated", "nil": "not stated",
+         "no information": "not stated", "no info": "not stated", "-": "not stated", "—": "not stated",
          "unspecified": "not stated", "n/a": "not stated", "na": "not stated",
          "unknown": "not stated", "unclassified": "not stated", "not applicable": "not stated",
          "other": "not stated", "general": "not stated"})

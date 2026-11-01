@@ -7,7 +7,9 @@ import pandas as pd
 from .cleaning import EDUCATION, EXPERIENCE, clean_text, normalize_text
 
 
-_MISSING = {"", "not stated", "not specified", "not provided", "unspecified", "n/a", "na"}
+_MISSING = {"", "not stated", "not specified", "not provided", "not available", "unspecified",
+            "unknown", "none", "null", "nil", "no information", "no info", "not applicable",
+            "n/a", "na", "-", "—"}
 _JOB_CODE_PREFIX = re.compile(r"^\s*[A-Z]{2,6}\d{4,}\s*[-–—:]\s*", re.I)
 _YEARS = re.compile(r"(?<![\w.])(?P<low>\d+(?:\.\d+)?)\s*(?:(?:[-–—]|to)\s*(?P<high>\d+(?:\.\d+)?))?\s*(?P<plus>\+)?\s*(?:years?|yrs?)\b", re.I)
 _OTHER_UNITS = re.compile(r"\b(?:months?|mos?|weeks?|days?)\b", re.I)
@@ -64,14 +66,16 @@ def _job_role_groups(jobs):
         title = _analysis_title(original)
         family = normalize_text(job.get("job_family", ""))
         group, basis = title, "specific title retained"
-        if not _missing(family) and family not in {"other", "unclassified", "unknown", "general", "not applicable"}:
+        if not _missing(family) and family not in {"other", "unclassified", "general"}:
             group, basis = family, "source-provided job family"
-        elif title:
+        elif not _missing(title):
             matches = [name for name, pattern in _TITLE_ROLE_RULES.items() if re.search(pattern, title)]
             composite = re.search(r"[/|;&,]|\b(?:and|or|cum|manager|trainer|recruiter|instructor|teacher)\b", title)
             role_heads = re.findall(r"\b(?:analysts?|scientists?|engineers?|developers?|specialists?|officers?|assistants?|consultants?)\b", title)
             if len(matches) == 1 and len(role_heads) == 1 and not composite:
                 group, basis = matches[0], "explicit title rule: " + matches[0]
+        else:
+            group, basis = "", "missing title placeholder"
         rows.append({"source_id": job.get("source_id", str(index)), "original_job_title": original,
                      "normalized_job_title": title, "job_role_group": group, "grouping_basis": basis})
     evidence = pd.DataFrame(rows, columns=["source_id", "original_job_title", "normalized_job_title", "job_role_group", "grouping_basis"])
@@ -85,6 +89,11 @@ def _common_job_title_tables(jobs):
         raw = job.get("job_title", "")
         original = "" if raw is None or pd.isna(raw) else str(raw)
         title = _analysis_title(original)
+        if _missing(title):
+            rows.append({"source_id": job.get("source_id", str(index)), "original_job_title": original,
+                         "normalized_job_title": title, "common_job_title": "",
+                         "grouping_basis": "missing title placeholder"})
+            continue
         matches = [name for name, pattern in _TITLE_ROLE_RULES.items() if re.search(pattern, title)]
         occupations = _TITLE_OCCUPATIONS.findall(title)
         if title and len(matches) == 1 and len(occupations) == 1 and not _TITLE_OTHER_ROLE.search(title):
@@ -178,8 +187,11 @@ def _title_family_tables(jobs):
             family = "not stated"
         raw = job.get("job_title", "")
         original = "" if raw is None or pd.isna(raw) else str(raw)
+        title = _analysis_title(original)
+        if _missing(title):
+            title = ""
         rows.append({"source_id": job.get("source_id", str(index)), "job_family": family,
-                     "job_title": _analysis_title(original), "original_job_title": original,
+                     "job_title": title, "original_job_title": original,
                      "source": normalize_text(job.get("source", "")), "url": job.get("url", "")})
     evidence = pd.DataFrame(rows, columns=["source_id", "job_family", "job_title", "original_job_title", "source", "url"])
     grouped = evidence[evidence.job_title.ne("")].groupby(["job_family", "job_title"], sort=True)

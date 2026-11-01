@@ -83,7 +83,8 @@ for _region, _names in _CITY_REGIONS.items():
 for _alias, _target in {"las pinas": "las piñas", "paranaque": "parañaque", "binan": "biñan", "dasmariñas": "dasmarinas", "lapu lapu": "lapu-lapu"}.items():
     for _suffix in ("", " city"):
         _CITIES[_alias + _suffix] = _CITIES[_target]
-_MISSING = {"", "n/a", "na", "none", "not stated", "not specified", "unspecified", "not provided"}
+_MISSING = {"", "n/a", "na", "none", "not stated", "not specified", "unspecified", "not provided",
+            "not available", "unknown", "null", "nil", "no information", "no info", "not applicable", "-", "—"}
 _BROAD = {"philippines", "ph", "phl", "remote", "work from home", "wfh", "hybrid", "onsite", "on-site"}
 _COLUMNS = ["source_id", "original_location", "normalized_location", "island_group", "region", "locality", "location_status", "geographic_source", "geographic_reference_date"]
 

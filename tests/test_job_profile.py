@@ -190,6 +190,26 @@ def test_common_titles_collapse_clear_seniority_and_branch_variants_only():
     pd.testing.assert_frame_equal(jobs, original)
 
 
+def test_exact_missing_titles_are_not_graph_categories_but_source_evidence_is_retained():
+    titles = ["Unknown", "N/A", "Not provided", "Senior Data Analyst", "Unknown Research Specialist"]
+    jobs = pd.DataFrame({"source_id": list("ABCDE"), "job_title": titles,
+                         "job_family": ["Unknown", "None", "Unknown", "Analytics", "Analytics"]})
+    tables = job_profile_tables(jobs)
+
+    assert set(tables["common_job_title_counts"].common_job_title) == {
+        "data analyst", "unknown research specialist"
+    }
+    assert set(tables["job_title_counts"].job_title) == {
+        "senior data analyst", "unknown research specialist"
+    }
+    assert tables["job_role_group_counts"].job_role_group.tolist() == ["analytics"]
+    evidence = tables["common_job_title_evidence"].set_index("source_id")
+    assert evidence.original_job_title.tolist() == titles
+    assert evidence.loc["A", "common_job_title"] == ""
+    assert evidence.loc["A", "grouping_basis"] == "missing title placeholder"
+    assert "unknown" not in set(tables["job_title_family_counts"].job_family)
+
+
 def test_leading_requisition_code_is_removed_from_analysis_labels_but_preserved_as_evidence():
     jobs = pd.DataFrame([
         {"source_id": "SYNTHETIC-1", "job_title": "DE033824-Health Operations Analyst", "job_family": "Analytics"},

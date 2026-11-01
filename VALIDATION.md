@@ -1,5 +1,36 @@
 # Validation record
 
+## 2026-11-01 — Apply chart relevance rules across result graphs, v2.0.104
+
+- One chart-eligible skill table feeds employer-skill rankings, categories, occupational-family comparisons, selected-title/location skills and unmapped/emerging charts. Added exact missing-placeholder handling for job-title labels and geography; source evidence is retained. Requisition codes, clear title variants, exact geography, structured education/experience and valid posting dates continue to use field-specific rules.
+- PSF-AAI reference labels and mapping decisions, and model-evaluation classes/metrics, keep their separate validated evidence rules. No broad text filter is applied to them. No research data, labels, mappings or training inputs were changed.
+- Read-only audit of the selected 500 ads: 220 common-title categories, no missing-title labels or leading requisition codes, and the seven intended source job families. Location evidence contains 248 exact localities, 98 region-only locations, 144 unfamiliar locations needing review, 9 broad/remote values, and 1 conflicting value; only resolved regions/localities enter those comparisons. Education has 1 unambiguous parsed level, 466 not-stated values and 33 review-needed values. All 500 explicit experience fields are blank, so no numeric experience distribution is invented. Posting dates have 239 usable ads across 28 months; the remaining 261 are not plotted as dates.
+- The saved local phrase extraction still has 0/500 source-ID overlap, so current 500-ad skill graph counts cannot be visually confirmed until extraction is refreshed.
+- Verification: full suite **471 passed** in 110.73 seconds, with one existing pandas `FutureWarning` at `src/review_queue.py:138`. Python compilation and `git diff --check` passed. No browser screenshot was used to claim refreshed 500-ad skill output. Included in the v2.0.104 commit.
+
+## 2026-11-01 — Screen questionable chart phrases and consolidate Scrum aliases, v2.0.103
+
+- Skill charts now withhold exact equal-employment boilerplate (including “protect by applicable”), generic “activity/activities and work” duty fragments, and “adoption of insight(s)” KPI wording. The KPI screen also catches the lemmatized “adoption insight” form. These source-linked rows remain in `chart_phrase_review` with reasons.
+- “Agile Scrum,” “Scrum,” and exact method/methodology variants display under one “agile scrum” label. Standalone “agile” stays distinct. Chart labels also restore lemmatizer-generated “datum” to “data”; original normalized wording remains available in occurrence evidence. Each ad counts once per displayed skill.
+- Read-only scan of `cleaned_jobs.csv`: 500 unique ads. “Agile Scrum” occurs in 1 ad and is explicitly requested as understanding of Agile Scrum methodologies; “activities and work” occurs in 8; legal boilerplate in 74; “adoption of insights” in 1; “ability to learn” in 11; “data governance” in 39; literal “datum” in 0. The methodology phrase is treated as a requested work-method/knowledge competency, not a programming tool.
+- Important local-data limitation: `extractions_original.csv` contains 3,388 rows for 20 source IDs, with **0 IDs overlapping** the current 500-ad cleaned file. No final-500 chart totals or browser appearance are claimed from this stale extraction snapshot. Refresh phrase extraction for the 500 ads before relying on its displayed counts.
+- Chart exclusions/aliases affect presentation and audit only; no saved phrase labels, source text, PSF-AAI links, reviewer decisions, training records or job records were rewritten. PSF-AAI matching logic is unchanged.
+- Full suite before the final KPI-normalization edge: **469 passed** in 110.25 seconds, with one existing pandas `FutureWarning` in `src/review_queue.py:138`. Post-edge focused suite: **34 passed** (`tests/test_chart_data.py tests/test_result_views.py tests/test_end_to_end.py`). Python compilation and `git diff --check` passed. The Streamlit skill’s version-matched docs were unavailable because this environment has a pre-1.57 Streamlit install; no Streamlit APIs were changed. Included in the v2.0.104 commit.
+
+## 2026-11-01 — Flag questionable benefit wording and learning variants, v2.0.99
+
+- Exact “access to benefit(s)” wording, including the normalized form “access benefit,” is withheld from skill and PSF-AAI demand charts and retained in the source-linked phrase audit pending review.
+- “Ability to learn” and “learn and apply” are recorded as a human-review candidate pair. They remain separate until researchers compare source context and document whether they represent the same construct; chart changes do not rewrite saved labels or mappings.
+- `python -m py_compile src/analytics.py src/config.py src/workflow.py` and `git diff --check` passed. No extraction rows, reviewer labels or PSF mappings were modified.
+- A focused phrase-rule check confirmed the access-benefit wording is withheld while “ability to learn,” “learn and apply,” Python and SQL remain chart-eligible. The local server restarted at v2.0.99 and health returned `ok`. The restarted browser session required sign-in; the authenticated chart could not be visually rechecked because the shared-workspace connection was interrupted.
+
+## 2026-11-01 — Withhold vague and unfinished phrases from skill graphs, v2.0.90
+
+- Added deterministic wording checks for vague-only labels (for example, `strong`, `IT experience`, `business experience`) and unfinished list tails (`etc.`, `and others`). These are omitted from employer-skill demand, occupational-family charts, unmapped/emerging analysis, and automatic PSF-AAI matching because all use the same filtered skill set.
+- Withheld phrases remain in `chart_phrase_review` with reasons, including rows not accepted by extraction. Source rows, researcher labels, and exact skill phrases such as SQL, Python, advanced SQL, and communication skills remain unchanged. This is a transparent rule-based screen; it does not claim to detect every semantic ambiguity.
+- Full suite: **460 passed** in 99.83 seconds; one existing pandas `FutureWarning` at `src/review_queue.py:138`. The run includes the new phrase-screening regression; `compileall` and `git diff --check` passed.
+- No research records or saved labels changed. No extraction rerun required; this is a result-view rule update.
+
 ## 2026-11-01 — Complete chart-guide recommendations and narrow-layout review, v2.0.85
 
 - Audited the supplied guide's selection table, dashboard recommendations, interaction and interpretation rules. Kept optional lollipop, donut/waffle, choropleth, beeswarm, scatter, hexbin and treemap views out because the guide marks them optional and this dashboard lacks a justified comparison/denominator for those views; ranked bars and tables answer the current questions more directly.
