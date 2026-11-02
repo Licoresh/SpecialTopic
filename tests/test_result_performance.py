@@ -117,6 +117,60 @@ pd.testing.assert_frame_equal(frame, before)
     assert not app.exception and builder.call_count == 3
 
 
+def test_cached_analysis_does_not_copy_source_snapshot_and_refreshes_changed_inputs(monkeypatch, tmp_path):
+    monkeypatch.setattr(ui.st, "session_state", {"_current_analysis_signature": "synthetic-input-v1"})
+    monkeypatch.setattr(ui.storage, "ROOT", tmp_path)
+    revision = [1]
+    reviews = pd.DataFrame({"extraction_id": ["synthetic"], "rationale": ["first review"]})
+    monkeypatch.setattr(ui.storage, "frame_revision", lambda name: revision[0])
+    reads = Mock(side_effect=lambda name: reviews.copy() if name == ui.REVIEW_TABLE else pd.DataFrame({"source_id": ["synthetic"]}))
+    monkeypatch.setattr(ui.storage, "read_frame", reads)
+    extracted = Mock(return_value=pd.DataFrame({"source_id": ["synthetic"], "original_text": ["Source evidence" * 1000]}))
+    monkeypatch.setattr(ui, "current_extractions", extracted)
+    build = Mock(return_value=({"counts": pd.DataFrame({"job_ads": [1]})}, {"sources": ["synthetic"]}))
+    monkeypatch.setattr(ui, "analysis_bundle", build)
+    cached = Mock(wraps=ui._session_cached_value)
+    monkeypatch.setattr(ui, "_session_cached_value", cached)
+
+    tables, metadata = ui.filtered_bundle()
+    tables["counts"].iloc[0, 0] = 999
+    metadata["sources"].append("caller mutation")
+    tables, metadata = ui.filtered_bundle()
+    assert tables["counts"].job_ads.tolist() == [1] and metadata["sources"] == ["synthetic"]
+    assert build.call_count == extracted.call_count == 1
+    assert sum(call.args[0] == "_fow_source_cache" for call in cached.call_args_list) == 1
+    assert sum(call.args[0] == ui.REVIEW_TABLE for call in reads.call_args_list) == 2
+    revision[0] = 2
+    ui.filtered_bundle()
+    reviews.loc[0, "rationale"] = "updated review"
+    ui.filtered_bundle()
+    assert build.call_count == extracted.call_count == 3
+
+
+def test_review_queue_preparation_projects_job_metadata_without_losing_evidence(monkeypatch):
+    monkeypatch.setattr(ui, "training_candidates", lambda root: pd.DataFrame())
+    monkeypatch.setattr(ui, "training_taxonomy", lambda root: pd.DataFrame())
+    jobs = pd.DataFrame({"source_id": ["synthetic-ad"], "url": ["https://example.invalid/job"],
+                         "job_title": ["Synthetic analyst"], "company": ["Synthetic employer"],
+                         "original_text": ["Evidence retained in its source table" * 1000]})
+    before = jobs.copy(deep=True)
+    def read(name, **kwargs):
+        if name == "extractions_original":
+            return pd.DataFrame({"original_phrase": ["Python"], "normalized_phrase": ["python"],
+                                 "source_type": ["jobs"], "source_id": ["synthetic-ad"]})
+        if name == "cleaned_jobs":
+            assert kwargs["columns"] == ["source_id", "url", "job_title", "company"]
+            return jobs[kwargs["columns"]].copy()
+        return pd.DataFrame()
+    monkeypatch.setattr(ui.storage, "read_frame", read)
+    candidates, _ = ui._build_manual_review_data()
+    assert candidates.iloc[0].source_url == jobs.iloc[0].url
+    assert candidates.iloc[0].job_title == "Synthetic analyst"
+    assert candidates.iloc[0].company == "Synthetic employer"
+    assert candidates.iloc[0].original_text == ""  # Resolved for the displayed page, not every queue occurrence.
+    pd.testing.assert_frame_equal(jobs, before)
+
+
 def test_family_heatmap_filter_redraws_only_its_fragment(monkeypatch):
     tables = result_tables()
     current = Mock(return_value=True)

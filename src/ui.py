@@ -213,7 +213,7 @@ def _build_manual_review_data():
     if not extracted.empty:
         extracted = extracted.rename(columns={"original_phrase": "phrase"})
         extracted["_job_context"] = "jobs"
-        jobs = storage.read_frame("cleaned_jobs")
+        jobs = storage.read_frame("cleaned_jobs", columns=["source_id", "url", "job_title", "company"])
         if not jobs.empty:
             source = jobs.drop_duplicates("source_id").set_index("source_id")
             for target, column in (("source_url", "url"), ("job_title", "job_title"), ("company", "company")):
@@ -429,17 +429,19 @@ def filtered_bundle():
                                 "extraction": storage.frame_revision("extractions_original"),
                                 "mapping_reviews": frame_hash(mapping_reviews)})
     source_key = f"sources:{analysis_revision}"
-    source_snapshot = _session_cached_value(
-        "_fow_source_cache", source_key,
-        lambda: {"jobs": storage.read_frame("cleaned_jobs"),
-                 "taxonomy": storage.read_frame("cleaned_psf_aai"),
-                 "extracted": current_extractions(), "mapping_reviews": mapping_reviews},
-        ttl=None, max_entries=1,
-    )
+    def build_analysis():
+        source_snapshot = _session_cached_value(
+            "_fow_source_cache", source_key,
+            lambda: {"jobs": storage.read_frame("cleaned_jobs"),
+                     "taxonomy": storage.read_frame("cleaned_psf_aai"),
+                     "extracted": current_extractions(), "mapping_reviews": mapping_reviews},
+            ttl=None, max_entries=1,
+        )
+        return analysis_bundle(source_snapshot=source_snapshot)
     bundle_key = digest({"presentation_version": VERSION, "signature": analysis_revision})
     result = _session_cached_value(
         "_fow_analysis_cache", bundle_key,
-        lambda: analysis_bundle(source_snapshot=source_snapshot),
+        build_analysis,
         ttl=None, max_entries=2,
     )
     st.session_state["_fow_loaded_bundle_revision"] = bundle_key
@@ -1202,7 +1204,8 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} {unit} · Category applies to the phrase; PSF-AAI applies only to the displayed advertisement.")
                 if reference.empty:
                     st.caption("Activate the reviewed PSF-AAI reference to enable competency selections.")
-                page_identity = digest([page_identity, frame_hash(active_taxonomy), frame_hash(mapping_reviews)])[:24]
+                reference_hash = frame_hash(active_taxonomy)
+                page_identity = digest([page_identity, reference_hash, frame_hash(mapping_reviews)])[:24]
                 occurrence_lookup = {(row.source_id, row.normalized_phrase): row._asdict() for row in mapping_occurrences.itertuples(index=False)}
                 page_occurrences, page_reviews = [], []
                 table_rows = []
@@ -1312,7 +1315,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                             if occurrence and occurrence.get("pending_extraction"):
                                 st.caption("This candidate enters analysis only after the same occurrence is extracted and accepted. Changed evidence requires another review.")
                             stale = bool(occurrence and not saved.empty and (
-                                saved.reference_hash.ne(frame_hash(active_taxonomy)).any() or
+                                saved.reference_hash.ne(reference_hash).any() or
                                 saved.occurrence_hash.ne(occurrence_hash(occurrence)).any()))
                             if stale:
                                 st.warning("Saved links are stale. Review the source and selected competencies again.")

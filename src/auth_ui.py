@@ -42,6 +42,14 @@ def _login_panel(*, busy=False, email=""):
             with st.container(key=f"login_status{suffix}"):
                 status = st.empty()
             st.caption("Use your individual research-team account. For account access or password help, contact your project owner.")
+            if not busy:
+                with st.expander("Sign-in connection", icon=":material/link:"):
+                    from .config import VERSION
+                    details = backend.connection_details()
+                    st.text(f"Workspace: {details['host']}")
+                    st.caption(f"URL source: {details['url_source']} · Key source: {details['key_source']}")
+                    st.caption(f"Publishable key: {'configured' if details['key_configured'] else 'missing'} · App v{VERSION}")
+                    st.caption("Compare the workspace hostname with a device where sign-in works. Environment variables override .env, then Streamlit secrets.")
     return email, password, submitted, status
 
 
@@ -67,8 +75,10 @@ def login_page():
         _, _, _, status = _login_panel(busy=True, email=email)
     with status.container():
         with st.spinner("Verifying your account and team access…"):
+            authenticated = False
             try:
                 session = backend.sign_in(email, password)
+                authenticated = True
                 role = backend.check_connection(session["access_token"])
             except backend.SupabaseError as exc:
                 backend.sign_out()
@@ -78,9 +88,14 @@ def login_page():
                     "no active research-team membership": "Your account has no active team membership. Ask the project owner to grant access.",
                     "session has expired": "Your session has expired. Sign in again to continue.",
                 }
-                st.session_state["_fow_login_error"] = next(
+                fallback = (
+                    "Your credentials were accepted, but team access could not be confirmed. Check the connection or ask the project owner to check workspace access."
+                    if authenticated else
+                    "Sign-in could not be completed. Check Sign-in connection or ask the project owner to check workspace access."
+                )
+                st.session_state["_fow_login_error"] = backend.AUTH_ERROR_MESSAGES.get(exc.code) or next(
                     (hint for term, hint in messages.items() if term in message),
-                    "Could not sign in. Check your email and password, then retry. If this continues, ask the project owner to check workspace access.")
+                    fallback)
                 finish_action_run()
                 view.empty()
                 st.rerun()

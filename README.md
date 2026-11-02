@@ -24,6 +24,20 @@ Open http://127.0.0.1:8501. Existing installations can continue using their curr
 
 For optional local BGE-M3 suggestions, install `requirements-suggestions.txt` in the same environment. Model files download on first use. Suggestions remain drafts until a researcher reviews and saves a label.
 
+### Windows refuses to run Python
+
+If Windows shows **This app can't run on your PC** or **Access is denied** before Python starts, check `py --version` and `python --version` in a new terminal. If the base interpreter or launcher is also blocked, repair or reinstall Python using the architecture-matched full installer from [Python for Windows](https://www.python.org/downloads/windows/). Include pip and the PATH option. Python 3.13 is the version used for this project's local checks. A Git pull cannot repair a Windows Python installation.
+
+After `python --version` works, create a new environment in the project folder rather than copying a teammate's environment or clearing the broken one:
+
+```cmd
+python -m venv .venv-clean
+.venv-clean\Scripts\python.exe -m pip install -r requirements.txt
+.venv-clean\Scripts\python.exe -m streamlit run app.py
+```
+
+Keep using `.venv-clean\Scripts\python.exe` for this repaired setup. If local AI suggestions are needed, install `requirements-suggestions.txt` with that same interpreter. Existing `.env`, research data and the original environment are preserved. If a fresh Python installation is still blocked, record the executable path and ask the device administrator to inspect the Windows application-control or security event; do not disable security software.
+
 ## Workflow
 
 1. Upload the study job advertisements, confirm column mapping, and review source provenance and data quality.

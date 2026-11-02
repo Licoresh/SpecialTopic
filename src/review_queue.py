@@ -78,19 +78,16 @@ def group_candidates_by_phrase(candidates):
 
 def labels_by_phrase(labels):
     """Build unambiguous existing values for display; conflicts remain blank."""
-    result = {}
     if labels.empty or "normalized_phrase" not in labels:
-        return result
-    for normalized, group in labels.groupby("normalized_phrase", sort=False):
-        categories = group.get("label", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
-        categories = list(dict.fromkeys(value for value in categories if value))
-        psf_values = group.get("psf_competency", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
-        psf_values = list(dict.fromkeys(value for value in psf_values if value))
-        result[str(normalized)] = {
-            "label": categories[0] if len(categories) == 1 else "",
-            "psf_competency": psf_values[0] if len(psf_values) == 1 else "",
-        }
-    return result
+        return {}
+    fields = ["label", "psf_competency"]
+    values = labels.reindex(columns=["normalized_phrase", *fields]).copy()
+    for field in fields:
+        values[field] = values[field].fillna("").astype(str).str.strip()
+        values[field] = values[field].where(values[field].ne(""))
+    grouped = values.groupby("normalized_phrase", sort=False)
+    selected = grouped[fields].first().fillna("").where(grouped[fields].nunique().eq(1), "")
+    return {str(phrase): row for phrase, row in selected.to_dict("index").items()}
 
 
 def expand_phrase_annotations(rows, occurrences):

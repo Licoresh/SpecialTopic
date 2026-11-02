@@ -14,9 +14,10 @@ import gzip
 import io
 import json
 from pathlib import Path
-from functools import wraps
+from functools import lru_cache, wraps
 from contextlib import contextmanager
 from contextvars import ContextVar
+from urllib.parse import urlsplit
 
 import requests
 import streamlit as st
@@ -54,9 +55,25 @@ def worker_session(credentials):
 
 
 class SupabaseError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(self, message: str, *, status_code: int | None = None, code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
+
+
+AUTH_ERROR_MESSAGES = {
+    "auth_not_configured": "Sign-in configuration is incomplete. Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY for this workspace.",
+    "auth_configuration_error": "The sign-in request was not authorized. Check that this computer's Supabase URL and publishable key belong to the same project.",
+    "auth_connection_error": "Could not reach Supabase sign-in. Check this computer's internet connection and retry.",
+    "auth_certificate_error": "Could not verify the secure sign-in connection. Check this computer's certificates, date and network.",
+    "auth_timeout": "Supabase sign-in timed out. Check the connection and retry.",
+    "invalid_credentials": "Supabase did not accept this email and password for the workspace shown in Sign-in connection. If they work on another device, compare the workspace hostname and re-enter the password here.",
+    "email_not_confirmed": "Confirm your email before signing in. Ask the project owner to check your account's confirmation status if needed.",
+    "auth_rate_limited": "Too many sign-in attempts. Wait a few minutes before trying again.",
+    "auth_unavailable": "Supabase sign-in is temporarily unavailable. Try again later.",
+    "auth_invalid_response": "The sign-in service returned an unreadable or incomplete session. Retry; if this continues, ask the project owner to check the workspace configuration.",
+    "auth_rejected": "Supabase could not complete password sign-in. Ask the project owner to check the account's access and the project's sign-in settings.",
+}
 
 
 def clear_read_cache(*, frames=False):
@@ -101,11 +118,19 @@ def session_cached(function):
 
 def _read_dotenv(path: Path) -> dict[str, str]:
     """Read simple KEY=VALUE entries without overriding process environment."""
-    values = {}
     try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        path = path.absolute()
+        stat = path.stat()
+        return _parse_dotenv(path, stat.st_mtime_ns, stat.st_size, stat.st_ino).copy()
     except OSError:
-        return values
+        return {}
+
+
+@lru_cache(maxsize=4)
+def _parse_dotenv(path: Path, modified_ns: int, size: int, identity: int) -> dict[str, str]:
+    # File metadata invalidates parsed settings; environment and secrets stay live.
+    lines = path.resolve().read_text(encoding="utf-8-sig").splitlines()
+    values = {}
     for line in lines:
         line = line.strip()
         if not line or line.startswith("#"):
@@ -124,18 +149,23 @@ def _read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def _setting(name: str) -> str:
+def _setting_with_source(name: str) -> tuple[str, str]:
     value = os.environ.get(name, "")
     if value:
-        return value.strip()
+        return value.strip(), "Environment variable"
     value = _read_dotenv(ROOT / ".env").get(name, "")
     if value:
-        return value.strip()
+        return value.strip(), ".env file"
     try:
         value = st.secrets.get(name, "")
     except Exception:
         value = ""
-    return str(value).strip()
+    value = str(value).strip()
+    return value, "Streamlit secrets" if value else "Not configured"
+
+
+def _setting(name: str) -> str:
+    return _setting_with_source(name)[0]
 
 
 def configuration() -> tuple[str, str]:
@@ -143,6 +173,19 @@ def configuration() -> tuple[str, str]:
     if worker is not None:
         return worker["_configuration"]
     return _setting("SUPABASE_URL").rstrip("/"), _setting("SUPABASE_PUBLISHABLE_KEY")
+
+
+def connection_details() -> dict:
+    """Public workspace identity and setting origins; never return credentials."""
+    url, url_source = _setting_with_source("SUPABASE_URL")
+    key, key_source = _setting_with_source("SUPABASE_PUBLISHABLE_KEY")
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname if parsed.scheme in {"https", "http"} else None
+    except ValueError:
+        host = None
+    return {"host": host or ("Invalid URL" if url else "Not configured"),
+            "url_source": url_source, "key_source": key_source, "key_configured": bool(key)}
 
 
 def configured() -> bool:
@@ -215,7 +258,7 @@ def _request(method: str, endpoint: str, *, token: str, payload=None, params=Non
 def sign_in(email: str, password: str) -> dict:
     url, key = configuration()
     if not url or not key:
-        raise SupabaseError("Supabase is not configured. Add SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to Streamlit secrets.")
+        raise SupabaseError(AUTH_ERROR_MESSAGES["auth_not_configured"], code="auth_not_configured")
     try:
         response = requests.post(
             f"{url}/auth/v1/token?grant_type=password",
@@ -223,16 +266,44 @@ def sign_in(email: str, password: str) -> dict:
             json={"email": email.strip(), "password": password}, timeout=30,
         )
     except requests.RequestException as exc:
-        raise SupabaseError(f"Could not reach Supabase Auth: {exc}") from exc
+        if isinstance(exc, requests.exceptions.SSLError):
+            code = "auth_certificate_error"
+        elif isinstance(exc, requests.Timeout):
+            code = "auth_timeout"
+        elif isinstance(exc, (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema,
+                              requests.exceptions.InvalidSchema, requests.exceptions.InvalidHeader)):
+            code = "auth_configuration_error"
+        else:
+            code = "auth_connection_error"
+        raise SupabaseError(AUTH_ERROR_MESSAGES[code], code=code) from exc
+    try:
+        result = response.json()
+    except ValueError:
+        result = None
     if not response.ok:
-        try:
-            detail = response.json().get("msg") or response.json().get("message") or "Check the email and password."
-        except ValueError:
-            detail = "Check the email and password."
-        raise SupabaseError(f"Sign-in failed: {detail}")
-    result = response.json()
-    if not result.get("access_token") or not result.get("user", {}).get("id"):
-        raise SupabaseError("Supabase Auth did not return a valid user session.")
+        payload = result if isinstance(result, dict) else {}
+        provider_code = payload.get("error_code") or payload.get("code")
+        if provider_code in {"invalid_credentials", "email_not_confirmed"}:
+            code = provider_code
+        elif provider_code in {"over_request_rate_limit", "over_email_send_rate_limit"} or response.status_code == 429:
+            code = "auth_rate_limited"
+        elif provider_code == "request_timeout":
+            code = "auth_timeout"
+        elif payload.get("error") == "invalid_grant" and payload.get("error_description") == "Invalid login credentials":
+            code = "invalid_credentials"
+        elif response.status_code == 401:
+            code = "auth_configuration_error"
+        elif response.status_code >= 500:
+            code = "auth_unavailable"
+        else:
+            code = "auth_rejected"
+        raise SupabaseError(AUTH_ERROR_MESSAGES[code], status_code=response.status_code, code=code)
+    if (not isinstance(result, dict)
+            or not isinstance(result.get("user"), dict) or not result["user"].get("id")
+            or any(not isinstance(result.get(field), str) or not result[field].strip()
+                   for field in ("access_token", "refresh_token"))):
+        raise SupabaseError(AUTH_ERROR_MESSAGES["auth_invalid_response"],
+                            status_code=response.status_code, code="auth_invalid_response")
     return result
 
 

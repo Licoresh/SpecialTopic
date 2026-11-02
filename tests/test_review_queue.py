@@ -1,6 +1,7 @@
 """Synthetic fixtures for phrase-level review grouping; never research data."""
 
 import pandas as pd
+import pytest
 
 from src.review_queue import expand_phrase_annotations, group_candidates_by_phrase, labels_by_phrase
 
@@ -39,6 +40,52 @@ def test_saved_category_conflict_is_not_silently_selected():
     ])
 
     assert labels_by_phrase(labels)["python"]["label"] == ""
+
+
+def _previous_labels_by_phrase(labels):
+    result = {}
+    if labels.empty or "normalized_phrase" not in labels:
+        return result
+    for normalized, group in labels.groupby("normalized_phrase", sort=False):
+        result[str(normalized)] = {}
+        for field in ("label", "psf_competency"):
+            values = group.get(field, pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+            distinct = list(dict.fromkeys(value for value in values if value))
+            result[str(normalized)][field] = distinct[0] if len(distinct) == 1 else ""
+    return result
+
+
+@pytest.mark.parametrize("missing_columns", [[], ["label"], ["psf_competency"], ["label", "psf_competency"], ["normalized_phrase"]])
+def test_phrase_label_lookup_matches_previous_conflict_and_missing_value_rules(missing_columns):
+    labels = pd.DataFrame([
+        {"normalized_phrase": " Python ", "label": " Technical / Digital ", "psf_competency": None},
+        {"normalized_phrase": "sql", "label": "Data / Analytics", "psf_competency": "Data Engineering"},
+        {"normalized_phrase": " Python ", "label": None, "psf_competency": " Programming "},
+        {"normalized_phrase": "sql", "label": " Technical / Digital ", "psf_competency": "Data Engineering"},
+        {"normalized_phrase": "empty", "label": " \t ", "psf_competency": ""},
+        {"normalized_phrase": None, "label": "Ignored", "psf_competency": "Ignored"},
+        {"normalized_phrase": "psf conflict", "label": "Soft / Enabling", "psf_competency": "Communication"},
+        {"normalized_phrase": "psf conflict", "label": " Soft / Enabling ", "psf_competency": "Collaboration"},
+        {"normalized_phrase": "python", "label": "AI / Machine Learning", "psf_competency": pd.NA},
+        {"normalized_phrase": "", "label": "Literal empty phrase", "psf_competency": ""},
+        {"normalized_phrase": float("nan"), "label": "Ignored", "psf_competency": "Ignored"},
+    ], index=[9, 3, 3, 8, 12, -1, 30, 18, 1, 55, 7]).drop(columns=missing_columns)
+    before = labels.copy(deep=True)
+    expected = _previous_labels_by_phrase(labels)
+    actual = labels_by_phrase(labels)
+    assert actual == expected
+    assert list(actual) == list(expected)
+    pd.testing.assert_frame_equal(labels, before)
+
+
+def test_phrase_label_lookup_keeps_stringified_keys_and_empty_input_behavior():
+    labels = pd.DataFrame({"normalized_phrase": [2, "SQL", 2, 1],
+                           "label": [0, "Technical / Digital", " 0 ", False],
+                           "psf_competency": [None, "", "", None]})
+    assert labels_by_phrase(labels) == _previous_labels_by_phrase(labels)
+    assert list(labels_by_phrase(labels)) == ["2", "SQL", "1"]
+    assert labels_by_phrase(pd.DataFrame(columns=labels.columns)) == {}
+    assert labels_by_phrase(pd.DataFrame({"normalized_phrase": [None, pd.NA, float("nan")]})) == {}
 
 
 def test_category_only_save_preserves_each_ads_legacy_reference():
