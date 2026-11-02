@@ -172,6 +172,8 @@ svg[data-fow-sticky-tooltip="true"] { display: none !important; }
   width: 100%; max-width: none; padding-inline: clamp(1rem, 3vw, 2rem); padding-bottom: 4rem;
 }
 body:has(.st-key-workspace_toolbar) [data-stale="true"], [data-testid="stSidebar"] [data-stale="true"] { opacity: 1 !important; filter: none !important; transition: none !important; }
+/* Retained sign-in page elements must not occupy the loading workspace. */
+body:has(.st-key-workspace_toolbar) :is(.st-key-login_shell, .st-key-login_shell_busy) { display: none !important; }
 h1,h2,h3 { color: var(--fow-heading); letter-spacing: -.035em; text-wrap: balance; font-weight: 700; }
 h1 { max-width: 30ch; }
 p,li { line-height: 1.55; }

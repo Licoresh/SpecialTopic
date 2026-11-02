@@ -816,10 +816,13 @@ def test_successful_login_replaces_form_with_workspace(monkeypatch):
     app = AppTest.from_string("""
 import streamlit as st
 from src.auth_ui import login_page
+def overview():
+    with st.container(key='workspace_toolbar'):
+        st.title('Overview')
 if st.session_state.get('supabase_access_token'):
-    st.title('Overview')
+    st.navigation([st.Page(overview, title='Overview', default=True)]).run()
 else:
-    login_page()
+    st.navigation([st.Page(login_page, title='Sign in', default=True)], position='hidden').run()
 """).run()
     app.text_input[0].set_value('synthetic@example.test')
     app.text_input[1].set_value('synthetic-test-password')
