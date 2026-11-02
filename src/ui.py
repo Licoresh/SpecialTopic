@@ -2088,7 +2088,7 @@ def _job_market_content(tables, meta, revision=None):
         st.session_state.setdefault("_fow_loading_ready", {}).pop("job_market_psf_charts", None)
     # Keep hidden section controls out of Streamlit's widget-cleanup cycle.
     for key in ("result_title_view", "result_family", "result_specific_title", "result_region", "result_city",
-                "result_skill_family_heatmap_families", "result_psf_role", "result_psf_order",
+                "result_skill_family_heatmap_families", "result_psf_role",
                 "result_competency_heatmap_roles", "result_competency_heatmap_competencies"):
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
@@ -2521,7 +2521,6 @@ def _job_market_content(tables, meta, revision=None):
                         if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
                             st.session_state["result_psf_role"] = "All"
                         role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
-                        psf_order = st.selectbox("Competency order", ["Highest demand", "Framework order", "Alphabetical"], key="result_psf_order")
                     linked = all_linked
                     if role != "All":
                         linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
@@ -2549,10 +2548,10 @@ def _job_market_content(tables, meta, revision=None):
                                     role_denominator if role != "All" else denominator,
                                     lambda: result_count_chart(competence, "psf_competency", "job_ads",
                                                                "PSF-AAI competencies linked to employer demand",
-                                                               order=psf_order, limit=limit),
+                                                               order=order, limit=limit),
                                     key="psf_competencies",
                                 )
-                            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Framework order follows the active reference; role links can overlap.")
+                            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Role links can overlap.")
                             with st.container(border=True, key="job_market_featured_psf_roles"):
                                 role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
                                 with role_chart_column:
@@ -2692,7 +2691,6 @@ def research_page(page):
         if page == "Reports":
             meta = dict(meta, chart_view_settings={
                 "order": st.session_state.get("result_chart_order", "Highest demand"),
-                "psf_order": st.session_state.get("result_psf_order", "Framework order"),
                 "job_title_view": st.session_state.get("result_title_view", "Most common job titles"),
                 "items_per_chart": st.session_state.get("result_chart_limit", 15),
                 "focused_job_title": st.session_state.get("result_focus_job_title"),
@@ -2729,13 +2727,12 @@ def research_page(page):
                     order, limit = result_chart_options()
                     competence = tables["psf_competency_demand"]
                     if not competence.empty:
-                        psf_order = st.selectbox("Competency order", ["Framework order", "Highest demand", "Alphabetical"], key="result_psf_order")
                         plot_competence = tables.get("psf_chart_demand")
                         if plot_competence is None:
                             plot_competence = psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
                         with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
                             with st.container(key="psf_mapping_demand_chart", width="stretch"):
-                                plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=psf_order, limit=limit, highlight_max=True)
+                                plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
                             with st.container(key="psf_mapping_demand_insight", width="stretch"):
                                 psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique())
                     display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))

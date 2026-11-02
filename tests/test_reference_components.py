@@ -428,3 +428,29 @@ report_deliverables({"cleaned_jobs": pd.DataFrame({"source_id": ["SYNTHETIC-A"]}
     assert (folders[0] / "research_results.xlsx").read_bytes() == b"synthetic workbook"
     assert json.loads((folders[0] / "analysis_metadata.json").read_text())["research_sample"]["source_ids"] == ["SYNTHETIC-A"]
     assert excel.call_count == report.call_count == summary.call_count == 1
+
+def test_mapping_uses_one_chart_order_control_for_chart_and_table(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    tables = result_tables()
+    tables['psf_competency_demand'] = pd.DataFrame({
+        'psf_competency': ['Alpha', 'Zulu', 'Middle'], 'job_ad_count': [1, 3, 2]})
+    tables['psf_chart_demand'] = pd.DataFrame({
+        'psf_competency': ['Alpha', 'Zulu', 'Middle'], 'job_ads': [1, 3, 2],
+        'framework_order': [0, 1, 2]})
+    tables['psf_mapping_reviews'] = pd.DataFrame()
+    figures = []
+    monkeypatch.setattr(ui, 'current_analysis', lambda: True)
+    monkeypatch.setattr(ui, 'filtered_bundle', lambda: (tables, {}))
+    monkeypatch.setattr(ui, 'psf_mapping_review', lambda *args: None)
+    monkeypatch.setattr(ui.storage, 'read_frame', lambda *args: pd.DataFrame())
+    monkeypatch.setattr(ui, 'chart', figures.append)
+    app = AppTest.from_string('from src.ui import research_page\nresearch_page("PSF Mapping")').run(timeout=30)
+    for order, expected in [('Highest demand', ['Zulu', 'Middle', 'Alpha']),
+                            ('Alphabetical', ['Alpha', 'Middle', 'Zulu'])]:
+        app.selectbox(key='result_chart_order').set_value(order).run(timeout=30)
+        assert not app.exception and not app.error
+        assert sum(item.label == 'Chart order' for item in app.selectbox) == 1
+        assert not any(item.label == 'Competency order' for item in app.selectbox)
+        assert list(figures[-1].data[0].y) == expected
+        table = next(item.value for item in app.dataframe if 'job_ad_count' in item.value)
+        assert table.psf_competency.tolist() == expected
