@@ -6,11 +6,16 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 from src import supabase_store as backend
+from src import design
 from src.visualization import distribution, style_chart
 
 
 def login_app():
     return AppTest.from_string("from src.auth_ui import login_page\nlogin_page()").run()
+
+
+def test_single_education_metric_uses_maroon_value():
+    assert '.st-key-job_market_education [data-testid="stMetricValue"] { color: #86142D; }' in design.CSS
 
 
 def test_compact_account_menu_keeps_identity_and_signout(monkeypatch):

@@ -180,7 +180,7 @@ def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
     assert dict(zip(main.data[0].y, main.data[0].x)) == {"sql": 2, "c++": 1, "collaboration": 1}
     assert not any(fig.layout.title.text == "Related role groups" for fig in figures)
     app.button_group(key="result_section").select("Qualifications").run(timeout=30)
-    assert any("not stated in 1" in item.value for item in app.markdown)
+    assert any("not stated: 2 of 4 selected ads" in item.value.casefold() for item in app.caption)
     app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     focused = figure_with_title(figures, "Top skills for all selected advertisements")
     assert dict(zip(focused.data[0].y, focused.data[0].x)) == {"sql": 2, "c++": 1, "collaboration": 1}
@@ -213,7 +213,7 @@ def test_job_market_insights_and_reference_role_card_use_selected_data(monkeypat
 
     for section, insight, evidence in (
         ("Roles and locations", "title insight", "data analyst"),
-        ("Qualifications", "education insight", "stated"),
+        ("Qualifications", "education insight", "only one classifiable stated level"),
         ("PSF-AAI demand", "key insight", "programming"),
     ):
         app.button_group(key="result_section").select(section).run(timeout=30)
@@ -222,7 +222,7 @@ def test_job_market_insights_and_reference_role_card_use_selected_data(monkeypat
         assert insight in content and evidence in content
 
 
-def test_timeline_and_family_insights_acknowledge_ties_while_education_uses_coverage(monkeypatch):
+def test_timeline_and_family_insights_acknowledge_ties_while_education_compares_stated_levels(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["education_requirement"] = ["Bachelor's degree", "Master's degree"] * 2
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-01-01", "2026-02-01"] * 2
@@ -234,18 +234,23 @@ def test_timeline_and_family_insights_acknowledge_ties_while_education_uses_cove
     assert "2 displayed months tie" in content
     app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert not app.exception and not app.error
-    coverage = figure_with_title(figures, "Education requirement coverage").data[0]
-    assert dict(zip(coverage.y, coverage.x)) == {"stated": 4, "not stated": 0}
-    assert "2 classifiable levels share the highest count" not in html_content(app)
+    education = figures[-1].data[0]
+    assert dict(zip(education.y, education.x)) == {"College / undergraduate": 2, "master's degree": 2}
+    assert not figures[-1].layout.title.text
+    assert "not stated" not in [str(label).casefold() for label in education.y]
+    assert "2 displayed levels share the highest count" in html_content(app).casefold()
 
 
-@pytest.mark.parametrize("requirements,expected", [
-    (["Bachelor's degree", "", "not specified", ""], {"stated": 1, "not stated": 3}),
-    (["", "", "", ""], {"stated": 0, "not stated": 4}),
+@pytest.mark.parametrize("requirements,expected_levels,not_stated,needs_review", [
+    (["Bachelor's degree", "", "not specified", ""], {"College / undergraduate": 1}, 3, 0),
+    (["Bachelor's degree", "Undergraduate / college level", "", ""], {"College / undergraduate": 2}, 2, 0),
+    (["", "", "", ""], {}, 4, 0),
     (["Bachelor's degree preferred", "Bachelor's or master's degree", "Diploma in computing", "not specified"],
-     {"stated": 3, "not stated": 1}),
+     {}, 1, 3),
 ])
-def test_education_coverage_chart_counts_presence_without_inventing_qualification_levels(monkeypatch, requirements, expected):
+def test_education_graph_compares_classified_levels_and_reports_missing_below(monkeypatch, requirements,
+                                                                             expected_levels, not_stated,
+                                                                             needs_review):
     tables = result_tables()
     tables["cleaned_jobs"]["education_requirement"] = requirements
     original = tables["cleaned_jobs"].copy(deep=True)
@@ -253,13 +258,23 @@ def test_education_coverage_chart_counts_presence_without_inventing_qualificatio
     figures.clear()
     app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert not app.exception and not app.error
-    assert len(figures) == 1
-    trace = figure_with_title(figures, "Education requirement coverage").data[0]
-    assert dict(zip(trace.y, trace.x)) == expected
-    assert sum(trace.x) == 4
-    assert {label: float(custom[1]) for label, custom in zip(trace.y, trace.customdata)} == {
-        label: count * 25. for label, count in expected.items()}
-    assert not any(item.label == "bachelor's degree" for item in app.metric)
+    if expected_levels:
+        if len(expected_levels) == 1:
+            assert not figures
+            label, count = next(iter(expected_levels.items()))
+            assert any(item.label == label and item.value == str(count) for item in app.metric)
+        else:
+            trace = figures[-1].data[0]
+            assert dict(zip(trace.y, trace.x)) == expected_levels
+            assert not figures[-1].layout.title.text
+            assert "not stated" not in [str(label).casefold() for label in trace.y]
+    else:
+        assert not figures
+        assert any("No stated education requirement has one unambiguous level" in item.value for item in app.info)
+    captions = " ".join(item.value for item in app.caption).casefold()
+    assert f"not stated: {not_stated} of 4 selected ads" in captions
+    assert f"including {needs_review} that could not be assigned one unambiguous level" in captions
+    assert "education insight" in html_content(app).casefold()
     assert "Field Coverage" not in html_content(app)
     evidence = next(item for item in app.expander if item.label == "Education standardization evidence")
     assert not evidence.proto.expanded
@@ -580,7 +595,7 @@ def test_experience_summary_uses_only_exact_single_value_requirements(monkeypatc
     app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert any("median 3 years (observed range 2–4)" in item.value and "2 of 4 selected ads" in item.value for item in app.caption)
     assert any("Ranges and open-ended wording are excluded" in item.value for item in app.caption)
-    assert any("Not stated describes missing information" in item.value for item in app.caption)
+    assert any("Not stated does not mean education was not required" in item.value for item in app.caption)
 
 def test_psf_role_filter_limits_multi_role_links_and_heatmap(monkeypatch):
     tables = result_tables()

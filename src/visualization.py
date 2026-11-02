@@ -144,7 +144,6 @@ def education_bar(frame):
     """Educational progression, rather than demand rank, determines the x axis."""
     data = frame.sort_values("level_order", kind="stable")
     fig = px.bar(data, x="job_ads", y="education_level", orientation="h", custom_data=["job_ads_pct"],
-                 title="Education levels stated in advertisements",
                  labels={"education_level": "Education level", "job_ads": "Job advertisements"})
     fig.update_traces(marker_color=st.get_option("theme.primaryColor"), texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
                       hovertemplate="<b>%{y}</b><br>Job advertisements: %{x:,d}<br>Share of selected ads: %{customdata[0]:.1f}%<extra></extra>")

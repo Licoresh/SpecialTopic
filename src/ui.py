@@ -33,7 +33,7 @@ from .geography import location_tables
 from .alignment import STATUSES, ALIGNMENT_COLUMNS
 from .skill_extraction import EXTRACTION_COLUMNS
 from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
-from .visualization import bar, distribution, heatmap, count_axis, ranked_bar
+from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar
 from .reporting import export_csv, export_excel, export_html, export_research_report
 from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
@@ -141,22 +141,40 @@ def cached_load_path(path, modified, size, source_hash, sheet, encoding):
 
 cached_label_validation = st.cache_data(show_spinner=False, ttl=60, max_entries=8)(validate_labeled_data)
 
+# Bump only when the calculated result tables or their research meaning change.
+# UI, style, and performance releases must not invalidate the expensive bundle.
+RESULTS_BUNDLE_VERSION = 1
 
-def _session_cached_value(cache_name, key, loader, *, ttl=12, max_entries=4):
+
+def _clone_analysis_bundle(value):
+    """Isolate small result tables while sharing large, read-only evidence frames."""
+    tables, metadata = value
+    isolated_tables = {
+        name: frame.copy(deep=True)
+        if len(frame) <= 500 and "original_text" not in frame.columns
+        else frame
+        for name, frame in tables.items()
+    }
+    cloned_metadata = deepcopy(metadata)
+    cloned_metadata["software_version"] = VERSION
+    return isolated_tables, cloned_metadata
+
+
+def _session_cached_value(cache_name, key, loader, *, ttl=12, max_entries=4, clone=deepcopy):
     """Cache derived research data inside one authenticated Streamlit session."""
     cache = st.session_state.setdefault(cache_name, {})
     now = time.monotonic()
     entry = cache.get(key)
     if entry and (ttl is None or now - entry[0] < ttl):
-        return deepcopy(entry[1])
+        return clone(entry[1])
     value = loader()
-    cache[key] = (time.monotonic(), deepcopy(value))
+    cache[key] = (time.monotonic(), value if clone is not deepcopy else deepcopy(value))
     for stale_key in [item for item, saved in cache.items() if ttl is not None and now - saved[0] >= ttl]:
         cache.pop(stale_key, None)
     while len(cache) > max_entries:
         oldest = min(cache, key=lambda item: cache[item][0])
         cache.pop(oldest, None)
-    return value
+    return clone(value)
 
 
 def _page_ai_suggestions(path):
@@ -438,11 +456,24 @@ def filtered_bundle():
             ttl=None, max_entries=1,
         )
         return analysis_bundle(source_snapshot=source_snapshot)
-    bundle_key = digest({"presentation_version": VERSION, "signature": analysis_revision})
+    bundle_key = digest({"results_bundle_version": RESULTS_BUNDLE_VERSION,
+                         "signature": analysis_revision})
+    # Reuse the active pre-versioned entry after a UI-only code reload when its
+    # exact source snapshot is still cached. Review, extraction, or correction
+    # changes produce a different source_key and cannot take this path.
+    previous_key = st.session_state.get("_fow_loaded_bundle_revision")
+    analysis_cache = st.session_state.get("_fow_analysis_cache", {})
+    source_cache = st.session_state.get("_fow_source_cache", {})
+    if (previous_key and previous_key != bundle_key and previous_key in analysis_cache
+            and source_key in source_cache):
+        analysis_cache.setdefault(bundle_key, analysis_cache[previous_key])
     result = _session_cached_value(
         "_fow_analysis_cache", bundle_key,
         build_analysis,
         ttl=None, max_entries=2,
+        # Small result tables are isolated for caller edits; large evidence
+        # frames stay shared because result pages only read them.
+        clone=_clone_analysis_bundle,
     )
     st.session_state["_fow_loaded_bundle_revision"] = bundle_key
     return result
@@ -2483,26 +2514,63 @@ def _job_market_content(tables, meta, revision=None):
                     st.subheader("What qualifications are stated?", icon=":material/school:")
                     for row in profile["requirement_field_coverage"].itertuples():
                         label = row.source_field.removesuffix("_requirement").capitalize()
-                        st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads; not stated in {row.not_stated_job_ads:,}.")
+                        st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads.")
                 education = profile["education_level_counts"]
                 missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
                 stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
-                education_coverage = pd.DataFrame({"education_requirement": ["stated", "not stated"],
-                                                   "job_ads": [stated_education, missing_education]})
-                education_coverage["job_ads_pct"] = education_coverage.job_ads / denominator * 100 if denominator else 0.0
+                education_evidence = profile["education_level_evidence"]
+                needs_review_education = int(education_evidence.loc[
+                    education_evidence.parse_status.eq("Needs review"), "source_id"
+                ].nunique())
+                education_chart = education.assign(education_level=education.education_level.replace({
+                    "undergraduate / college level": "College / undergraduate",
+                    "bachelor's degree": "College / undergraduate",
+                })).groupby("education_level", as_index=False, sort=False).agg(
+                    job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"),
+                    level_order=("level_order", "min"),
+                ).sort_values("level_order", kind="stable").reset_index(drop=True)
                 with st.container(border=True, key="job_market_education"):
+                    st.subheader("Stated education requirements by level", icon=":material/bar_chart:")
                     education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
                     with education_column:
-                        if denominator:
-                            plot(education_coverage, "education_requirement", "job_ads", "Education requirement coverage")
+                        if len(education_chart) > 1:
+                            chart(education_bar(education_chart))
+                        elif len(education_chart) == 1:
+                            level = education_chart.iloc[0]
+                            st.metric(str(level.education_level), f"{int(level.job_ads):,}",
+                                      help="Distinct selected job advertisements with this stated education level.")
+                            st.caption("Job advertisements with a classifiable stated education level.")
                         else:
-                            st.info("No selected advertisements are available for education coverage.")
+                            st.info("No stated education requirement has one unambiguous level to compare in this selection.")
                     with insight_column:
-                        summary = (f"Education requirements are stated in {stated_education:,} of {denominator:,} advertisements "
-                                   f"({100 * stated_education / denominator if denominator else 0:.1f}%) and not stated in {missing_education:,} "
-                                   f"({100 * missing_education / denominator if denominator else 0:.1f}%).")
-                        result_insight("Education Insight", summary, [])
-                    st.caption("Stated means the education field contains a requirement, including wording that still needs review. Not stated describes missing information; it does not mean education was not required.")
+                        if education_chart.empty:
+                            summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
+                        elif len(education_chart) == 1:
+                            only = education_chart.iloc[0]
+                            summary = (f"Only one classifiable stated level appears in this selection: "
+                                       f"{only.education_level} ({int(only.job_ads):,} ads).")
+                            top_levels = []
+                        else:
+                            maximum = int(education_chart.job_ads.max())
+                            leaders = education_chart.loc[education_chart.job_ads.eq(maximum), "education_level"].astype(str).tolist()
+                            leader_text = ", ".join(leaders)
+                            classified_total = int(education_chart.job_ads.sum())
+                            if len(leaders) > 1:
+                                summary = (f"{len(leaders):,} displayed levels share the highest count "
+                                           f"({maximum:,} ads each): {leader_text}. There are {classified_total:,} "
+                                           "ads with one recognized level.")
+                            else:
+                                summary = (f"{leader_text} has the highest classified count ({maximum:,} of "
+                                           f"{classified_total:,} ads with one recognized level).")
+                            top_levels = list(education_chart.sort_values(
+                                ["job_ads", "level_order"], ascending=[False, True], kind="stable"
+                            ).loc[:, ["education_level", "job_ads"]].itertuples(index=False, name=None))
+                        result_insight("Education Insight", summary, top_levels, "Classified levels")
+                    stated_pct = 100 * stated_education / denominator if denominator else 0.0
+                    missing_pct = 100 * missing_education / denominator if denominator else 0.0
+                    st.caption(f"Not stated: {missing_education:,} of {denominator:,} selected ads ({missing_pct:.1f}%). "
+                               f"An education requirement appears in {stated_education:,} ads ({stated_pct:.1f}%), including {needs_review_education:,} "
+                               "that could not be assigned one unambiguous level and remain available in the evidence table. Not stated does not mean education was not required.")
                     evidence_tables("Education standardization evidence", {
                         "Recognized qualification levels": education.drop(columns="level_order", errors="ignore"),
                         "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")

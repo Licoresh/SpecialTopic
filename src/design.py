@@ -323,6 +323,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 [class*="st-key-result_metric_"] [data-testid="stMetricIcon"] { position: absolute; top: 0; left: 0; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 12px; font-size: 27px; }
 [class*="st-key-result_single_"] [data-testid="stMetric"] { min-height: 144px; }
 [class*="st-key-result_single_"] [data-testid="stMetricValue"] { font-size: clamp(2.7rem, 5vw, 3.7rem); }
+.st-key-job_market_education [data-testid="stMetricValue"] { color: #86142D; }
 .st-key-result_chart_controls { align-items: end; margin-block: .4rem 1rem; }
 .st-key-result_chart_controls > [data-testid="stLayoutWrapper"] { flex: 1 1 360px; }
 .st-key-result_chart_selectors > [data-testid="stLayoutWrapper"] { flex: 1 1 150px; }
