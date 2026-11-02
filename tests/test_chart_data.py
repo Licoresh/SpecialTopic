@@ -1,7 +1,8 @@
 """Synthetic chart data only; no research records or labels are changed."""
 import pandas as pd
+import pytest
 from src.alignment import calculate_mapping
-from src.analytics import accepted_skills, skill_chart_tables
+from src.analytics import accepted_skills, psf_demand_tables, skill_chart_tables, unmapped_chart_counts
 
 
 def rows(values):
@@ -178,8 +179,7 @@ def test_legal_boilerplate_duty_fragments_and_outcome_metrics_stay_out_of_skill_
     assert reasons["activities and work"].startswith("Generic duty wording")
     assert reasons["adoption of insight"].startswith("Success-metric wording")
     assert reasons["adoption insight"].startswith("Success-metric wording")
-    # These additions affect graph presentation only; saved extraction/mapping eligibility is unchanged.
-    assert set(accepted_skills(skills).normalized_phrase) == set(skills.normalized_phrase)
+    assert accepted_skills(skills).normalized_phrase.tolist() == ["ability to learn"]
     pd.testing.assert_frame_equal(skills, original)
 
 
@@ -202,7 +202,7 @@ def test_company_copy_title_fragments_and_occupational_wording_stay_out_of_skill
     assert audit["ai base"].startswith("Malformed")
     assert audit["ai based"].startswith("Malformed")
     assert audit["ai prompt"].startswith("Job-title fragment")
-    assert set(accepted_skills(skills).normalized_phrase) == set(phrases)
+    assert accepted_skills(skills).normalized_phrase.tolist() == ["SQL"]
     pd.testing.assert_frame_equal(skills, original)
 
 
@@ -333,3 +333,238 @@ def test_empty_tables_keep_exportable_schema():
     assert all(frame.empty for frame in tables.values())
     assert {"normalized_phrase", "employer_skill", "employer_demand_count", "employer_demand_pct"} <= set(tables["chart_skill_demand"])
     assert "review_reason" in tables["chart_phrase_review"]
+
+
+@pytest.mark.parametrize("mapped_status", ["ALIGNED", "PARTIALLY ALIGNED"])
+def test_mapped_alias_suppresses_unmapped_group_even_after_same_ad_deduplication(mapped_status):
+    skills = rows([("A", "\u2022sql", "Technical / Digital"),
+                   ("A", "sql", "Technical / Digital")])
+    jobs = pd.DataFrame({"source_id": ["A"]})
+    occurrences = skill_chart_tables(skills, jobs)["chart_skill_occurrences"]
+    assert occurrences.original_normalized_phrase.tolist() == ["\u2022sql"]
+    alignment = pd.DataFrame({"normalized_skill": ["\u2022sql", "sql"],
+                              "status": ["NOT MAPPED", mapped_status]})
+    before_occurrences, before_alignment = occurrences.copy(deep=True), alignment.copy(deep=True)
+
+    assert unmapped_chart_counts(occurrences, alignment).empty
+
+    pd.testing.assert_frame_equal(occurrences, before_occurrences)
+    pd.testing.assert_frame_equal(alignment, before_alignment)
+
+
+def test_recurring_unmapped_threshold_uses_combined_alias_demand():
+    skills = rows([("A", "communication", "Soft / Enabling"),
+                   ("B", "communication", "Soft / Enabling"),
+                   ("C", "communication skills", "Soft / Enabling"),
+                   ("D", "communication skills", "Soft / Enabling")])
+    occurrences = skill_chart_tables(skills, pd.DataFrame({"source_id": list("ABCD")}))["chart_skill_occurrences"]
+    alignment = pd.DataFrame({"normalized_skill": ["communication", "communication skills"],
+                              "status": ["NOT MAPPED", "NOT MAPPED"]})
+
+    counted = unmapped_chart_counts(occurrences, alignment, minimum_jobs=3)
+
+    assert counted.to_dict("records") == [{"normalized_skill": "communication", "skill_label": "communication", "job_ads": 4}]
+    assert unmapped_chart_counts(occurrences, alignment, minimum_jobs=4).job_ads.tolist() == [4]
+    assert unmapped_chart_counts(occurrences, alignment, minimum_jobs=5).empty
+
+
+def test_unmapped_counts_distinct_selected_ads_despite_repeated_evidence_rows():
+    skills = rows([("A", "communication", "Soft / Enabling"),
+                   ("A", "communication skills", "Soft / Enabling"),
+                   ("B", "communication skills", "Soft / Enabling"),
+                   ("EXTERNAL", "communication", "Soft / Enabling")])
+    jobs = pd.DataFrame({"source_id": ["A", "B", "A"]})
+    screened = skill_chart_tables(skills, jobs)["chart_skill_occurrences"]
+    occurrences = pd.concat([screened, screened], ignore_index=True)
+    alignment = pd.DataFrame({"normalized_skill": ["communication", "communication skills", "communication"],
+                              "status": ["NOT MAPPED"] * 3})
+    before_skills, before_occurrences, before_alignment = (frame.copy(deep=True) for frame in (skills, occurrences, alignment))
+
+    assert unmapped_chart_counts(occurrences, alignment).job_ads.tolist() == [2]
+
+    for current, before in ((skills, before_skills), (occurrences, before_occurrences), (alignment, before_alignment)):
+        pd.testing.assert_frame_equal(current, before)
+
+
+def test_unmapped_counts_exclude_unclassified_unclear_and_rejected_phrases():
+    skills = rows([("A", "Build", "Technical / Digital"),
+                   ("A", "sql", "Technical / Digital"),
+                   ("A", "python", "Technical / Digital"),
+                   ("A", "Something", "IRRELEVANT"),
+                   ("A", "java", "Technical / Digital")])
+    skills["accepted"] = [True, True, True, True, False]
+    occurrences = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A"]}))["chart_skill_occurrences"]
+    alignment = pd.DataFrame({"normalized_skill": ["Build", "sql", "python", "Something", "java"],
+                              "status": ["NOT MAPPED", "UNCLASSIFIED", "NOT MAPPED", "NOT MAPPED", "NOT MAPPED"]})
+
+    assert unmapped_chart_counts(occurrences, alignment).to_dict("records") == [
+        {"normalized_skill": "python", "skill_label": "python", "job_ads": 1}]
+    empty = unmapped_chart_counts(occurrences.iloc[:0], alignment)
+    assert empty.empty and empty.columns.tolist() == ["normalized_skill", "skill_label", "job_ads"]
+
+
+@pytest.mark.parametrize("phrase", [
+    "long and successful", "tool and service", "accept", "accept usage", "acceptance",
+    "access to clean", "activity", "ad hoc", "adjacent enterprise system",
+    "improvement opportunity", "enterprise ai tool", "technical workflow",
+    "build in room", "basis a protect", "case include schedule", "business center",
+    "creation be complete", "database be accurate", "gender identity", "identity or expression",
+    "job description", "global professional", "critical success measures", "work closely",
+    "configure and deploy", "develop and retain", "quality and consistency",
+    "analysis be accurate", "design work closely",
+    "long and successful research", "free training", "opportunity for learning",
+    "opportunities for career development", "participate in development",
+])
+def test_generic_fragments_require_review_before_skill_and_psf_demand(phrase):
+    skills = rows([("A", phrase, "Technical / Digital")])
+    skills["accepted"] = True
+    before = skills.copy(deep=True)
+
+    charts = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A"]}))
+
+    assert accepted_skills(skills).empty
+    assert charts["chart_skill_demand"].empty
+    assert charts["chart_skill_occurrences"].empty
+    assert charts["chart_skill_family_demand"].empty
+    audit = charts["chart_phrase_review"]
+    assert audit.original_phrase.tolist() == [phrase]
+    assert audit.review_reason.str.len().gt(0).all()
+    pd.testing.assert_frame_equal(audit[before.columns], before)
+    pd.testing.assert_frame_equal(skills, before)
+
+
+def test_ambiguous_solution_design_wording_remains_available_for_review():
+    skills = rows([("A", "actionable solution design", "Technical / Digital")])
+    skills["accepted"] = True
+    before = skills.copy(deep=True)
+
+    charts = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A"]}))
+
+    assert accepted_skills(skills).empty
+    assert charts["chart_skill_demand"].empty
+    audit = charts["chart_phrase_review"]
+    assert audit.original_phrase.tolist() == ["actionable solution design"]
+    assert audit.review_reason.str.len().gt(0).all()
+    pd.testing.assert_frame_equal(audit[before.columns], before)
+    pd.testing.assert_frame_equal(skills, before)
+
+
+@pytest.mark.parametrize("phrase,label", [
+    ("ad hoc analysis", "ad hoc analysis"),
+    ("user acceptance testing", "user acceptance testing"),
+    ("solution design", "solution design"),
+    ("enterprise architecture", "enterprise architecture"),
+    ("API integration", "api integration"),
+    ("Rust", "rust"), ("Julia", "julia"), ("R", "r"),
+    ("C++", "c++"), ("C#", "c#"), (".NET", ".net"),
+    ("research", "research"), ("leadership", "leadership"), ("learning", "learning"),
+    ("ability to learn", "learning and application"),
+    ("learn and apply", "learning and application"),
+    ("build dashboards", "build dashboards"),
+    ("maintain data pipelines", "maintain data pipelines"),
+    ("design APIs", "design apis"),
+    ("configure network devices", "configure network devices"),
+    ("deploy ML models", "deploy ml models"),
+    ("perform statistical analysis", "perform statistical analysis"),
+    ("ensure regulatory compliance", "ensure regulatory compliance"),
+    ("attention to detail", "attention to detail"), ("resilience", "resilience"),
+    ("emotional intelligence", "emotional intelligence"), ("financial acumen", "financial acumen"),
+    ("numerical literacy", "numerical literacy"), ("stakeholder engagement", "stakeholder engagement"),
+    ("conflict resolution", "conflict resolution"), ("incident response", "incident response"),
+    ("visual storytelling", "visual storytelling"), ("load balancing", "load balancing"),
+    ("feature selection", "feature selection"), ("dimensionality reduction", "dimensionality reduction"),
+    ("data cleaning", "data cleaning"), ("quality assurance", "quality assurance"),
+    ("decision making", "decision making"), ("as-is process analysis", "as-is process analysis"),
+    ("end-to-end testing", "end-to-end testing"), ("in-memory analytics", "in-memory analytics"),
+    ("active listening", "active listening"), ("public speaking", "public speaking"),
+    ("creative thinking", "creative thinking"), ("customer service", "customer service"),
+    ("TypeScript", "typescript"), ("PySpark", "pyspark"), ("XGBoost", "xgboost"),
+    ("knowledge of SQL", "knowledge of sql"), ("proficiency in Python", "proficiency in python"),
+    ("ability to communicate", "ability to communicate"), ("statistical methods", "statistical methods"),
+    ("participate in model development", "participate in model development"),
+    ("strong knowledge of SQL", "strong knowledge of sql"),
+    ("proficiency in Microsoft Excel", "proficiency in microsoft excel"),
+    ("experience with Microsoft Power BI", "experience with microsoft power bi"),
+    ("knowledge of advanced SQL", "knowledge of advanced sql"),
+])
+def test_specific_skills_survive_conservative_fragment_screen(phrase, label):
+    skills = rows([("A", phrase, "Technical / Digital")])
+    skills["accepted"] = True
+    before = skills.copy(deep=True)
+
+    charts = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A"]}))
+
+    assert accepted_skills(skills).normalized_phrase.tolist() == [phrase]
+    assert charts["chart_skill_demand"].employer_skill.tolist() == [label]
+    assert charts["chart_phrase_review"].empty
+    pd.testing.assert_frame_equal(skills, before)
+
+
+def test_shared_fragment_screen_preserves_evidence_and_selected_ad_denominators():
+    skills = rows([("A", "SQL", "Technical / Digital"),
+                   ("A", "sql", "Technical / Digital"),
+                   ("B", "sql", "Technical / Digital"),
+                   ("C", "long and successful", "Technical / Digital"),
+                   ("D", "activity", "Technical / Digital"),
+                   ("A", "technical workflow", "Technical / Digital"),
+                   ("EXTERNAL", "sql", "Technical / Digital")])
+    skills["accepted"] = True
+    jobs = pd.DataFrame({"source_id": ["A", "B", "C", "D", "A"],
+                         "job_family": ["analytics", "analytics", "analytics", "operations", "analytics"]})
+    alignment = pd.DataFrame({"normalized_skill": ["sql", "long and successful", "activity", "technical workflow"],
+                              "status": ["NOT MAPPED"] * 4})
+    before_skills, before_jobs, before_alignment = (frame.copy(deep=True) for frame in (skills, jobs, alignment))
+
+    charts = skill_chart_tables(skills, jobs)
+    demand = charts["chart_skill_demand"]
+    occurrences = charts["chart_skill_occurrences"]
+    unmapped = unmapped_chart_counts(occurrences, alignment)
+
+    assert demand.employer_skill.tolist() == ["sql"]
+    assert demand.employer_demand_count.tolist() == [2]
+    assert demand.employer_demand_pct.tolist() == [50.0]
+    assert set(occurrences.source_id) == {"A", "B"}
+    assert not occurrences.duplicated(["source_id", "normalized_phrase"]).any()
+    family = charts["chart_skill_family_demand"]
+    assert family[["job_family", "skill_label", "job_ads", "family_ads"]].to_dict("records") == [
+        {"job_family": "analytics", "skill_label": "sql", "job_ads": 2, "family_ads": 3}]
+    assert family.job_ads_pct.tolist() == [pytest.approx(2 / 3 * 100)]
+    assert charts["chart_family_ad_counts"].set_index("job_family").family_ads.to_dict() == {
+        "analytics": 3, "operations": 1}
+    assert unmapped.to_dict("records") == [{"normalized_skill": "sql", "skill_label": "sql", "job_ads": 2}]
+    assert unmapped_chart_counts(occurrences, alignment, minimum_jobs=3).empty
+    audit = charts["chart_phrase_review"]
+    assert set(audit.original_phrase) == {"long and successful", "activity", "technical workflow"}
+    assert audit.review_reason.str.len().gt(0).all()
+    pd.testing.assert_frame_equal(audit[before_skills.columns], before_skills.loc[audit.index])
+    for current, before in ((skills, before_skills), (jobs, before_jobs), (alignment, before_alignment)):
+        pd.testing.assert_frame_equal(current, before)
+
+
+def test_psf_demand_screens_employer_noise_before_all_aggregations_and_preserves_reference_labels():
+    jobs = pd.DataFrame({"source_id": ["A", "B", "C", "D", "A"],
+                         "job_family": ["analytics", "analytics", "operations", "operations", "analytics"]})
+    mapping = pd.DataFrame({
+        "source_id": ["A", "A", "B", "C", "C", "EXTERNAL", "B", "C"],
+        "normalized_skill": ["sql", "sql", "build dashboards", "job description", "gender identity", "sql", "Rust", "sql"],
+        "psf_competency": ["activity"] * 4 + ["technical workflow", "activity", "work closely", "work closely"],
+        "psf_job_role": ["global professional"] * 4 + ["noise role", "external role", "engineer", "engineer"],
+        "status": ["ALIGNED"] * 7 + ["NOT MAPPED"],
+    })
+    taxonomy = pd.DataFrame({"competency_id": ["A", "T", "W"],
+                             "competency_name": ["Activity", "Technical workflow", "Work closely"]})
+    before_mapping, before_jobs, before_taxonomy = (frame.copy(deep=True) for frame in (mapping, jobs, taxonomy))
+
+    tables = psf_demand_tables(mapping, jobs, taxonomy)
+
+    demand = tables["psf_chart_demand"].set_index("psf_competency")
+    assert demand.job_ads.to_dict() == {"activity": 2, "work closely": 1}
+    assert demand.job_ads_pct.to_dict() == {"activity": 50.0, "work closely": 25.0}
+    assert demand.framework_order.to_dict() == {"activity": 0, "work closely": 2}
+    assert tables["psf_role_competency_demand"].set_index(["psf_job_role", "psf_competency"]).job_ads.to_dict() == {
+        ("engineer", "work closely"): 1, ("global professional", "activity"): 2}
+    assert tables["psf_role_family_demand"].set_index(["psf_job_role", "job_family"]).job_ads.to_dict() == {
+        ("engineer", "analytics"): 1, ("global professional", "analytics"): 2}
+    assert tables["psf_framework_order"].psf_competency.tolist() == ["activity", "technical workflow", "work closely"]
+    for current, before in ((mapping, before_mapping), (jobs, before_jobs), (taxonomy, before_taxonomy)):
+        pd.testing.assert_frame_equal(current, before)

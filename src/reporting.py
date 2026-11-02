@@ -78,6 +78,7 @@ def export_research_report(tables, metadata):
         f"- PSF-AAI competencies in the active reference: {metadata.get('dataset_counts', {}).get('psf_competencies', 'Not recorded')}",
         f"- Generated: {metadata.get('timestamp', 'Not recorded')}",
         "- Skill demand counts distinct job advertisements containing each normalized phrase; repeated mentions within one advertisement count once.",
+        "- Skill-demand, alignment and PSF-demand summaries use one phrase-clarity screen. Generic objects, incomplete wording and ambiguous outcome descriptions are withheld pending source review; chart_phrase_review and all_candidates preserve their evidence and researcher labels.",
         "- PSF-AAI mappings are many-to-many: several skill phrases and advertisements may support one competency. Multiple competencies for one occurrence require researcher-confirmed, competency-specific rationales. Automatic matching proposes at most one candidate.",
         "- The psf_mapping table preserves each phrase-and-advertisement occurrence, its source text and advertisement URL, and each competency link. Reference URLs are stored separately. Competency demand counts unique advertisements per competency.",
         "- PSF alignment is a heuristic comparison against the active reference. Similarity thresholds are configurable research settings, not official TESDA standards.",

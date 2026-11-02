@@ -165,7 +165,14 @@ def test_mapping_review_saves_multiple_links_and_no_match(ui_workspace, jobs, ta
     storage.save_frame("cleaned_psf_aai", taxonomy)
     run_extraction()
     app = page_app("PSF Mapping")
+    app.session_state["psf_review_occurrence"] = "previous-auto-selection"
+    app.run(timeout=60)
+    assert app.selectbox(key="psf_review_occurrence_choice").value is None
+    assert not any(item.label == "PSF-AAI competencies" for item in app.multiselect)
+    assert not any(item.label == "Save competency links" for item in app.button)
+    app.selectbox(key="psf_review_occurrence_choice").select_index(0).run(timeout=60)
     choice = next(item for item in app.multiselect if item.label == "PSF-AAI competencies")
+    assert choice.value == []  # Automated matches do not preselect researcher decisions.
     choice.set_value(["TEST-1", "TEST-2"]).run(timeout=60)
     next(item for item in app.text_input if item.label == "Reviewer ID").set_value("Synthetic reviewer")
     reasons = [item for item in app.text_area if item.label == "Source evidence and rationale"]
@@ -180,12 +187,12 @@ def test_mapping_review_saves_multiple_links_and_no_match(ui_workspace, jobs, ta
     assert saved.extraction_id.nunique() == 1
     saved_id = saved.extraction_id.iloc[0]
     # Saved status survives both reruns and selecting another advertisement.
-    occurrence_picker = app.selectbox(key="psf_review_occurrence")
+    occurrence_picker = app.selectbox(key="psf_review_occurrence_choice")
     other_id = next(key for key in occurrence_picker.options if key != occurrence_picker.format_func(saved_id))
     # AppTest options are formatted labels, so select using its raw index.
     occurrence_picker.select_index(next(i for i, key in enumerate(occurrence_picker.options) if key == other_id)).run(timeout=60)
     assert not any(item.value.startswith("Saved competencies:") for item in app.success)
-    app.selectbox(key="psf_review_occurrence").set_value(saved_id).run(timeout=60)
+    app.selectbox(key="psf_review_occurrence_choice").set_value(saved_id).run(timeout=60)
     app.run(timeout=60)
     assert any("Saved competencies: Python · SQL" in item.value for item in app.success)
     assert any("Saved by Synthetic reviewer" in item.value for item in app.caption)
@@ -211,6 +218,25 @@ def test_training_disabled_with_no_or_insufficient_labels(ui_workspace, labeled)
     evaluation = page_app("Model Evaluation")
     assert not evaluation.metric
     assert any("No research model" in message.value for message in evaluation.info)
+
+
+def test_results_ignore_removed_sidebar_filters_and_keep_active_upload_scope(ui_workspace, jobs, taxonomy):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    app = AppTest.from_string('''
+import streamlit as st
+from src.ui import filtered_bundle
+st.session_state["_current_analysis_signature"] = "synthetic-current-inputs"
+st.session_state["filter_jobs_job_title"] = ["no such title"]
+st.session_state["filter_status"] = ["NOT MAPPED"]
+st.session_state["research_dataset_hash"] = "old-dataset"
+tables, metadata = filtered_bundle()
+st.session_state["test_source_ids"] = metadata["research_sample"]["source_ids"]
+''').run(timeout=60)
+    assert not app.exception and not app.error
+    assert set(app.session_state["test_source_ids"]) == set(jobs.source_id)
+    assert not app.sidebar.expander
+    assert not app.multiselect and not app.selectbox and not app.text_input
 
 def test_changed_dataset_warns_without_automatic_retraining(ui_workspace, labeled):
     save_annotations(labeled, "Synthetic reviewer")
@@ -697,6 +723,31 @@ def test_settings_and_usability_save_actions(ui_workspace):
     assert not feedback.exception and not feedback.error
     assert len(storage.read_frame("usability")) == 1
 
+
+def test_settings_control_schema_preserves_validation_and_saved_values(ui_workspace):
+    from src.config import DEFAULTS
+    app = page_app("Settings")
+    assert len(app.slider) == 4 and len(app.number_input) == 5
+    assert len(app.text_input) == 1 and len(app.text_area) == 1
+    next(item for item in app.slider if item.label == "Aligned threshold").set_value(.85)
+    next(item for item in app.slider if item.label == "Partially aligned threshold").set_value(.65)
+    next(item for item in app.number_input if item.label == "NLP batch size").set_value(32)
+    app.text_area[0].set_value("Custom Word\n Second ")
+    next(button for button in app.button if button.label == "Save settings").click().run(timeout=60)
+    assert not app.exception and not app.error
+    saved = storage.read_json("settings")
+    assert set(saved) == set(DEFAULTS)
+    assert saved["aligned_threshold"] == .85 and saved["partial_threshold"] == .65
+    assert saved["batch_size"] == 32 and saved["stopwords"] == ["custom word", "second"]
+
+
+def test_methodology_sections_preserve_the_complete_download(ui_workspace):
+    app = page_app("Methodology")
+    assert not app.exception and not app.error
+    document = (Path(__file__).resolve().parents[1] / "METHODOLOGY.md").read_text(encoding="utf-8")
+    assert [item.label for item in app.expander] == [section.partition("\n")[0] for section in document.split("\n## ")[1:]]
+    assert len(app.get("download_button")) == 1
+
 def test_correction_and_report_save_actions(ui_workspace, jobs, taxonomy):
     for kind, frame in (("jobs",jobs),("psf_aai",taxonomy)):
         storage.save_frame("cleaned_"+kind, frame)
@@ -828,6 +879,7 @@ def test_account_identity_replaces_manual_reviewer_prompt(ui_workspace, jobs, ta
     app.session_state["supabase_user_email"] = "synthetic-reviewer@example.test"
     app.run(timeout=60)
     if page == "PSF Mapping":
+        app.selectbox(key="psf_review_occurrence_choice").select_index(0).run(timeout=60)
         next(item for item in app.multiselect if item.label == "PSF-AAI competencies").set_value(["TEST-1", "TEST-2"]).run(timeout=60)
     assert not any(item.label == "Reviewer ID" for item in app.text_input)
     assert not any("Enter your Reviewer ID" in item.value for item in app.caption)

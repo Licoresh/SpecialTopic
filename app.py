@@ -1,28 +1,31 @@
 import streamlit as st
-from src.auth_ui import require_workspace_access
+from src.design import apply_design, apply_sidebar_branding
 
 st.set_page_config(page_title="Future of Work | Philippines", page_icon=":material/work:", layout="wide")
+apply_design()
 
+from src.auth_ui import require_workspace_access
 require_workspace_access()
+apply_sidebar_branding()
 
 from src.ui import render
 
 pages = {
-    "Workspace": [
+    "Overview": [
         st.Page(lambda: render("Home"), title="Overview", icon=":material/dashboard:", default=True),
     ],
     "1 · Prepare and review": [
         st.Page("pages/01_Data_Upload.py", title="Upload study data", icon=":material/upload_file:"),
         st.Page("pages/02_Data_Quality.py", title="Review data quality", icon=":material/fact_check:"),
-        st.Page("pages/05_Competency_Extraction.py", title="Extract skill phrases", icon=":material/psychology:"),
-        st.Page("pages/06_Manual_Labeling.py", title="Review and label phrases", icon=":material/rate_review:"),
+        st.Page("pages/05_Competency_Extraction.py", title="Extract skill phrases", icon=":material/data_object:"),
+        st.Page("pages/06_Manual_Labeling.py", title="Review and label phrases", icon=":material/sell:"),
     ],
     "2 · Train and evaluate": [
         st.Page("pages/07_ML_Training.py", title="Train classifier", icon=":material/model_training:"),
         st.Page("pages/08_Model_Evaluation.py", title="Evaluate models", icon=":material/monitoring:"),
     ],
     "3 · Results and exports": [
-        st.Page("pages/03_Job_Market.py", title="Job market", icon=":material/insights:"),
+        st.Page("pages/03_Job_Market.py", title="Job Market Analysis", icon=":material/bar_chart:"),
         st.Page("pages/09_PSF_Mapping.py", title="PSF mapping", icon=":material/account_tree:"),
         st.Page("pages/10_Alignment.py", title="Employer–PSF alignment", icon=":material/compare_arrows:"),
         st.Page("pages/11_Skills_Gap.py", title="Unmapped skills", icon=":material/trending_up:"),

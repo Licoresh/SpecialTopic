@@ -2,9 +2,22 @@
 import os
 import time
 from html import escape
+from pathlib import Path
 import streamlit as st
 from . import supabase_store as backend
 from .action_guard import action_button, action_form_submit_button, finish_action_run
+
+
+def _hide_workspace_sidebar():
+    guard = st.empty()
+    guard.html('''<span data-fow-auth-sidebar hidden></span><style>
+        body:has([data-fow-auth-sidebar]) :is(
+            [data-testid="stSidebar"], [data-testid="stSidebarCollapsed"],
+            [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarResizeHandle"],
+            [data-testid="stExpandSidebarButton"]
+        ) { display: none !important; }
+    </style>''')
+    return guard
 
 
 def _login_panel(*, busy=False, email=""):
@@ -34,6 +47,7 @@ def _login_panel(*, busy=False, email=""):
 
 def login_page():
     from .design import apply_design
+    _hide_workspace_sidebar()
     apply_design()
     view = st.empty()
     with view.container():
@@ -81,10 +95,36 @@ def login_page():
                 st.rerun()
 
 
+def _workspace_unavailable(error, *, retry_label="Retry connection"):
+    """Keep connection recovery available without exposing the workspace."""
+    message = str(error)
+    if error.status_code == 403:
+        issue, advice, icon = "Workspace access", "Ask the project owner to check your team access, then retry.", "lock"
+    elif "incomplete" in message.lower() or error.status_code == 404:
+        issue, advice, icon = "Workspace setup", "Ask the project owner to check the shared database setup, then retry.", "settings"
+    else:
+        issue, advice, icon = "Connection issue", "Check the internet connection and retry.", "wifi_off"
+    with st.container(key="workspace_unavailable", horizontal_alignment="center", gap="large"):
+        st.image(str(Path(__file__).resolve().parents[1] / "assets/workspace_unavailable.svg"),
+                 width=420, alt="A laptop with an interrupted wireless connection.")
+        st.title("Workspace unavailable", anchor=False)
+        st.html('<p class="fow-unavailable-message">' + escape(message) + '</p>')
+        st.html('<aside class="fow-unavailable-reason"><span class="material-symbols-rounded" aria-hidden="true">'
+                + icon + '</span><div><h2>' + escape(issue) + '</h2><p>' + escape(advice) + '</p></div></aside>')
+        with st.container(horizontal=True, horizontal_alignment="center", gap="medium", wrap=True, key="workspace_unavailable_actions"):
+            if action_button(retry_label, icon=":material/refresh:", type="primary", width=230):
+                backend.clear_read_cache()
+                st.rerun()
+            if action_button("Return to sign in", icon=":material/login:", width=230):
+                backend.sign_out()
+                st.rerun()
+
+
 def require_workspace_access():
     from .design import apply_design
     if not backend.configured():
         if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+            _hide_workspace_sidebar()
             apply_design()
             st.title("Sign-in configuration required")
             st.error(
@@ -94,13 +134,16 @@ def require_workspace_access():
             )
             st.stop()
         return
+    known_session = (st.session_state.get("supabase_access_token")
+                     and st.session_state.get("supabase_role")
+                     and float(st.session_state.get("supabase_expires_at", 0)) > time.time())
+    sidebar_guard = None if known_session else _hide_workspace_sidebar()
     try:
         token = backend.get_token()
     except backend.SupabaseError as exc:
+        _hide_workspace_sidebar()
         apply_design()
-        st.error(str(exc))
-        if action_button("Retry session connection"):
-            st.rerun()
+        _workspace_unavailable(exc, retry_label="Retry session connection")
         st.stop()
     if not token:
         st.navigation([st.Page(login_page, title="Sign in", default=True)], position="hidden").run()
@@ -108,22 +151,18 @@ def require_workspace_access():
     try:
         role = backend.check_connection(token)
     except backend.SupabaseError as exc:
+        _hide_workspace_sidebar()
         if exc.status_code == 401:
             backend.sign_out()
             st.session_state["_fow_login_error"] = "Your session has expired. Sign in again to continue."
             st.navigation([st.Page(login_page, title="Sign in", default=True)], position="hidden").run()
             st.stop()
         apply_design()
-        st.title("Workspace unavailable")
-        st.error(str(exc))
-        if action_button("Retry connection"):
-            backend.clear_read_cache()
-            st.rerun()
-        if action_button("Return to sign in"):
-            backend.sign_out()
-            st.rerun()
+        _workspace_unavailable(exc)
         st.stop()
     st.session_state["supabase_role"] = role
+    if sidebar_guard is not None:
+        sidebar_guard.empty()
 
 
 def render_account_menu():
@@ -135,8 +174,8 @@ def render_account_menu():
     if not email:
         return
 
-    with st.container(horizontal=True, horizontal_alignment="right", key="account_trigger"):
-        with st.popover("Account", icon=":material/account_circle:", width="content"), st.container(key="account_menu", gap="xsmall"):
+    with st.container(horizontal=True, horizontal_alignment="right", width="content", key="account_trigger"):
+        with st.popover("Account", icon=":material/account_circle:", width="content", key="account_popover"), st.container(key="account_menu", gap="xsmall"):
             role_text = escape(str(role).replace("_", " ").title()) if role else ""
             st.html(f'''<section class="account-profile" aria-label="Your account">
                 <h3>Your account</h3>
@@ -155,6 +194,7 @@ def render_account_menu():
                 type="secondary",
                 width="stretch",
             ):
+                _hide_workspace_sidebar()
                 backend.sign_out()
                 st.session_state["_fow_signed_out_notice"] = True
                 st.rerun()

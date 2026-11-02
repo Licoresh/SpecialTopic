@@ -2,6 +2,8 @@ from .category_schema import category_path, category_parent
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
+from html import escape
+from textwrap import wrap
 import json
 import os
 import time
@@ -23,10 +25,11 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness
-from .analytics import skill_chart_tables, psf_demand_tables
+from .analytics import skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import job_profile_tables
 from .geography import location_tables
-from .alignment import STATUSES
+from .alignment import STATUSES, ALIGNMENT_COLUMNS
+from .skill_extraction import EXTRACTION_COLUMNS
 from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
 from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar
 from .reporting import export_csv, export_excel, export_html, export_research_report
@@ -37,11 +40,35 @@ from . import supabase_store
 from .action_guard import action_button, action_form_submit_button, finish_action_run
 from .review_queue import (labels_by_phrase, expand_phrase_annotations, group_candidates_by_phrase,
                            manual_mapping_occurrences, preserve_occurrence_references)
-from .loading_ui import load_data_with_skeleton
+from .loading_ui import load_data_with_skeleton, loading_content, _wireframe
 
-from .design import apply_design, review_workspace_style, workspace_breadcrumb
+from .design import review_workspace_style, workspace_breadcrumb, content_section, content_metrics, content_note, section_heading
 from . import background_tasks
 
+MANUAL_REVIEW_COLUMNS = ["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"]
+
+
+
+SETTINGS_SECTIONS = (
+    ("Matching thresholds", "tune", (
+        ("aligned_threshold", "Aligned threshold", "slider", .01, 1., .01),
+        ("partial_threshold", "Partially aligned threshold", "slider", .0, .99, .01),
+        ("fuzzy_threshold", "Taxonomy fuzzy match threshold", "slider", .5, 1., .01),
+        ("semantic_threshold", "Taxonomy semantic match threshold", "slider", .5, 1., .01),
+        ("semantic_model", "Optional local sentence-transformers model directory", "text", None, None, None),
+    )),
+    ("Extraction and screening", "content_paste_search", (
+        ("stopwords", "Additional stopwords (one per line; phrases retain internal stopwords)", "textarea", None, None, None),
+        ("batch_size", "NLP batch size", "number", 1, 1024, 1),
+        ("max_candidates", "Maximum discovered n-grams per record", "number", 50, 10000, 1),
+        ("emerging_min_jobs", "Minimum job ads for an emerging-skill candidate", "number", 1, 100000, 1),
+    )),
+    ("Usability evaluation", "rate_review", (
+        ("likert_min", "Likert scale minimum", "number", 0, 9, 1),
+        ("likert_max", "Likert scale maximum", "number", 1, 10, 1),
+    )),
+)
+USABILITY_ITEMS = ("ease_of_use", "clarity", "navigation", "usefulness", "visualization_quality", "overall_satisfaction")
 
 def _start_processing(title, function, *args, **kwargs):
     try:
@@ -62,7 +89,7 @@ def _processing_status():
     @st.fragment(run_every=1 if job.snapshot()["status"] == "running" else None)
     def status_panel():
         state = job.snapshot()
-        with st.container(border=True):
+        with st.container(key="processing_activity"):
             if state["status"] == "running":
                 st.progress(state["value"], text=f"{job.title} · {state['message']}")
                 elapsed = int(time.monotonic() - job.started_at)
@@ -271,8 +298,9 @@ def display(frame):
         frame, _, _ = _paginate_frame(frame, page)
     text_columns = {key: st.column_config.TextColumn(width="large") for key in
                     ("original_text", "job_description", "rationale", "interpretation", "competency_description", "range_of_application") if key in frame}
-    st.dataframe(frame, width="stretch", hide_index=True, row_height=38,
-                 column_config=text_columns, height=min(480, max(100, 40 + 38 * len(frame))),
+    row_height = 30 if st.session_state.get("_fow_current_page") == "PSF Mapping" else 38
+    st.dataframe(frame, width="stretch", hide_index=True, row_height=row_height,
+                 column_config=text_columns, height=min(480, max(100, 40 + row_height * len(frame))),
                  alt=f"Research data table with {len(frame):,} rows. Use the table toolbar to search or download.")
 
 
@@ -284,14 +312,45 @@ def _paginate_frame(frame, page, page_size=100):
 
 def chart(fig):
     from .visualization import style_chart
-    st.plotly_chart(style_chart(fig), width="stretch", config={"displaylogo": False, "scrollZoom": False},
-                    alt=fig.layout.title.text or "Research analysis chart")
+    fig = style_chart(fig)
+    heading = fig.layout.title.text
+    title = heading or "Research analysis chart"
+    if st.session_state.get("_fow_current_page") in {"Job Market Analysis", "PSF Mapping", "Employer–PSF Alignment", "Unmapped / Emerging Skills"}:
+        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
+        if heading:
+            st.subheader(title, icon=f":material/{icon}:")
+        fig.update_layout(font=dict(size=12, color="#171923"), title=dict(font=dict(size=15), x=.015),
+                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", title_text="")
+        if fig.data and all(trace.type == "bar" and trace.orientation == "h" for trace in fig.data):
+            labels = list(dict.fromkeys(str(label) for trace in fig.data for label in trace.y))
+            ticktext = ["<br>".join(escape(line) for line in wrap(label, 24)) for label in labels]
+            fig.update_yaxes(tickmode="array", tickvals=labels, ticktext=ticktext)
+            row_space = sum(max(28, 14 * (label.count("<br>") + 1) + 8) for label in ticktext)
+            fig.update_layout(height=max(250, 55 + row_space), margin=dict(l=10, r=35, t=8, b=40))
+        elif any(trace.type == "heatmap" for trace in fig.data):
+            rows = max(len(trace.y) for trace in fig.data if trace.type == "heatmap")
+            ticktext = fig.layout.yaxis.ticktext or ()
+            line_count = max((str(label).count("<br>") + 1 for label in ticktext), default=1)
+            fig.update_layout(height=max(300, 135 + max(28, 14 * line_count + 8) * rows), margin=dict(l=25, r=75, t=12, b=105))
+    if any(trace.type == "heatmap" for trace in fig.data):
+        columns = max(len(trace.x) for trace in fig.data if trace.type == "heatmap")
+        minimum = max(640, 280 + 72 * columns)
+        key = f"matrix_viewport_{digest([title])}"
+        with st.container(key=key):
+            st.html(f'<style>.st-key-{key}' + '{--fow-matrix-width:' + str(minimum) + 'px}</style>'
+                    '<p class="fow-matrix-scroll-hint">Scroll horizontally to read all chart columns.</p>')
+            st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": False}, alt=title)
+    else:
+        st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": False}, alt=title)
 
 def page_intro(title, description):
-    with st.container(key="page_heading", gap="xsmall"):
+    key = {"Job Market Analysis": "job_market_heading", "PSF Mapping": "psf_mapping_heading",
+           "Employer–PSF Alignment": "employer_psf_heading"}.get(title, "page_heading")
+    with st.container(key=key, gap="xsmall"):
         st.caption("PHILIPPINE JOBS · SKILLS · PSF-AAI")
         st.title(title)
         st.write(description)
+    _processing_status()
 
 def page_button(path, label, *, primary=False, key=None):
     if action_button(label, type="primary" if primary else "secondary", key=key, width="stretch",
@@ -337,15 +396,6 @@ def current_analysis():
         return False
     return True
 
-def select_filters(frame, fields, prefix):
-    selected = {}
-    for field in fields:
-        if field in frame:
-            options = sorted(v for v in frame[field].astype(str).unique() if v)
-            if options:
-                selected[field] = st.multiselect(field.replace("_", " ").title(), options, key=f"filter_{prefix}_{field}")
-    return selected
-
 def filtered_bundle():
     signature = st.session_state.get("_current_analysis_signature") or input_signature()
     corrections_path = storage.ROOT / "data/feedback/corrections.csv"
@@ -366,36 +416,14 @@ def filtered_bundle():
                  "extracted": current_extractions(), "mapping_reviews": mapping_reviews},
         ttl=None, max_entries=1,
     )
-    jobs, skills = source_snapshot["jobs"], source_snapshot["extracted"]
-    upload = storage.read_json("uploads", {}).get("jobs", {})
-    with st.sidebar.expander("Research sample", expanded=True):
-        st.caption("Results use the active cleaned upload. Other training sources are excluded.")
-        st.write(upload.get("filename") or upload.get("name") or "Active job upload")
-        st.caption(f"{len(jobs):,} cleaned job ads before filters")
-        dataset_hashes = sorted(jobs["_dataset_hash"].dropna().astype(str).unique().tolist()) if "_dataset_hash" in jobs else []
-        selected_dataset = st.selectbox("Dataset", dataset_hashes, key="research_dataset_hash") if len(dataset_hashes) > 1 else None
-    with st.sidebar.expander("Job filters"):
-        jf = select_filters(jobs, ["job_family", "job_title", "location", "company", "industry"], "jobs")
-        if selected_dataset:
-            jf["_dataset_hash"] = [selected_dataset]
-        if "posting_date_parsed" in jobs:
-            years = sorted(v for v in jobs.posting_date_parsed.str[:4].unique() if v)
-            chosen = st.multiselect("Posting year", years, key="posting_year")
-            if chosen:
-                jf["posting_date_parsed"] = jobs.loc[jobs.posting_date_parsed.str[:4].isin(chosen), "posting_date_parsed"].unique().tolist()
-    with st.sidebar.expander("Competency filters"):
-        sf = select_filters(skills, ["competency_category", "job_role", "proficiency_level", "skill_type"], "skills")
-        phrase_query = st.text_input("Skill phrase contains", key="filter_skills_phrase_contains")
-        if phrase_query.strip():
-            sf["normalized_phrase_contains"] = phrase_query.strip()
-        status = st.multiselect("Alignment status", STATUSES, key="filter_status")
-    bundle_key = digest({"presentation_version": VERSION, "signature": analysis_revision, "jobs": jf, "skills": sf, "statuses": status})
-    return _session_cached_value(
+    bundle_key = digest({"presentation_version": VERSION, "signature": analysis_revision})
+    result = _session_cached_value(
         "_fow_analysis_cache", bundle_key,
-        lambda: analysis_bundle(job_filters=jf, skill_filters=sf, statuses=status,
-                                source_snapshot=source_snapshot),
+        lambda: analysis_bundle(source_snapshot=source_snapshot),
         ttl=None, max_entries=2,
     )
+    st.session_state["_fow_loaded_bundle_revision"] = bundle_key
+    return result
 
 
 def home():
@@ -403,6 +431,7 @@ def home():
         st.caption("PHILIPPINES · AI & ANALYTICS")
         st.title("From job evidence to skills insight.")
         st.write("Your research workspace for employer demand and PSF-AAI alignment.")
+    _processing_status()
     def load_overview_data():
         extraction_meta = storage.read_json("extraction_metadata", {})
         return (
@@ -414,89 +443,97 @@ def home():
             read_model_metadata(),
             extraction_meta,
         )
-    jobs, taxonomy, mapped_jobs, has_extractions, label_count, model, meta = load_data_with_skeleton(
-        load_overview_data, height=120
-    )
+    with loading_content("overview_summary_content", "overview", cards=4) as content:
+        jobs, taxonomy, mapped_jobs, has_extractions, label_count, model, meta = load_overview_data()
+        with content():
+            with st.container(horizontal=True, key="overview_metrics", gap="medium"):
+                for index, (label, value, icon, help_text) in enumerate([
+                    ("Clean job ads", f"{len(jobs):,}", "work", "Advertisements saved after data cleaning."),
+                    ("Reviewed labels", f"{label_count:,}", "task_alt", "Saved annotation rows; a phrase can occur in several ads."),
+                    ("PSF-AAI competencies", f"{len(taxonomy):,}", "account_tree", "Competencies in the active reviewed reference."),
+                    ("Phrase extraction", "Saved" if has_extractions else "Not started", "manage_search", "Analysis pages check that saved extraction inputs are still current."),
+                ], 1):
+                    key = f"overview_metric_{index}"
+                    if index == 4:
+                        key += "_ready" if has_extractions else "_pending"
+                    with st.container(width=240, key=key):
+                        st.metric(label, value, icon=f":material/{icon}:", help=help_text)
 
-    with st.container(horizontal=True, key="overview_metrics", gap="medium"):
-        for index, (label, value, icon, help_text) in enumerate([
-            ("Clean job ads", f"{len(jobs):,}", "work", "Advertisements saved after data cleaning."),
-            ("Reviewed labels", f"{label_count:,}", "task_alt", "Saved annotation rows; a phrase can occur in several ads."),
-            ("PSF-AAI competencies", f"{len(taxonomy):,}", "account_tree", "Competencies in the active reviewed reference."),
-            ("Phrase extraction", "Saved" if has_extractions else "Not started", "manage_search", "Analysis pages check that saved extraction inputs are still current."),
-        ], 1):
-            key = f"overview_metric_{index}"
-            if index == 4:
-                key += "_ready" if has_extractions else "_pending"
-            with st.container(width=240, key=key):
-                st.metric(label, value, icon=f":material/{icon}:", help=help_text)
+            if mapped_jobs.empty:
+                next_title, next_copy, next_path, next_label = "Start with your job data", "Upload the job-ad CSV or Excel file you plan to use for the study.", "pages/01_Data_Upload.py", "Upload job data"
+            elif jobs.empty:
+                next_title, next_copy, next_path, next_label = "Check and clean the uploaded data", "Confirm the automatic column matches, review the quality report, and save the cleaned job table.", "pages/02_Data_Quality.py", "Review data quality"
+            elif not meta or not has_extractions:
+                next_title, next_copy, next_path, next_label = "Extract skill phrases", "Run the phrase extraction step on your cleaned job ads. Candidate phrases are not research labels until a reviewer checks them.", "pages/05_Competency_Extraction.py", "Open phrase extraction"
+            elif label_count == 0:
+                next_title, next_copy, next_path, next_label = "Review candidate phrases", "Check each phrase against its source context, then confirm or change the AI category and PSF suggestion.", "pages/06_Manual_Labeling.py", "Open manual labeling"
+            elif not model:
+                next_title, next_copy, next_path, next_label = "Train the research classifier", "Training becomes available when the real reviewed dataset passes the validation checks.", "pages/07_ML_Training.py", "Open model training"
+            elif not meta.get("model_available", False):
+                next_title, next_copy, next_path, next_label = "Refresh the analysis", "Run extraction again to apply the current model and labels.", "pages/05_Competency_Extraction.py", "Refresh extraction"
+            else:
+                next_title, next_copy, next_path, next_label = "Explore the current analysis", "The extraction is complete. Review Research Readiness before interpreting or reporting its results.", "pages/03_Job_Market.py", "Open exploratory analysis"
 
-    if mapped_jobs.empty:
-        next_title, next_copy, next_path, next_label = "Start with your job data", "Upload the job-ad CSV or Excel file you plan to use for the study.", "pages/01_Data_Upload.py", "Upload job data"
-    elif jobs.empty:
-        next_title, next_copy, next_path, next_label = "Check and clean the uploaded data", "Confirm the automatic column matches, review the quality report, and save the cleaned job table.", "pages/02_Data_Quality.py", "Review data quality"
-    elif not meta or not has_extractions:
-        next_title, next_copy, next_path, next_label = "Extract skill phrases", "Run the phrase extraction step on your cleaned job ads. Candidate phrases are not research labels until a reviewer checks them.", "pages/05_Competency_Extraction.py", "Open phrase extraction"
-    elif label_count == 0:
-        next_title, next_copy, next_path, next_label = "Review candidate phrases", "Check each phrase against its source context, then confirm or change the AI category and PSF suggestion.", "pages/06_Manual_Labeling.py", "Open manual labeling"
-    elif not model:
-        next_title, next_copy, next_path, next_label = "Train the research classifier", "Training becomes available when the real reviewed dataset passes the validation checks.", "pages/07_ML_Training.py", "Open model training"
-    elif not meta.get("model_available", False):
-        next_title, next_copy, next_path, next_label = "Refresh the analysis", "Run extraction again to apply the current model and labels.", "pages/05_Competency_Extraction.py", "Refresh extraction"
-    else:
-        next_title, next_copy, next_path, next_label = "Explore the current analysis", "The extraction is complete. Review Research Readiness before interpreting or reporting its results.", "pages/03_Job_Market.py", "Open exploratory analysis"
+            with st.container(border=True, key="home_next"):
+                with st.container(horizontal=True, vertical_alignment="center", gap="large"):
+                    with st.container(width="stretch", gap="xsmall"):
+                        st.caption("CONTINUE YOUR RESEARCH")
+                        st.subheader(next_title)
+                        st.write(next_copy)
+                    with st.container(width=260):
+                        page_button(next_path, next_label, primary=True, key="home_next_step")
 
-    with st.container(border=True, key="home_next"):
-        with st.container(horizontal=True, vertical_alignment="center", gap="large"):
-            with st.container(width="stretch", gap="xsmall"):
-                st.caption("CONTINUE YOUR RESEARCH")
-                st.subheader(next_title)
-                st.write(next_copy)
-            with st.container(width=260):
-                page_button(next_path, next_label, primary=True, key="home_next_step")
-
-    st.subheader("Your research, step by step")
-    st.caption("Keep source evidence, reviewed decisions, and research results connected.")
-    steps = [
-        ("01", "Upload job ads", "Add the CSV or Excel file for your study.", "pages/01_Data_Upload.py", "Open upload"),
-        ("02", "Review data quality", "Check matched columns and save clean data.", "pages/02_Data_Quality.py", "Review data"),
-        ("03", "Extract phrases", "Find candidate skills in the job descriptions.", "pages/05_Competency_Extraction.py", "Extract phrases"),
-        ("04", "Review and label", "Check AI suggestions against the source evidence.", "pages/06_Manual_Labeling.py", "Review phrases"),
-        ("05", "Train and evaluate", "Train only after the reviewed labels pass validation.", "pages/07_ML_Training.py", "Train models"),
-        ("06", "Explore results", "Review employer demand, PSF mapping and reports.", "pages/03_Job_Market.py", "View results"),
-    ]
-    stage_states = ["Data uploaded" if not mapped_jobs.empty else "Start here",
-                    "Clean data saved" if not jobs.empty else "Awaiting clean data",
-                    "Extraction saved" if has_extractions else "No extraction yet",
-                    f"{label_count:,} label rows saved", "Model saved" if model else "No model yet",
-                    "Check research readiness"]
-    for offset in (0, 3):
-        with st.container(horizontal=True, key=f"workflow_{offset}", gap="medium"):
-            for index, (number, title, description, path, link) in enumerate(steps[offset:offset + 3], start=offset):
-                with st.container(width=330, border=True, key=f"workflow_step_{number}"):
-                    st.caption(f"{number} / {stage_states[index]}")
-                    st.markdown(f"#### {title}")
-                    st.write(description)
-                    page_button(path, link, key=f"home_workflow_{number}")
-    try:
-        readiness_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
-                            else load_labeled_data(resolve_training_file(storage.ROOT)))
-        _, readiness_validation = cached_label_validation(readiness_labels, require_provenance=True)
-        readiness_audit = assess_research_readiness(readiness_labels, model, readiness_validation)
-    except (ValueError, OSError) as exc:
-        readiness_labels, readiness_audit = pd.DataFrame(), {"findings": [{"title": "Training data unavailable", "detail": str(exc)}]}
-    if readiness_audit["findings"]:
-        with st.container(border=True, key="readiness_summary"):
-            st.subheader("Before you report findings")
-            blocking = [finding for finding in readiness_audit["findings"] if finding.get("status", "blocking") == "blocking"]
-            st.write("Research readiness needs attention. Review the outstanding checks before interpreting results.")
-            if blocking:
-                st.write(" · ".join(finding["title"] for finding in blocking[:3]))
-            page_button("pages/18_Research_Readiness.py", "Review readiness", key="home_readiness")
-    if model:
-        st.caption(f"Saved classifier: {model['model_name']}. It is available for exploratory workflow checks; see Research Readiness before interpreting model outputs.")
-    else:
-        st.caption("No classifier has been trained. AI-generated phrase suggestions are drafts; they do not count as reviewed labels or model results.")
+            st.subheader("Your research, step by step")
+            st.caption("Keep source evidence, reviewed decisions, and research results connected.")
+            steps = [
+                ("01", "Upload job ads", "Add the CSV or Excel file for your study.", "pages/01_Data_Upload.py", "Open upload"),
+                ("02", "Review data quality", "Check matched columns and save clean data.", "pages/02_Data_Quality.py", "Review data"),
+                ("03", "Extract phrases", "Find candidate skills in the job descriptions.", "pages/05_Competency_Extraction.py", "Extract phrases"),
+                ("04", "Review and label", "Check AI suggestions against the source evidence.", "pages/06_Manual_Labeling.py", "Review phrases"),
+                ("05", "Train and evaluate", "Train only after the reviewed labels pass validation.", "pages/07_ML_Training.py", "Train models"),
+                ("06", "Explore results", "Review employer demand, PSF mapping and reports.", "pages/03_Job_Market.py", "View results"),
+            ]
+            stage_states = ["Data uploaded" if not mapped_jobs.empty else "Start here",
+                            "Clean data saved" if not jobs.empty else "Awaiting clean data",
+                            "Extraction saved" if has_extractions else "No extraction yet",
+                            f"{label_count:,} label rows saved", "Model saved" if model else "No model yet",
+                            "Check research readiness"]
+            for offset in (0, 3):
+                with st.container(horizontal=True, key=f"workflow_{offset}", gap="medium"):
+                    for index, (number, title, description, path, link) in enumerate(steps[offset:offset + 3], start=offset):
+                        with st.container(width=330, border=True, key=f"workflow_step_{number}"):
+                            icon = ("cloud_upload", "database", "manage_search", "sell", "bar_chart", "query_stats")[index]
+                            st.html('<div class="fow-workflow-card">'
+                                    f'<span class="material-symbols-rounded" aria-hidden="true">{icon}</span><div>'
+                                    f'<small>{number} / {escape(stage_states[index])}</small><h4>{escape(title)}</h4>'
+                                    f'<p>{escape(description)}</p></div></div>')
+                            page_button(path, link, key=f"home_workflow_{number}")
+            with loading_content("overview_readiness_note", "notice") as content:
+                try:
+                    readiness_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
+                                        else load_labeled_data(resolve_training_file(storage.ROOT)))
+                    _, readiness_validation = cached_label_validation(readiness_labels, require_provenance=True)
+                    readiness_audit = assess_research_readiness(readiness_labels, model, readiness_validation)
+                except (ValueError, OSError) as exc:
+                    readiness_labels, readiness_audit = pd.DataFrame(), {"findings": [{"title": "Training data unavailable", "detail": str(exc)}]}
+                with content():
+                    if readiness_audit["findings"]:
+                        with st.container(border=True, key="readiness_summary"):
+                            with st.container(horizontal=True, vertical_alignment="center", gap="large", wrap=True):
+                                copy_slot = st.container(width="stretch")
+                                action_slot = st.container(width=260)
+                            with copy_slot:
+                                st.subheader("Before you report findings")
+                                blocking = [finding for finding in readiness_audit["findings"] if finding.get("status", "blocking") == "blocking"]
+                                st.write("Research readiness needs attention. Review the outstanding checks before interpreting results.")
+                                if blocking:
+                                    st.write(" · ".join(finding["title"] for finding in blocking[:3]))
+                            with action_slot:
+                                page_button("pages/18_Research_Readiness.py", "Review readiness", key="home_readiness")
+                    if model:
+                        st.caption(f"Saved classifier: {model['model_name']}. It is available for exploratory workflow checks; see Research Readiness before interpreting model outputs.")
+                    else:
+                        st.caption("No classifier has been trained. AI-generated phrase suggestions are drafts; they do not count as reviewed labels or model results.")
 
 
 def upload(kind=None):
@@ -520,35 +557,38 @@ def upload(kind=None):
     else:
         title = "Upload job data" if kind == "jobs" else "Upload PSF-AAI reference"
         page_intro(title, "Upload the selected study dataset. The original file is archived unchanged; review its column matches before saving.")
-    if kind == "jobs":
-        st.caption("The original CSV stays on the computer that uploaded it. After cleaning, the active job dataset is shared through Supabase with signed-in teammates.")
-    template = (Path(__file__).resolve().parents[1] / "data/templates" / f"{kind}_template.csv")
-    if template.exists():
-        st.download_button("Download blank template", template.read_bytes(), template.name, "text/csv")
-    if kind == "jobs":
-        uploads = storage.read_json("uploads", {})
-        job_entry, psf_entry = uploads.get("jobs", {}), uploads.get("psf_aai", {})
-        if (job_entry.get("filename") == "psf_aai_range_review_draft.csv"
-                and job_entry.get("hash") == psf_entry.get("hash")
-                and psf_entry.get("filename") == "psf_aai_range_review_draft.csv"):
-            with st.container(border=True):
-                st.warning("The PSF-AAI draft was also saved as a job upload. The matching PSF reference copy will be kept.")
-                if action_button("Remove mistaken PSF draft from job uploads", key="remove_misfiled_psf_range"):
-                    storage.remove_misfiled_psf_range_upload()
-                    st.success("Removed the mistaken jobs upload. The PSF-AAI reference copy and job dataset were preserved.")
-    if kind == "psf_aai":
-        draft = Path(__file__).resolve().parents[1] / "data/processed/psf_aai_range_review_draft.csv"
-        if draft.is_file() and action_button(
-            "Load prepared Range of Application draft",
-            help="Imports the prepared TESDA PDF draft as source data. It still needs researcher review before activation.",
-            key="load_psf_range_draft",
-        ):
-            storage.archive_raw(draft.read_bytes(), draft.name, kind)
-            storage.save_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
-            st.success("PSF-AAI draft imported. Review its column mapping below; the active reference is unchanged until researcher review.")
-    uploaded = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"])
-    st.caption("Accepted formats: CSV and Excel (.xlsx). Preview the file, save the original, then review its column mapping.")
-    encoding = st.selectbox("CSV encoding", ["utf-8-sig", "cp1252", "utf-16"])
+    with st.container(border=True, key="upload_file_panel"):
+        st.subheader("Select a source file", icon=":material/upload_file:")
+        st.caption("Preview the source, archive the original, then confirm its column matches.")
+        if kind == "jobs":
+            st.caption("The original CSV stays on the computer that uploaded it. After cleaning, the active job dataset is shared through Supabase with signed-in teammates.")
+        template = (Path(__file__).resolve().parents[1] / "data/templates" / f"{kind}_template.csv")
+        if template.exists():
+            st.download_button("Download blank template", template.read_bytes(), template.name, "text/csv")
+        if kind == "jobs":
+            uploads = storage.read_json("uploads", {})
+            job_entry, psf_entry = uploads.get("jobs", {}), uploads.get("psf_aai", {})
+            if (job_entry.get("filename") == "psf_aai_range_review_draft.csv"
+                    and job_entry.get("hash") == psf_entry.get("hash")
+                    and psf_entry.get("filename") == "psf_aai_range_review_draft.csv"):
+                with st.container(border=True):
+                    st.warning("The PSF-AAI draft was also saved as a job upload. The matching PSF reference copy will be kept.")
+                    if action_button("Remove mistaken PSF draft from job uploads", key="remove_misfiled_psf_range"):
+                        storage.remove_misfiled_psf_range_upload()
+                        st.success("Removed the mistaken jobs upload. The PSF-AAI reference copy and job dataset were preserved.")
+        if kind == "psf_aai":
+            draft = Path(__file__).resolve().parents[1] / "data/processed/psf_aai_range_review_draft.csv"
+            if draft.is_file() and action_button(
+                "Load prepared Range of Application draft",
+                help="Imports the prepared TESDA PDF draft as source data. It still needs researcher review before activation.",
+                key="load_psf_range_draft",
+            ):
+                storage.archive_raw(draft.read_bytes(), draft.name, kind)
+                storage.save_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
+                st.success("PSF-AAI draft imported. Review its column mapping below; the active reference is unchanged until researcher review.")
+        uploaded = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"])
+        st.caption("Accepted formats: CSV and Excel (.xlsx). Preview the file, save the original, then review its column mapping.")
+        encoding = st.selectbox("CSV encoding", ["utf-8-sig", "cp1252", "utf-16"])
     if uploaded:
         content = uploaded.getvalue()
         sheet = 0
@@ -559,83 +599,89 @@ def upload(kind=None):
                 book.close()
             except Exception as exc:
                 raise ValueError("Cannot read the workbook. Upload a valid XLSX file.") from exc
-        frame = load_data_with_skeleton(
-            lambda: cached_load(content, uploaded.name, sheet, encoding), height=220
-        )
-        header_changes = frame.attrs.get("header_changes", [])
-        if header_changes:
-            st.info("Repeated or blank column headers were given unique names for mapping. The uploaded source remains unchanged.")
-            with st.expander(f"Review {len(header_changes)} adjusted column header(s)"):
-                display(pd.DataFrame(header_changes))
-        display(frame.head(50))
-        st.caption(f"{len(frame):,} rows. Preview shows at most 50.")
-        if action_button("Save raw upload", type="primary"):
-            storage.archive_raw(content, uploaded.name, kind)
-            storage.save_json(f"read_options_{kind}", {"sheet": sheet, "encoding": encoding})
-            st.success("Raw bytes archived without modification. Review the column mapping below.")
-    manifest = storage.read_json("uploads", {})
-    if manifest:
-        manifest_view = pd.DataFrame.from_dict(manifest, orient="index").reset_index(names="dataset")
-        visible = [column for column in ("dataset", "filename", "timestamp") if column in manifest_view]
-        st.caption("Saved source files")
-        display(manifest_view[visible])
+        with loading_content("upload_preview", "file_preview", rows=5) as preview_content:
+            frame = load_data_with_skeleton(
+                lambda: cached_load(content, uploaded.name, sheet, encoding), height=220
+            )
+            with preview_content():
+                header_changes = frame.attrs.get("header_changes", [])
+                if header_changes:
+                    st.info("Repeated or blank column headers were given unique names for mapping. The uploaded source remains unchanged.")
+                    with st.expander(f"Review {len(header_changes)} adjusted column header(s)"):
+                        display(pd.DataFrame(header_changes))
+                display(frame.head(50))
+                st.caption(f"{len(frame):,} rows. Preview shows at most 50.")
+                if action_button("Save raw upload", type="primary"):
+                    storage.archive_raw(content, uploaded.name, kind)
+                    storage.save_json(f"read_options_{kind}", {"sheet": sheet, "encoding": encoding})
+                    st.success("Raw bytes archived without modification. Review the column mapping below.")
+    with loading_content("upload_sources", "table", columns=["dataset", "filename", "timestamp"]) as content:
+        manifest = storage.read_json("uploads", {})
+        with content():
+            if manifest:
+                manifest_view = pd.DataFrame.from_dict(manifest, orient="index").reset_index(names="dataset")
+                visible = [column for column in ("dataset", "filename", "timestamp") if column in manifest_view]
+                st.caption("Saved source files")
+                display(manifest_view[visible])
     with st.expander("Map uploaded columns", expanded=True):
         column_mapping(kind)
 
 def column_mapping(kind="jobs"):
     st.subheader("Column Mapping")
-    manifest = {k:v for k,v in storage.read_json("uploads", {}).items() if k == kind}
-    if not manifest:
-        st.info("Save a raw upload first.")
-        return
-    entry = manifest[kind]
-    opts = storage.read_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
-    path = storage.raw_upload_path(entry, kind)
-    stat = path.stat()
-    frame = cached_load_path(str(path), stat.st_mtime_ns, stat.st_size, entry["hash"], opts["sheet"], opts["encoding"])
-    saved = storage.read_json(f"mapping_{kind}", {})
-    suggested, evidence = suggest_column_mapping(frame.columns, kind, saved)
-    fresh, _ = suggest_column_mapping(frame.columns, kind)
-    scope = f"mapping_{kind}_{entry['hash'][:16]}_{frame_hash(pd.DataFrame(columns=frame.columns))[:8]}"
-    st.caption("Columns are matched automatically using saved choices, standard names, common aliases and conservative spelling similarity. Review the prefilled fields, then save. Ambiguous columns stay unassigned.")
-    st.info(f"{sum(bool(value) for value in suggested.values())} of {len(suggested)} fields matched. Missing optional fields can remain blank.")
-    with st.expander("Automatic matching details"):
-        display(pd.DataFrame(evidence))
-        st.caption("Scores measure header similarity, not validated mapping accuracy. Source content is not sent to an AI service.")
-    mapping_fields = (("competency_id", "competency_name", "range_of_application") if kind == "psf_aai"
-                      else ("job_title", "job_description", "required_skills", "qualifications"))
-    if any(suggested.get(field) for field in mapping_fields):
-        help_text = ("Save the detected PSF-AAI columns, including Range of Application. Review them before activation."
-                     if kind == "psf_aai" else
-                     "Save the clear job-ad header matches shown above. You can still change them in the form below.")
-        if action_button("Apply automatic mapping", type="primary", help=help_text):
-            mapped = map_columns(frame, suggested, kind, entry["hash"])
-            if kind == "psf_aai":
-                validate_taxonomy(mapped)
-            storage.save_json(f"mapping_{kind}", suggested)
-            storage.save_frame("mapped_"+kind, mapped)
-            storage.save_json(f"mapping_audit_{kind}", {"timestamp": timestamp(), "dataset_hash": entry["hash"], "suggestions": evidence, "saved_mapping": suggested})
-            st.success("Automatic mapping saved. Review Data Quality before activating the cleaned dataset.")
-    options = [""] + list(frame.columns)
-    mapping = {}
-    with st.form("column_mapping"):
-        for start in range(0, len(FIELDS[kind]), 2):
-            for column, field in zip(st.columns(2), FIELDS[kind][start:start + 2]):
-                with column:
-                    default = suggested[field]
-                    mapping[field] = st.selectbox(field.replace("_", " ").title(), options, index=options.index(default) if default in options else 0, key=f"{scope}_{field}")
-        if action_form_submit_button("Save mapping", type="primary"):
-            mapped = map_columns(frame, mapping, kind, entry["hash"])
-            if kind == "psf_aai":
-                validate_taxonomy(mapped)
-            storage.save_json(f"mapping_{kind}", mapping)
-            storage.save_frame("mapped_"+kind, mapped)
-            storage.save_json(f"mapping_audit_{kind}", {"timestamp": timestamp(), "dataset_hash": entry["hash"], "suggestions": evidence, "saved_mapping": mapping})
-            st.success("Mapping saved. Review Data Quality and create the cleaned dataset.")
-    def reset_suggestions():
-        for field, column in fresh.items():
-            st.session_state[f"{scope}_{field}"] = column
-    action_button("Re-detect columns", on_click=reset_suggestions, help="Replace these selections with fresh header-based suggestions; save to apply them.")
+    with loading_content(f"column_mapping_{kind}", "form", controls=["select"] * len(FIELDS[kind]) + ["button"], field_columns=2) as content:
+        manifest = {k:v for k,v in storage.read_json("uploads", {}).items() if k == kind}
+        if not manifest:
+            st.info("Save a raw upload first.")
+            return
+        entry = manifest[kind]
+        opts = storage.read_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
+        path = storage.raw_upload_path(entry, kind)
+        stat = path.stat()
+        frame = cached_load_path(str(path), stat.st_mtime_ns, stat.st_size, entry["hash"], opts["sheet"], opts["encoding"])
+        saved = storage.read_json(f"mapping_{kind}", {})
+        suggested, evidence = suggest_column_mapping(frame.columns, kind, saved)
+        fresh, _ = suggest_column_mapping(frame.columns, kind)
+        scope = f"mapping_{kind}_{entry['hash'][:16]}_{frame_hash(pd.DataFrame(columns=frame.columns))[:8]}"
+        with content():
+            st.caption("Columns are matched automatically using saved choices, standard names, common aliases and conservative spelling similarity. Review the prefilled fields, then save. Ambiguous columns stay unassigned.")
+            st.info(f"{sum(bool(value) for value in suggested.values())} of {len(suggested)} fields matched. Missing optional fields can remain blank.")
+            with st.expander("Automatic matching details"):
+                display(pd.DataFrame(evidence))
+                st.caption("Scores measure header similarity, not validated mapping accuracy. Source content is not sent to an AI service.")
+            mapping_fields = (("competency_id", "competency_name", "range_of_application") if kind == "psf_aai"
+                              else ("job_title", "job_description", "required_skills", "qualifications"))
+            if any(suggested.get(field) for field in mapping_fields):
+                help_text = ("Save the detected PSF-AAI columns, including Range of Application. Review them before activation."
+                             if kind == "psf_aai" else
+                             "Save the clear job-ad header matches shown above. You can still change them in the form below.")
+                if action_button("Apply automatic mapping", type="primary", help=help_text):
+                    mapped = map_columns(frame, suggested, kind, entry["hash"])
+                    if kind == "psf_aai":
+                        validate_taxonomy(mapped)
+                    storage.save_json(f"mapping_{kind}", suggested)
+                    storage.save_frame("mapped_"+kind, mapped)
+                    storage.save_json(f"mapping_audit_{kind}", {"timestamp": timestamp(), "dataset_hash": entry["hash"], "suggestions": evidence, "saved_mapping": suggested})
+                    st.success("Automatic mapping saved. Review Data Quality before activating the cleaned dataset.")
+            options = [""] + list(frame.columns)
+            mapping = {}
+            with st.form("column_mapping"):
+                for start in range(0, len(FIELDS[kind]), 2):
+                    for column, field in zip(st.columns(2), FIELDS[kind][start:start + 2]):
+                        with column:
+                            default = suggested[field]
+                            mapping[field] = st.selectbox(field.replace("_", " ").title(), options, index=options.index(default) if default in options else 0, key=f"{scope}_{field}")
+                if action_form_submit_button("Save mapping", type="primary"):
+                    mapped = map_columns(frame, mapping, kind, entry["hash"])
+                    if kind == "psf_aai":
+                        validate_taxonomy(mapped)
+                    storage.save_json(f"mapping_{kind}", mapping)
+                    storage.save_frame("mapped_"+kind, mapped)
+                    storage.save_json(f"mapping_audit_{kind}", {"timestamp": timestamp(), "dataset_hash": entry["hash"], "suggestions": evidence, "saved_mapping": mapping})
+                    st.success("Mapping saved. Review Data Quality and create the cleaned dataset.")
+            def reset_suggestions():
+                for field, column in fresh.items():
+                    st.session_state[f"{scope}_{field}"] = column
+            action_button("Re-detect columns", on_click=reset_suggestions, help="Replace these selections with fresh header-based suggestions; save to apply them.")
 
 def _persist_psf_reference_files(verified=None, *, force=False):
     """Sync an already reviewed local framework and its state to shared storage."""
@@ -701,78 +747,104 @@ def _local_verified_psf_available():
 
 def quality():
     page_intro("Review data quality", "Check the uploaded job-ad columns and the cleaned preview, then save the job table used by the analysis.")
-    kind = st.selectbox("Dataset", list(FIELDS), format_func=lambda value: {"jobs": "Job advertisements", "psf_aai": "PSF-AAI reference", "stakeholder": "Stakeholder responses"}.get(value, value))
-    frame = load_data_with_skeleton(lambda: storage.read_frame("mapped_"+kind), height=180)
-    if frame.empty:
-        st.info("Map this dataset first.")
-        return
-    mapped_source_hash = frame_hash(frame)
-    screening = pd.DataFrame(columns=["source_id", "exclude", "exclusion_reason"])
-    if kind == "jobs":
-        prior = storage.read_json("cleaning_jobs", {}).get("screening_exclusions", {})
-        screening = frame.reindex(columns=["source_id", "job_title", "company", "location", "url"]).copy()
-        screening["exclude"] = screening.source_id.isin(prior)
-        screening["exclusion_reason"] = screening.source_id.map(prior).fillna("")
-        screen = st.expander("Screen advertisements and document exclusions", key="quality_screening", on_change="rerun")
-        if screen.open:
-            with screen:
-                st.caption("Exclude ads outside the Philippine AI/analytics scope or without sufficient evidence. Each exclusion needs a reason. The original upload stays archived.")
-                screening = st.data_editor(screening, disabled=["source_id", "job_title", "company", "location", "url"],
-                                           hide_index=True, key="quality_screening_editor", width="stretch")
-        excluded = screening[screening.exclude]
-        frame = frame[~frame.source_id.isin(excluded.source_id)]
-        if not excluded.empty:
-            st.caption(f"{len(excluded):,} ads excluded from this cleaned copy; {len(frame):,} remain.")
-    potential = duplicate_ids(frame)
-    selected = st.multiselect("Confirm duplicate record IDs to remove from the cleaned copy", potential)
-    cleaned, report = load_data_with_skeleton(
-        lambda: cached_clean(frame, kind, tuple(selected)), height=220
-    )
-    st.caption("Missing text remains empty; it is never invented. Raw columns are retained alongside *_clean columns. Source IDs identify the raw dataset hash and row.")
-    report_view = report.rename(columns={"check": "Quality check", "count": "Count"}).copy()
-    report_view["Quality check"] = report_view["Quality check"].astype(str).map(
-        lambda value: "Total records" if value == "records" else value.replace("_", " ").capitalize()
-    )
-    display(report_view)
-    if kind == "jobs":
-        coverage = st.expander("Job-title, location and requirement summaries", key="quality_job_summaries", on_change="rerun")
-        if coverage.open:
-            with coverage:
-                preview = job_profile_tables(cleaned)
-                display(preview["requirement_field_coverage"])
-                st.caption("Result summaries combine case, Unicode and spacing variants. Original fields remain unchanged. Missing requirements stay missing; ambiguous experience wording is retained for review.")
-                display(preview["experience_year_evidence"].drop(columns=["url"], errors="ignore"))
-    if potential:
-        display(frame[frame.source_id.isin(potential)])
-    if kind == "jobs":
-        st.caption("Lowercase cleaned job values (source IDs, dates and case-sensitive links keep their original identity).")
-        display(analysis_job_values(cleaned).head(100))
-        with st.expander("Original source evidence"):
-            display(frame.head(100))
-    else:
-        display(cleaned.head(100))
-    scope_reviewed = st.checkbox("I reviewed source evidence and confirm these advertisements have Philippine provenance and relate to AI or analytics") if kind == "jobs" else True
-    reviewer = st.text_input("Framework reviewer ID") if kind == "psf_aai" else ""
-    confirmed = st.checkbox("I checked this framework table against its cited source pages") if kind == "psf_aai" else True
-    if action_button("Save cleaned dataset", type="primary"):
-        if kind == "jobs" and (screening.loc[screening.exclude, "exclusion_reason"].str.strip().eq("").any() or frame.empty):
-            raise ValueError("Provide a reason for every exclusion and retain at least one advertisement.")
-        if kind == "jobs" and not scope_reviewed:
-            raise ValueError("Review Philippine provenance and AI/analytics relevance before saving the active job-analysis dataset.")
-        if kind == "psf_aai":
-            if not confirmed:
-                raise ValueError("Review the framework source pages before activating this table.")
-            activate_psf_reference(frame, reviewer)
-            st.success("Reviewed PSF reference activated. Re-run extraction.")
-            return
-        storage.save_frame("cleaned_"+kind, cleaned)
-        storage.save_frame("quality_"+kind, report)
-        screening_exclusions = screening.loc[screening.exclude].set_index("source_id").exclusion_reason.to_dict() if kind == "jobs" else {}
-        storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": mapped_source_hash, "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False, "screening_exclusions": screening_exclusions})
-        if kind == "jobs" and supabase_store.configured():
-            st.success("Cleaned job data and its quality report are saved to the shared workspace. Teammates can refresh to use the same dataset; the original CSV remains on the uploader’s computer.")
-        else:
-            st.success("Cleaned data and its quality report are saved on this computer. Configure Supabase to share them with teammates.")
+    with st.container(key="quality_dataset_selector"):
+        kind = st.selectbox("Dataset", list(FIELDS), format_func=lambda value: {"jobs": "Job advertisements", "psf_aai": "PSF-AAI reference", "stakeholder": "Stakeholder responses"}.get(value, value))
+    with loading_content(f"quality_source_{kind}", "pending") as content:
+        frame = load_data_with_skeleton(lambda: storage.read_frame("mapped_"+kind), height=180)
+        prior = storage.read_json("cleaning_jobs", {}).get("screening_exclusions", {}) if kind == "jobs" and not frame.empty else {}
+        with content():
+            if frame.empty:
+                st.info("Map this dataset first.")
+                return
+            mapped_source_hash = frame_hash(frame)
+            screening = pd.DataFrame(columns=["source_id", "exclude", "exclusion_reason"])
+            if kind == "jobs":
+                screening = frame.reindex(columns=["source_id", "job_title", "company", "location", "url"]).copy()
+                screening["exclude"] = screening.source_id.isin(prior)
+                screening["exclusion_reason"] = screening.source_id.map(prior).fillna("")
+                screen = st.expander("Screen advertisements and document exclusions", key="quality_screening", on_change="rerun")
+                if screen.open:
+                    with screen:
+                        st.caption("Exclude ads outside the Philippine AI/analytics scope or without sufficient evidence. Each exclusion needs a reason. The original upload stays archived.")
+                        screening = st.data_editor(screening, disabled=["source_id", "job_title", "company", "location", "url"],
+                                                   hide_index=True, key="quality_screening_editor", width="stretch")
+                excluded = screening[screening.exclude]
+                frame = frame[~frame.source_id.isin(excluded.source_id)]
+                if not excluded.empty:
+                    st.caption(f"{len(excluded):,} ads excluded from this cleaned copy; {len(frame):,} remain.")
+            potential = duplicate_ids(frame)
+            with st.container(key="quality_duplicate_selector"):
+                selected = st.multiselect("Confirm duplicate record IDs to remove from the cleaned copy", potential)
+            with loading_content(f"quality_preview_{kind}", "quality", columns=["source_id", *FIELDS[kind]] if kind == "jobs" else list(frame.columns), rows=min(8, len(frame))) as content:
+                cleaned, report = load_data_with_skeleton(
+                    lambda: cached_clean(frame, kind, tuple(selected)), height=220
+                )
+                st.caption("Missing text remains empty; it is never invented. Raw columns are retained alongside *_clean columns. Source IDs identify the raw dataset hash and row.")
+                with content():
+                    report_view = report.rename(columns={"check": "Quality check", "count": "Count"}).copy()
+                    report_view["Quality check"] = report_view["Quality check"].astype(str).map(
+                        lambda value: "Total records" if value == "records" else value.replace("_", " ").capitalize()
+                    )
+                    checks = dict(zip(report.check, pd.to_numeric(report["count"], errors="coerce").fillna(0)))
+                    core = [field for field in ("job_id", "job_title", "company", "location", "job_description") if field in cleaned]
+                    missing = sum(int(checks.get(f"missing: {field}", 0)) for field in core)
+                    notes = [f"Potential duplicate rows in this preview: {int(checks.get('potential_duplicate_rows', 0)):,}."]
+                    if core:
+                        notes.append(f"Blank values across {len(core)} core fields: {missing:,}. Blank cells are counted separately, not as distinct records.")
+                    if kind == "jobs" and {"required_skills", "preferred_skills"}.issubset(cleaned):
+                        blank = cleaned[["required_skills", "preferred_skills"]].fillna("").astype(str).apply(lambda col: col.str.strip().eq("")).all(axis=1).sum()
+                        notes.append(f"Both dedicated skill fields are blank in {int(blank):,} of {len(cleaned):,} {'ad' if len(cleaned) == 1 else 'ads'}. Skills may still be present in the advertisement text.")
+                    content_note("Data quality insights", f"This preview contains {len(cleaned):,} {'record' if len(cleaned) == 1 else 'records'} after the selected exclusions and duplicate removals.", items=notes, icon="fact_check")
+                    details = st.expander("Detailed quality checks", icon=":material/fact_check:", key="quality_report_details", on_change="rerun")
+                    if details.open:
+                        with details:
+                            display(report_view)
+                    if kind == "jobs":
+                        coverage = st.expander("Job-title, location and requirement summaries", key="quality_job_summaries", on_change="rerun")
+                        if coverage.open:
+                            with coverage:
+                                preview = job_profile_tables(cleaned)
+                                display(preview["requirement_field_coverage"])
+                                st.caption("Result summaries combine case, Unicode and spacing variants. Original fields remain unchanged. Missing requirements stay missing; ambiguous experience wording is retained for review.")
+                                display(preview["experience_year_evidence"].drop(columns=["url"], errors="ignore"))
+                    if potential:
+                        duplicates = st.expander("Potential duplicate evidence", key="quality_duplicate_evidence", on_change="rerun")
+                        if duplicates.open:
+                            with duplicates:
+                                display(frame[frame.source_id.isin(potential)])
+                    if kind == "jobs":
+                        st.caption("Lowercase cleaned job values (source IDs, dates and case-sensitive links keep their original identity).")
+                        with content_section("Cleaned data preview", "table_view", "quality_preview"):
+                            display(analysis_job_values(cleaned).head(100))
+                        original = st.expander("Original source evidence", key="quality_original_evidence", on_change="rerun")
+                        if original.open:
+                            with original:
+                                display(frame.head(100))
+                    else:
+                        with content_section("Cleaned data preview", "table_view", "quality_preview"):
+                            display(cleaned.head(100))
+                    scope_reviewed = st.checkbox("I reviewed source evidence and confirm these advertisements have Philippine provenance and relate to AI or analytics") if kind == "jobs" else True
+                    reviewer = st.text_input("Framework reviewer ID") if kind == "psf_aai" else ""
+                    confirmed = st.checkbox("I checked this framework table against its cited source pages") if kind == "psf_aai" else True
+                    if action_button("Save cleaned dataset", type="primary", icon=":material/save:"):
+                        if kind == "jobs" and (screening.loc[screening.exclude, "exclusion_reason"].str.strip().eq("").any() or frame.empty):
+                            raise ValueError("Provide a reason for every exclusion and retain at least one advertisement.")
+                        if kind == "jobs" and not scope_reviewed:
+                            raise ValueError("Review Philippine provenance and AI/analytics relevance before saving the active job-analysis dataset.")
+                        if kind == "psf_aai":
+                            if not confirmed:
+                                raise ValueError("Review the framework source pages before activating this table.")
+                            activate_psf_reference(frame, reviewer)
+                            st.success("Reviewed PSF reference activated. Re-run extraction.")
+                            return
+                        storage.save_frame("cleaned_"+kind, cleaned)
+                        storage.save_frame("quality_"+kind, report)
+                        screening_exclusions = screening.loc[screening.exclude].set_index("source_id").exclusion_reason.to_dict() if kind == "jobs" else {}
+                        storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": mapped_source_hash, "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False, "screening_exclusions": screening_exclusions})
+                        if kind == "jobs" and supabase_store.configured():
+                            st.success("Cleaned job data and its quality report are saved to the shared workspace. Teammates can refresh to use the same dataset; the original CSV remains on the uploader’s computer.")
+                        else:
+                            st.success("Cleaned data and its quality report are saved on this computer. Configure Supabase to share them with teammates.")
 
 def extraction():
     page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
@@ -784,31 +856,58 @@ def extraction():
             refreshed = _persist_psf_reference_files(force=True)
             st.success("Reviewed framework synced" + (" with full competency profiles." if refreshed else ".") + " You can run extraction now.")
             st.rerun()
-    taxonomy = load_data_with_skeleton(lambda: storage.read_frame("cleaned_psf_aai"), height=120)
-    if taxonomy.empty:
-        st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
-    elif taxonomy.attrs.get("reference_source") == "bundled_default":
-        st.caption("Bundled TESDA PSF-AAI reference loaded by default. A reviewed shared reference takes priority when available.")
-    if not (ROOT / "models/competency_classifier.joblib").exists():
-        st.info("No selected classifier yet. Extract initial phrases for manual labeling, then train both models and select one.")
-    else:
-        if training_data_changed():
-            st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-    if action_button("Run extraction and classification", type="primary"):
-        uploads = storage.read_json("uploads", {})
-        if uploads.get("psf_aai") and _local_verified_psf_available():
-            _persist_psf_reference_files(force=True)
-        else:
-            verified = storage.read_frame("verified_psf_aai")
-            if not verified.empty:
-                _persist_psf_reference_files(verified)
-        _start_processing("Extract skill phrases", background_tasks.extract)
+    with loading_content("extraction_reference_status", "notice") as content:
+        taxonomy = load_data_with_skeleton(lambda: storage.read_frame("cleaned_psf_aai"), height=120)
+        with content():
+            if taxonomy.empty:
+                st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
+            elif taxonomy.attrs.get("reference_source") == "bundled_default":
+                st.caption("Bundled TESDA PSF-AAI reference loaded by default. A reviewed shared reference takes priority when available.")
+            if not (ROOT / "models/competency_classifier.joblib").exists():
+                st.info("No selected classifier yet. Extract initial phrases for manual labeling, then train both models and select one.")
+            else:
+                if training_data_changed():
+                    st.warning("Training data has changed since this model was trained. Retraining is recommended.")
     has_results = "_extraction_results_frame" in st.session_state
-    if action_button("Refresh saved results" if has_results else "Load saved results", type="secondary",
-                     icon=":material/refresh:", action_id="refresh_extraction_results"):
-        st.session_state["_extraction_results_page"] = 1
-        _start_processing("Load saved extraction results", background_tasks.extraction_preview)
+    if not has_results:
+        content_metrics([
+            ("PSF-AAI reference entries", f"{len(taxonomy):,}", "layers"),
+            ("Local classifier", "Available" if (ROOT / "models/competency_classifier.joblib").exists() else "Unavailable", "model_training"),
+            ("Results view", "Not loaded", "format_list_bulleted"),
+        ], "extraction_start")
+    if has_results:
+        with st.container(horizontal=True, key="extraction_setup_and_run", gap="medium", wrap=True):
+            setup_slot = st.container(width="stretch")
+            run_slot = st.container(width="stretch")
+        with setup_slot, content_section("Extraction setup", "tune", "extraction_setup"):
+            view_fields = st.container(horizontal=True, vertical_alignment="bottom", gap="medium")
+            with view_fields:
+                choice = st.selectbox("View", ["All extracted phrases", "Researcher-approved labels", "Unreviewed candidates", "Accepted detections"], width="stretch")
+    else:
+        run_slot = st.container()
+    with run_slot, content_section("Run extraction", "play_arrow", "extraction_run"):
+        with st.container(horizontal=True, key="extraction_actions", gap="medium", vertical_alignment="center"):
+            if action_button("Run extraction and classification", type="primary"):
+                uploads = storage.read_json("uploads", {})
+                if uploads.get("psf_aai") and _local_verified_psf_available():
+                    _persist_psf_reference_files(force=True)
+                else:
+                    verified = storage.read_frame("verified_psf_aai")
+                    if not verified.empty:
+                        _persist_psf_reference_files(verified)
+                _start_processing("Extract skill phrases", background_tasks.extract)
+            if action_button("Refresh saved results" if has_results else "Load saved results", type="secondary",
+                             icon=":material/refresh:", action_id="refresh_extraction_results"):
+                st.session_state["_extraction_results_page"] = 1
+                _start_processing("Load saved extraction results", background_tasks.extraction_preview)
     if "_extraction_results_frame" not in st.session_state:
+        job = st.session_state.get("_background_job")
+        if job is not None and job.title in {"Load saved extraction results", "Extract skill phrases"} and job.snapshot()["status"] == "running":
+            with st.container(key="extraction_pending_results"):
+                st.html(_wireframe("metrics", cards=3))
+                st.html(_wireframe("selector"))
+                st.html(_wireframe("table", columns=EXTRACTION_COLUMNS))
+            return
         st.caption("Run extraction to prepare phrases, or load previously saved results. Saved results are not downloaded when you open this page.")
         return
     result = st.session_state["_extraction_results_frame"]
@@ -817,11 +916,11 @@ def extraction():
         st.info("No saved extraction results yet. Run extraction to prepare phrases for review.")
     if not result.empty:
         approved = result.human_label.fillna("").astype(str).str.strip().ne("") if "human_label" in result else pd.Series(False, index=result.index)
-        metrics = st.columns(3)
-        metrics[0].metric("Researcher-approved labels", f"{int(approved.sum()):,}")
-        metrics[1].metric("Unreviewed extracted phrases", f"{int((~approved).sum()):,}")
-        metrics[2].metric("Model predictions (separate)", f"{int(result.model_prediction.fillna('').astype(str).str.strip().ne('').sum()):,}" if "model_prediction" in result else "0")
-        choice = st.selectbox("View", ["All extracted phrases", "Researcher-approved labels", "Unreviewed candidates", "Accepted detections"])
+        content_metrics([
+            ("Researcher-approved labels", f"{int(approved.sum()):,}", "sell"),
+            ("Unreviewed extracted phrases", f"{int((~approved).sum()):,}", "description"),
+            ("Model predictions (separate)", f"{int(result.model_prediction.fillna('').astype(str).str.strip().ne('').sum()):,}" if "model_prediction" in result else "0", "deployed_code"),
+        ], "extraction")
         if choice == "Researcher-approved labels":
             result = result[approved]
         elif choice == "Unreviewed candidates":
@@ -835,13 +934,15 @@ def extraction():
             page_key = "_extraction_results_page"
             current_page = min(max(int(st.session_state.get(page_key, 1)), 1), (len(result) + 99) // 100)
             st.session_state[page_key] = current_page
-            page = st.number_input("Results page", min_value=1, max_value=(len(result) + 99) // 100,
-                                   value=current_page, step=1, key=page_key)
+            with view_fields:
+                page = st.number_input("Results page", min_value=1, max_value=(len(result) + 99) // 100,
+                                       value=current_page, step=1, key=page_key, width=200)
             visible, page, _ = _paginate_frame(result, page)
             first_row = (page - 1) * 100 + 1
             last_row = min(page * 100, len(result))
             st.caption(f"Showing {first_row:,}–{last_row:,} of {len(result):,} rows. Full results stay saved; only this page is sent to your browser.")
-            display(visible)
+            with content_section("Extracted skill phrases", "table_view", "extraction_results"):
+                display(visible)
         if limits.get("limited", 0):
             st.warning(f"{limits['limited']} of {limits['total']} job ads reached the {limits['cap']}-phrase cap for broad n-gram discovery. Exact vocabulary and PSF-AAI term scans still use the full text. Keeping this cap limits low-confidence review fragments; raise it in Settings only when you want a wider manual review and can inspect the extra candidates.")
 
@@ -913,7 +1014,7 @@ def labeling():
                 if posting_files:
                     posting_file = st.selectbox("Posting CSV in ./train", posting_files)
                     if action_button("Prepare Philippine posting candidates", disabled=not supabase_store.is_admin()):
-                        with st.skeleton(height=240):
+                        with st.spinner("Preparing posting candidates…"):
                             report = prepare_posting_candidates(storage.ROOT, posting_file)
                             candidate_path = storage.ROOT / "train" / report["candidate_file"]
                             new_candidates = pd.read_csv(candidate_path, dtype=str, keep_default_na=False)
@@ -930,7 +1031,7 @@ def labeling():
                         st.caption(f"{report['postings_reaching_candidate_limit']} postings reached the {report['candidate_limit_per_posting']}-phrase discovery limit. Full source text remains available for review.")
 
     with review_content:
-        review_tools = st.container(horizontal=True, key="review_tools", vertical_alignment="center")
+        review_tools = st.container(horizontal=True, key="review_tools", vertical_alignment="center", wrap=True)
         with review_tools:
             with st.popover("Review settings", icon=":material/tune:"):
                 auto_train = _auto_retraining_control()
@@ -961,394 +1062,407 @@ def labeling():
                             if str(key).startswith(("review_snapshot", "manual_labels_", "review_draft_", "resolve_label_")):
                                 del st.session_state[key]
                         st.rerun()
-            if "review_snapshot" not in st.session_state:
-                st.session_state["review_snapshot"] = load_data_with_skeleton(
-                    lambda: storage.read_frame("labeled_competencies"), height=120
-                )
-            labels = st.session_state["review_snapshot"].copy()
-        else:
-            labels = load_data_with_skeleton(lambda: storage.read_frame("labeled_competencies"), height=120)
-        candidates, taxonomy = load_data_with_skeleton(
-            lambda: _load_manual_review_data(labels), height=220
-        )
-        from .cleaning import normalize_text
-        st.caption(f"{candidates.normalized_phrase.nunique():,} distinct phrases · {len(candidates):,} source occurrences · {len(labels):,} saved review rows")
-        occurrences = candidates
-        reviewed_phrases = labels_by_phrase(labels)
-        categories = list(dict.fromkeys(LABELS + (labels.label.tolist() if not labels.empty else [])))
-        with review_tools:
-            with st.popover("Review guide", icon=":material/menu_book:"):
-                st.write("Choose one leaf category. Technical / Digital is the parent of AI / Machine Learning, Data / Analytics, and general programming and digital tools. Credentials are recorded separately from competencies.")
-                st.write("Use AI / Machine Learning for explicit model development or AI methods; Data / Analytics for analysis, statistics, SQL and reporting; general programming and digital tools for programming or IT without an explicit AI or analytics task. Leadership covers directing people; other enabling capabilities cover communication and personal effectiveness. Classify the phrase in its source context.")
-                st.write("Examples: Python programming → general programming and digital tools; machine-learning model development → AI / Machine Learning; statistical analysis → Data / Analytics; bachelor’s degree → Credential requirement. Legacy categories require review. PSF-AAI mapping remains a separate decision.")
-                st.caption("Count parent totals from distinct advertisements or occurrences, using the same unit throughout. Do not add parent totals to their child totals.")
-                st.caption("Category decisions apply across a phrase. PSF-AAI decisions apply only to the source advertisement in that row.")
-        with st.container(key="manual_review_workspace"):
-            account_reviewer = str(st.session_state.get("supabase_user_email", "")).strip()
-            if account_reviewer or supabase_store.configured():
-                reviewer = account_reviewer
-                st.caption(f"Signed-in reviewer: {reviewer}")
+        with loading_content("review_queue_content", "metrics", cards=4) as content:
+            if supabase_store.configured():
+                if "review_snapshot" not in st.session_state:
+                    st.session_state["review_snapshot"] = storage.read_frame("labeled_competencies")
+                labels = st.session_state["review_snapshot"].copy()
             else:
-                with st.expander("Reviewer details"):
-                    reviewer = st.text_input("Reviewer ID", key="label_reviewer")
-            _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train)
+                labels = storage.read_frame("labeled_competencies")
+            candidates, taxonomy = _load_manual_review_data(labels)
+            with content():
+                from .cleaning import normalize_text
+                content_metrics([
+                    ("Distinct phrases", f"{candidates.normalized_phrase.nunique():,}", "sell"),
+                    ("Source occurrences", f"{len(candidates):,}", "layers"),
+                    ("Saved review rows", f"{len(labels):,}", "description"),
+                    ("Signed-in reviewer", str(st.session_state.get("supabase_user_email") or st.session_state.get("label_reviewer") or "Not set"), "person"),
+                ], "review")
+                occurrences = candidates
+                reviewed_phrases = labels_by_phrase(labels)
+                categories = list(dict.fromkeys(LABELS + (labels.label.tolist() if not labels.empty else [])))
+                with review_tools:
+                    with st.popover("Review guide", icon=":material/menu_book:"):
+                        st.write("Choose one leaf category. Technical / Digital is the parent of AI / Machine Learning, Data / Analytics, and general programming and digital tools. Credentials are recorded separately from competencies.")
+                        st.write("Use AI / Machine Learning for explicit model development or AI methods; Data / Analytics for analysis, statistics, SQL and reporting; general programming and digital tools for programming or IT without an explicit AI or analytics task. Leadership covers directing people; other enabling capabilities cover communication and personal effectiveness. Classify the phrase in its source context.")
+                        st.write("Examples: Python programming → general programming and digital tools; machine-learning model development → AI / Machine Learning; statistical analysis → Data / Analytics; bachelor’s degree → Credential requirement. Legacy categories require review. PSF-AAI mapping remains a separate decision.")
+                        st.caption("Count parent totals from distinct advertisements or occurrences, using the same unit throughout. Do not add parent totals to their child totals.")
+                        st.caption("Category decisions apply across a phrase. PSF-AAI decisions apply only to the source advertisement in that row.")
+                with st.container(key="manual_review_workspace"):
+                    account_reviewer = str(st.session_state.get("supabase_user_email", "")).strip()
+                    if account_reviewer or supabase_store.configured():
+                        reviewer = account_reviewer
+                    else:
+                        with st.expander("Reviewer details"):
+                            reviewer = st.text_input("Reviewer ID", key="label_reviewer")
+                    _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train)
 
 
 
 def _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train):
     from .cleaning import normalize_text
     if not candidates.empty:
-        source_filtered = candidates
-        review_controls = st.container(horizontal=True, vertical_alignment="bottom", key="review_controls")
-        with review_controls:
-            review_view = st.selectbox("Review view", ["Unique phrases", "All advertisement occurrences"],
-                                       key="manual_review_view", width=250)
-            query = st.text_input("Find candidate phrase", placeholder="Search phrases…", width=300)
-            with st.popover("Filters", icon=":material/filter_list:"):
-                if "candidate_file" in candidates:
-                    sources = sorted(candidates.candidate_file.unique())
-                    selected_sources = st.multiselect("Candidate source files", sources)
-                    if selected_sources:
-                        source_filtered = candidates[candidates.candidate_file.isin(selected_sources)]
-                if st.checkbox("Only show phrases awaiting category review", value=True):
-                    source_filtered = source_filtered.loc[~source_filtered.normalized_phrase.isin(reviewed_phrases)]
-                if st.checkbox("Hide obvious connector fragments", value=True, help="This hides phrases beginning or ending with a common connector, such as ‘with strong’ or ‘written and’. Turn it off to inspect and manually label or correct them."):
-                    source_filtered = source_filtered.loc[~source_filtered.needs_phrase_edit]
-        if query:
-            source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
-        phrase_rows = (group_candidates_by_phrase(source_filtered) if review_view == "Unique phrases"
-                       else source_filtered.drop_duplicates(["normalized_phrase", "source_type", "source_id"]).copy())
-        with review_controls:
-            page = st.number_input("Review page (10 rows per page)", 1, max(1, (len(phrase_rows)+9)//10), 1, width=200)
-        shown = _review_contexts(phrase_rows.iloc[(page-1)*10:page*10])
-        detail_tools = st.container(horizontal=True, key="review_detail_tools")
-        with detail_tools, st.popover("Source evidence", icon=":material/article:"):
-            # Context for the selected rows is always loaded, including training
-            # sources outside the study dataset.
-            st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
-            st.caption("Evidence belongs to the advertisement shown in each row. Use All advertisement occurrences to inspect other contexts for the same phrase.")
+        with content_section("Review setup", "tune", "review_setup"):
+            source_filtered = candidates
+            review_controls = st.container(horizontal=True, vertical_alignment="bottom", key="review_controls", wrap=True)
+            with review_controls:
+                review_view = st.selectbox("Review view", ["Unique phrases", "All advertisement occurrences"],
+                                           key="manual_review_view", width="stretch")
+                query = st.text_input("Find candidate phrase", placeholder="Search phrases…", width="stretch")
+                with st.popover("Filters", icon=":material/filter_list:", width="stretch"):
+                    if "candidate_file" in candidates:
+                        sources = sorted(candidates.candidate_file.unique())
+                        selected_sources = st.multiselect("Candidate source files", sources)
+                        if selected_sources:
+                            source_filtered = candidates[candidates.candidate_file.isin(selected_sources)]
+                    if st.checkbox("Only show phrases awaiting category review", value=True):
+                        source_filtered = source_filtered.loc[~source_filtered.normalized_phrase.isin(reviewed_phrases)]
+                    if st.checkbox("Hide obvious connector fragments", value=True, help="This hides phrases beginning or ending with a common connector, such as ‘with strong’ or ‘written and’. Turn it off to inspect and manually label or correct them."):
+                        source_filtered = source_filtered.loc[~source_filtered.needs_phrase_edit]
+            if query:
+                source_filtered = source_filtered[source_filtered.phrase.str.contains(query, case=False, regex=False)]
+            phrase_rows = (group_candidates_by_phrase(source_filtered) if review_view == "Unique phrases"
+                           else source_filtered.drop_duplicates(["normalized_phrase", "source_type", "source_id"]).copy())
+            with review_controls:
+                page = st.number_input("Review page (10 rows per page)", 1, max(1, (len(phrase_rows)+9)//10), 1, width="stretch")
+            shown = phrase_rows.iloc[(page-1)*10:page*10].copy()
     else:
         st.info("No candidate phrases yet. Add Philippine job-ad source/candidate data to ./train or run Competency Extraction on uploaded jobs. No example labels are added automatically.")
         occurrences = candidates.copy()
         shown = pd.DataFrame(columns=["phrase", "normalized_phrase", "source_type", "source_id", "source_ads", "original_text"])
-    from .pretrained_suggestions import (
-        MODEL_ID, MODEL_REVISION,
-        suggestion_key, psf_draft_candidates, draft_complete, PSF_DRAFT_LIMIT,
-    )
-    if shown.empty and not candidates.empty:
-        st.info("No phrases match these filters. Clear the search or turn off awaiting-category review to revisit saved phrases.")
-    page_rows = shown.to_dict("records") if not shown.empty else []
-    page_identity = frame_hash(shown[["normalized_phrase", "phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
-    def generate_ai_drafts(rows):
-        _start_processing("Generate AI drafts", background_tasks.suggest,
-                          deepcopy(rows), taxonomy.copy(deep=True), storage.ROOT)
-
-    if not shown.empty:
-        with detail_tools, st.popover("AI details", icon=":material/auto_awesome:"):
-            st.caption(f"{MODEL_ID} · revision {MODEL_REVISION[:8]} · CPU. First use downloads about 2.3 GB. Similarity scores rank suggestions; they are not accuracy measurements.")
-            st.write(f"Generate drafts for each review page on this host. Up to {PSF_DRAFT_LIMIT} ranked PSF-AAI candidates per occurrence; select only those supported by the source. Manual decisions stay blank until you enter them.")
-            st.caption("IRRELEVANT drafts intentionally have no PSF-AAI candidate. Drafts are local to this host; saved researcher decisions use your configured research storage.")
-        if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
-            st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
-        if taxonomy.empty:
-            st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
-
-    if not shown.empty:
-        unit = "unique phrases" if review_view == "Unique phrases" else "advertisement occurrences"
-        st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} {unit} · Category applies to the phrase; PSF-AAI applies only to the displayed advertisement.")
-    active_taxonomy = storage.read_frame("cleaned_psf_aai")
-    reference = active_taxonomy.set_index("competency_id") if not active_taxonomy.empty else pd.DataFrame()
-    mapping_available = not reference.empty
-    try:
-        mapping_reviews = storage.read_frame(REVIEW_TABLE) if mapping_available else pd.DataFrame()
-    except supabase_store.SupabaseError:
-        mapping_reviews = pd.DataFrame()
-        mapping_available = False
-        st.warning("Competency reviews could not be loaded. Check the shared connection and occurrence-mapping migration. Category review remains available.")
-    if reference.empty:
-        st.caption("Activate the reviewed PSF-AAI reference to enable competency selections.")
-    page_identity = digest([page_identity, frame_hash(active_taxonomy), frame_hash(mapping_reviews)])[:24]
-    mapping_occurrences = manual_mapping_occurrences(shown, current_extractions(source_ids=shown.source_id.unique()))
-    occurrence_lookup = {(row.source_id, row.normalized_phrase): row._asdict() for row in mapping_occurrences.itertuples(index=False)}
-    page_occurrences, page_reviews = [], []
-    table_rows = []
-    for index, row in enumerate(page_rows):
-        row_normalized = normalize_text(row.get("normalized_phrase") or row.get("phrase", ""))
-        saved = reviewed_phrases.get(row_normalized)
-        occurrence = occurrence_lookup.get((row.get("source_id", ""), row.get("normalized_phrase", "")))
-        existing = mapping_reviews[mapping_reviews.extraction_id.eq(occurrence["extraction_id"])] if occurrence and not mapping_reviews.empty else pd.DataFrame()
-        page_occurrences.append(occurrence)
-        page_reviews.append(existing)
-        table_row = {
-            "Phrase": row.get("phrase", ""),
-            "Source ads": int(row.get("source_ads", 0)),
-            "Source advertisement": row.get("source_id", ""),
-            "Category": saved.get("label", "") if saved else "",
-            "PSF-AAI competencies": [key for key in existing.competency_id if key in reference.index] if not existing.empty else [],
-        }
-        table_rows.append(table_row)
-    manual_table = pd.DataFrame(table_rows)
-    table_config = {
-        "Phrase": st.column_config.TextColumn(disabled=True, width=160, pinned=True),
-        "Source ads": st.column_config.NumberColumn(help="Number of distinct source job ads containing this normalized phrase.", disabled=True),
-        "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), width=180, format_func=lambda value: category_path(value) if value else "", help="Choose one leaf in the hierarchy. Education is a credential requirement, not a competency."),
-    }
-    table_config["Source advertisement"] = st.column_config.TextColumn(disabled=True, width=200)
-    table_config["PSF-AAI competencies"] = st.column_config.MultiselectColumn(
-        options=sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, "competency_name"]).casefold()),
-        format_func=lambda key: str(reference.loc[key, "competency_name"]) if key in reference.index else key,
-        accept_new_options=False, disabled=not mapping_available, width=300,
-        help="Select two or more competencies when this advertisement supports each. Each link requires a separate rationale below.")
-    disabled_columns = ["Phrase", "Source ads", "Source advertisement"]
-    table_config.update({
-        "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
-        "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
-    })
-    disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts"])
-    job = st.session_state.get("_background_job")
-    polling_drafts = bool(job and job.title in ("Generate AI drafts", "Generate local drafts")
-                          and job.snapshot()["status"] == "running")
-
-    @st.fragment(run_every=2 if polling_drafts else None)
-    def review_editor():
-        nonlocal labels
-        saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
-        page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
-        missing_rows = [row for row, draft in zip(page_rows, page_suggestions) if not draft_complete(draft)]
-        manual_table["AI category draft"] = [item.get("category", "") if item.get("category") in LABELS else "" for item in page_suggestions]
-        manual_table["AI PSF-AAI drafts"] = [[item["competency_name"] for item in psf_draft_candidates(draft)] for draft in page_suggestions]
-        with st.container(horizontal=True, vertical_alignment="center", key="manual_review_actions"):
-            save_action = st.container(width="content")
-            generate_action = st.container(width="content")
-            fullscreen = st.toggle("Full-screen review", key="manual_review_fullscreen",
-                                   help="Expand the entire review workspace, including actions and evidence. Turn off to return to the page.")
-        review_workspace_style(fullscreen)
-        draft_key = f"review_draft_{page_identity}"
-        revision_key = draft_key + "_revision"
-        editor_key = f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}"
-        if draft_key not in st.session_state:
-            st.session_state[draft_key] = manual_table.copy()
-        # Refresh draft values after generation without discarding manual edits.
-        draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competencies"], errors="ignore"))
-        if st.session_state.get(draft_key + "_source") != draft_revision:
-            current = st.session_state[draft_key].reindex(columns=manual_table.columns).copy()
-            # Apply any just-arrived browser edits before replacing the widget
-            # key for new read-only drafts. Never overwrite a manual selection.
-            for index, changes in st.session_state.get(editor_key, {}).get("edited_rows", {}).items():
-                if int(index) in current.index:
-                    for column in ("Category", "PSF-AAI competencies"):
-                        if column in changes:
-                            current.at[int(index), column] = changes[column]
-            for column in manual_table.columns:
-                if column not in ("Category", "PSF-AAI competencies"):
-                    current[column] = manual_table[column]
-            st.session_state[draft_key] = current
-            st.session_state[draft_key + "_source"] = draft_revision
-            st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
-        edited_table = st.data_editor(
-            st.session_state[draft_key],
-            hide_index=True,
-            num_rows="fixed",
-            width="stretch",
-            disabled=disabled_columns,
-            column_config=table_config,
-            column_order=["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"],
-            row_height=52,
-            height=min(580, 52 * len(manual_table) + 40),
-            alt="Manual review: phrase, category, selected competencies, AI drafts and source advertisement",
-            key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
-        ) if not manual_table.empty else manual_table
-        st.session_state[draft_key] = edited_table.copy()
-        if page_rows:
-            st.caption(f"{len(page_rows) - len(missing_rows)} of {len(page_rows)} drafts ready on this page · {len(missing_rows)} need generation. Drafts update here as batches finish.")
-        mapping_updates = []
-        for index, row in edited_table.iterrows():
-            occurrence = page_occurrences[index]
-            saved = page_reviews[index]
-            selected = list(row["PSF-AAI competencies"]) if row["PSF-AAI competencies"] is not None else []
-            original = list(manual_table.iloc[index]["PSF-AAI competencies"])
-            changed = set(selected) != set(original)
-            if not mapping_available or not (selected or not saved.empty or changed):
-                continue
-            with st.expander(f"Evidence: {row['Phrase']} — ad {row['Source advertisement']}", expanded=changed):
-                if not occurrence or not str(occurrence.get("original_text", "")).strip():
-                    st.warning("This advertisement's source text is unavailable on this device. Ask the admin to open Team updates → Restore shared ad evidence on the computer with the original uploads, then refresh this review table.")
-                else:
-                    st.text(str(occurrence["original_text"]))
-                if occurrence and occurrence.get("pending_extraction"):
-                    st.caption("This candidate enters analysis only after the same occurrence is extracted and accepted. Changed evidence requires another review.")
-                stale = bool(occurrence and not saved.empty and (
-                    saved.reference_hash.ne(frame_hash(active_taxonomy)).any() or
-                    saved.occurrence_hash.ne(occurrence_hash(occurrence)).any()))
-                if stale:
-                    st.warning("Saved links are stale. Review the source and selected competencies again.")
-                key = f"table_psf_{page_identity}_{index}"
-                update_evidence = st.checkbox("Update or confirm this occurrence's mapping", value=changed,
-                                              key=key + "_update")
-                old_reasons = dict(zip(saved.competency_id, saved.rationale)) if not saved.empty else {}
-                reasons = {}
-                for competency in selected:
-                    if competency not in reference.index:
-                        continue
-                    st.write(reference.loc[competency, "competency_name"])
-                    st.caption(str(reference.loc[competency].get("competency_description", "")))
-                    if reference.loc[competency].get("range_of_application", ""):
-                        st.caption("Range of application: " + str(reference.loc[competency]["range_of_application"]))
-                    reasons[competency] = st.text_area("Source evidence and rationale", value=old_reasons.get(competency, ""), key=key + "_" + competency)
-                no_match = st.text_area("Reason for no mapping", value=old_reasons.get("", ""), key=key + "_none") if not selected else ""
-                confirmed = st.checkbox("I checked the source context and each selected competency; every link is justified.", key=key + "_confirmed_" + digest(selected)[:8])
-                if changed or update_evidence:
-                    mapping_updates.append((occurrence, reasons, confirmed, no_match, saved, selected))
-        reviewed_rows = []
-        for index, row in edited_table.iterrows():
-            category = row.get("Category", "")
-            source_row = page_rows[index]
-            reviewed_rows.append({
-                "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
-                "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
-                "label": str(category or "").strip(), "psf_competency": "",
-            })
-        edited = pd.DataFrame(reviewed_rows, columns=["phrase", "normalized_phrase", "source_type", "source_id", "label", "psf_competency"])
-
-        def show_conflict_resolutions(rows, key_prefix):
-            conflicts = annotation_conflicts(rows, labels)
-            saved_conflicts = annotation_conflicts(pd.DataFrame(columns=["phrase", "label"]), labels)
-            for normalized, item in saved_conflicts.items():
-                if normalized not in conflicts:
-                    conflicts[normalized] = item
-                else:
-                    conflicts[normalized]["labels"] = sorted(
-                        set(conflicts[normalized]["labels"]) | set(item["labels"]), key=str.casefold
-                    )
-            resolutions = {}
-            invalid_choices = []
-            if conflicts:
-                st.warning(f"{len(conflicts)} normalized phrase(s) have more than one category across the saved dataset and this page. Choose one category for each; it will be applied to every occurrence, including previously saved rows.")
-                st.caption("One row per phrase. Choose a category from the values shown for that phrase; the choice will be applied to all saved occurrences.")
-                table = pd.DataFrame([
-                    {"Phrase": item["phrase"], "Existing categories": " · ".join(item["labels"]), "Choose category": "— Choose a category —"}
-                    for item in conflicts.values()
-                ], index=list(conflicts.keys()))
-                choices = ["— Choose a category —"] + sorted(
-                    {label for item in conflicts.values() for label in item["labels"]}, key=str.casefold
-                )
-                edited_resolutions = st.data_editor(
-                    table,
-                    hide_index=True,
-                    num_rows="fixed",
-                    width="stretch",
-                    key=f"{key_prefix}_conflict_table_{frame_hash(table)}",
-                    disabled=["Phrase", "Existing categories"],
-                    column_config={
-                        "Phrase": st.column_config.TextColumn("Normalized phrase", disabled=True),
-                        "Existing categories": st.column_config.TextColumn(disabled=True),
-                        "Choose category": st.column_config.SelectboxColumn(options=choices, required=True),
-                    },
-                )
-                for normalized, row in edited_resolutions.iterrows():
-                    choice = row["Choose category"]
-                    if choice == "— Choose a category —":
-                        continue
-                    if choice in conflicts[normalized]["labels"]:
-                        resolutions[normalized] = choice
-                    else:
-                        invalid_choices.append(conflicts[normalized]["phrase"])
-                if invalid_choices:
-                    st.warning("Choose only a category already listed for each phrase: " + ", ".join(invalid_choices))
-                st.caption("Saving your choices makes each phrase use one category everywhere. Previous values are retained in annotation history.")
-            resolved = len(resolutions) == len(conflicts) and not invalid_choices
-            return conflicts, resolutions, resolved
-
-        conflicts, conflict_resolutions, conflicts_resolved = show_conflict_resolutions(edited, "resolve_label")
-        if supabase_store.configured() and not reviewer.strip():
-            st.warning("Your account session is unavailable. Sign in again to save.")
-        has_category = bool(not edited.empty and edited.label.astype(str).str.strip().ne("").any())
-        if not has_category:
-            st.caption("Choose a category or review competency links before saving.")
-        st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
-        can_submit = has_category or bool(conflicts) or bool(mapping_updates)
-        with generate_action:
-            generate_clicked = action_button("Generate missing AI drafts" if missing_rows or shown.empty else "Regenerate page drafts", icon=":material/auto_awesome:", key=f"suggest_labels_{page_identity}", disabled=shown.empty or taxonomy.empty or not supabase_store.is_admin() or bool(job and job.snapshot()["status"] == "running"))
-        with save_action:
-            save_clicked = action_button("Save annotations", icon=":material/save:", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit)
-        if generate_clicked:
-            generate_ai_drafts(missing_rows or page_rows)
-        if save_clicked:
+    with content_section("Review results", "fact_check", "review_results"):
+        with loading_content("manual_review_table_content", "review", columns=MANUAL_REVIEW_COLUMNS, rows=len(shown)) as content:
+            shown = _review_contexts(shown) if not shown.empty else shown
+            active_taxonomy = storage.read_frame("cleaned_psf_aai")
+            reference = active_taxonomy.set_index("competency_id") if not active_taxonomy.empty else pd.DataFrame()
+            mapping_available = not reference.empty
+            mapping_warning = False
             try:
-                for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
-                    if not occurrence or not str(occurrence.get("original_text", "")).strip():
-                        raise ValueError("Restore the source advertisement text before saving competency links.")
-                    if set(selected) != set(reasons):
-                        raise ValueError("Select competencies from the active PSF-AAI reference.")
-                    prepare_mapping_review(occurrence, active_taxonomy, reasons, reviewer, confirmed, no_match)
-            except ValueError as exc:
-                st.error(str(exc))
-                return
-            submitted_rows = edited[edited.label.str.strip().ne("")]
-            versions = None
-            if supabase_store.configured():
-                versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
-                changed = [i for i, row in edited_table.iterrows()
-                           if row.get("Category", "") != manual_table.iloc[i].get("Category", "")]
-                changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
-                submitted_rows = submitted_rows[submitted_rows.normalized_phrase.isin(changed_phrases)]
-            submitted_rows = preserve_occurrence_references(expand_phrase_annotations(submitted_rows, occurrences), labels)
-            categories_saved = bool(submitted_rows.label.str.strip().ne("").any() or conflicts)
-            if categories_saved:
-                labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
-            saved_links = 0
-            try:
-                for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
-                    save_mapping_review(occurrence, active_taxonomy, reasons, reviewer,
-                                        expected_version=int(saved.version.iloc[0]) if not saved.empty else 0,
-                                        context_confirmed=confirmed, unmapped_reason=no_match)
-                    saved_links += 1
-            except (ValueError, supabase_store.SupabaseError) as exc:
-                supabase_store.clear_read_cache()
-                st.warning(f"Partial save: category annotations {'were saved' if categories_saved else 'were unchanged'}; {saved_links} occurrence mapping(s) saved. Refresh before retrying. {exc}")
-                return
-            if mapping_updates:
-                supabase_store.clear_read_cache()
-                # Refresh these defaults and versions after the successful batch.
-                fresh = storage.read_frame(REVIEW_TABLE)
-                for index, occurrence in enumerate(page_occurrences):
-                    if occurrence:
-                        page_reviews[index] = fresh[fresh.extraction_id.eq(occurrence["extraction_id"])] if not fresh.empty else pd.DataFrame()
-                manual_table["PSF-AAI competencies"] = edited_table["PSF-AAI competencies"].copy()
-            if supabase_store.configured():
-                st.session_state.pop("review_snapshot", None)
-                for key in list(st.session_state):
-                    if str(key).startswith(("manual_labels_", "review_draft_")):
-                        del st.session_state[key]
-            st.success(f"Saved. The dataset has {len(labels):,} category review rows; updated competency links for {saved_links} advertisement occurrence(s).")
-            if st.session_state.get("backup_warning"):
-                st.warning(st.session_state.pop("backup_warning"))
-            _auto_train_after_review(labels, auto_train)
-        uploaded = None
-        if not supabase_store.configured():
-            with st.expander("Import team annotations", icon=":material/upload:"):
-                st.caption("Merge reviewed files from teammates. Reviewer IDs and timestamps are preserved; resolve any category conflicts before importing.")
-                uploaded = st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
-        imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
-        import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
-        if uploaded and action_button("Import annotations", disabled=not import_conflicts_resolved):
-            labels = save_annotations(imported, reviewer, conflict_resolutions=import_resolutions, preserve_row_provenance=True)
-            st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
-            _auto_train_after_review(labels, auto_train)
-        if not labels.empty:
-            with st.expander("Saved category annotations"):
-                display(labels)
-        st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
-        # End polling only when it cannot interrupt a manual decision. Otherwise
-        # retain this view and its original conflict versions until navigation.
-        manual_columns = ["Category", "PSF-AAI competencies"]
-        pending_edits = not edited_table.reindex(columns=manual_columns).equals(manual_table.reindex(columns=manual_columns))
-        evidence_visible = bool(mapping_updates) or any(
-            len(value) for value in edited_table.get("PSF-AAI competencies", []) if value is not None
-        ) or any(not saved.empty for saved in page_reviews)
-        if polling_drafts and job.snapshot()["status"] != "running" and not pending_edits and not evidence_visible:
-            st.rerun()
-    review_editor()
+                mapping_reviews = storage.read_frame(REVIEW_TABLE) if mapping_available else pd.DataFrame()
+            except supabase_store.SupabaseError:
+                mapping_reviews = pd.DataFrame()
+                mapping_available = False
+                mapping_warning = True
+            mapping_occurrences = manual_mapping_occurrences(shown, current_extractions(source_ids=shown.source_id.unique()))
+            _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
+            with content():
+                if mapping_warning:
+                    st.warning("Competency reviews could not be loaded. Check the shared connection and occurrence-mapping migration. Category review remains available.")
+                if not shown.empty:
+                    detail_tools = st.container(horizontal=True, key="review_detail_tools")
+                    with detail_tools, st.popover("Source evidence", icon=":material/article:"):
+                        # Context for the selected rows is always loaded, including training
+                        # sources outside the study dataset.
+                        st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
+                        st.caption("Evidence belongs to the advertisement shown in each row. Use All advertisement occurrences to inspect other contexts for the same phrase.")
+                from .pretrained_suggestions import (
+                    MODEL_ID, MODEL_REVISION,
+                    suggestion_key, psf_draft_candidates, draft_complete, PSF_DRAFT_LIMIT,
+                )
+                if shown.empty and not candidates.empty:
+                    st.info("No phrases match these filters. Clear the search or turn off awaiting-category review to revisit saved phrases.")
+                page_rows = shown.to_dict("records") if not shown.empty else []
+                page_identity = frame_hash(shown[["normalized_phrase", "phrase", "source_type", "source_id"]]) if not shown.empty else "empty"
+                def generate_ai_drafts(rows):
+                    _start_processing("Generate AI drafts", background_tasks.suggest,
+                                      deepcopy(rows), taxonomy.copy(deep=True), storage.ROOT)
+
+                if not shown.empty:
+                    with detail_tools, st.popover("AI details", icon=":material/auto_awesome:"):
+                        st.caption(f"{MODEL_ID} · revision {MODEL_REVISION[:8]} · CPU. First use downloads about 2.3 GB. Similarity scores rank suggestions; they are not accuracy measurements.")
+                        st.write(f"Generate drafts for each review page on this host. Up to {PSF_DRAFT_LIMIT} ranked PSF-AAI candidates per occurrence; select only those supported by the source. Manual decisions stay blank until you enter them.")
+                        st.caption("IRRELEVANT drafts intentionally have no PSF-AAI candidate. Drafts are local to this host; saved researcher decisions use your configured research storage.")
+                    if os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_URL"):
+                        st.warning("The Vercel image installs the suggestion package, but BGE-M3 weights download separately on first use. Vercel Hobby has 2 GB maximum function memory, so loading this model may exceed its limit; use a Pro function with sufficient memory or run suggestions on the persistent Docker/local host if it fails.")
+                    if taxonomy.empty:
+                        st.warning("Map and review the official PSF-AAI taxonomy first. Category suggestions can be generated only after competency matches have a verified taxonomy to compare against.")
+
+                if not shown.empty:
+                    unit = "unique phrases" if review_view == "Unique phrases" else "advertisement occurrences"
+                    st.caption(f"Showing {(page - 1) * 10 + 1:,}–{min(page * 10, len(phrase_rows)):,} of {len(phrase_rows):,} {unit} · Category applies to the phrase; PSF-AAI applies only to the displayed advertisement.")
+                if reference.empty:
+                    st.caption("Activate the reviewed PSF-AAI reference to enable competency selections.")
+                page_identity = digest([page_identity, frame_hash(active_taxonomy), frame_hash(mapping_reviews)])[:24]
+                occurrence_lookup = {(row.source_id, row.normalized_phrase): row._asdict() for row in mapping_occurrences.itertuples(index=False)}
+                page_occurrences, page_reviews = [], []
+                table_rows = []
+                for index, row in enumerate(page_rows):
+                    row_normalized = normalize_text(row.get("normalized_phrase") or row.get("phrase", ""))
+                    saved = reviewed_phrases.get(row_normalized)
+                    occurrence = occurrence_lookup.get((row.get("source_id", ""), row.get("normalized_phrase", "")))
+                    existing = mapping_reviews[mapping_reviews.extraction_id.eq(occurrence["extraction_id"])] if occurrence and not mapping_reviews.empty else pd.DataFrame()
+                    page_occurrences.append(occurrence)
+                    page_reviews.append(existing)
+                    table_row = {
+                        "Phrase": row.get("phrase", ""),
+                        "Source ads": int(row.get("source_ads", 0)),
+                        "Source advertisement": row.get("source_id", ""),
+                        "Category": saved.get("label", "") if saved else "",
+                        "PSF-AAI competencies": [key for key in existing.competency_id if key in reference.index] if not existing.empty else [],
+                    }
+                    table_rows.append(table_row)
+                manual_table = pd.DataFrame(table_rows)
+                table_config = {
+                    "Phrase": st.column_config.TextColumn(disabled=True, width=160, pinned=True),
+                    "Source ads": st.column_config.NumberColumn(help="Number of distinct source job ads containing this normalized phrase.", disabled=True),
+                    "Category": st.column_config.SelectboxColumn(options=[""] + list(dict.fromkeys(categories)), width=180, format_func=lambda value: category_path(value) if value else "", help="Choose one leaf in the hierarchy. Education is a credential requirement, not a competency."),
+                }
+                table_config["Source advertisement"] = st.column_config.TextColumn(disabled=True, width=200)
+                table_config["PSF-AAI competencies"] = st.column_config.MultiselectColumn(
+                    options=sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, "competency_name"]).casefold()),
+                    format_func=lambda key: str(reference.loc[key, "competency_name"]) if key in reference.index else key,
+                    accept_new_options=False, disabled=not mapping_available, width=300,
+                    help="Select two or more competencies when this advertisement supports each. Each link requires a separate rationale below.")
+                disabled_columns = ["Phrase", "Source ads", "Source advertisement"]
+                table_config.update({
+                    "AI category draft": st.column_config.SelectboxColumn(options=[""] + LABELS, format_func=lambda value: category_path(value) if value else "", disabled=True),
+                    "AI PSF-AAI drafts": st.column_config.ListColumn(width=300, help="Up to three ranked candidates. Similarity ranks alternatives; it does not establish that every candidate applies."),
+                })
+                disabled_columns.extend(["AI category draft", "AI PSF-AAI drafts"])
+                job = st.session_state.get("_background_job")
+                polling_drafts = bool(job and job.title in ("Generate AI drafts", "Generate local drafts")
+                                      and job.snapshot()["status"] == "running")
+
+                @st.fragment(run_every=2 if polling_drafts else None)
+                def review_editor():
+                    nonlocal labels
+                    saved_suggestions = _page_ai_suggestions(storage.ROOT / "data/processed/pretrained_label_suggestions.csv")
+                    page_suggestions = [saved_suggestions.get(suggestion_key(row), {}) for row in page_rows]
+                    missing_rows = [row for row, draft in zip(page_rows, page_suggestions) if not draft_complete(draft)]
+                    manual_table["AI category draft"] = [item.get("category", "") if item.get("category") in LABELS else "" for item in page_suggestions]
+                    manual_table["AI PSF-AAI drafts"] = [[item["competency_name"] for item in psf_draft_candidates(draft)] for draft in page_suggestions]
+                    with st.container(horizontal=True, vertical_alignment="center", key="manual_review_actions", wrap=True):
+                        save_action = st.container(width="content")
+                        generate_action = st.container(width="content")
+                        fullscreen = st.toggle("Full-screen review", key="manual_review_fullscreen",
+                                               help="Expand the entire review workspace, including actions and evidence. Turn off to return to the page.")
+                    review_workspace_style(fullscreen)
+                    draft_key = f"review_draft_{page_identity}"
+                    revision_key = draft_key + "_revision"
+                    editor_key = f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}"
+                    if draft_key not in st.session_state:
+                        st.session_state[draft_key] = manual_table.copy()
+                    # Refresh draft values after generation without discarding manual edits.
+                    draft_revision = frame_hash(manual_table.drop(columns=["Category", "PSF-AAI competencies"], errors="ignore"))
+                    if st.session_state.get(draft_key + "_source") != draft_revision:
+                        current = st.session_state[draft_key].reindex(columns=manual_table.columns).copy()
+                        # Apply any just-arrived browser edits before replacing the widget
+                        # key for new read-only drafts. Never overwrite a manual selection.
+                        for index, changes in st.session_state.get(editor_key, {}).get("edited_rows", {}).items():
+                            if int(index) in current.index:
+                                for column in ("Category", "PSF-AAI competencies"):
+                                    if column in changes:
+                                        current.at[int(index), column] = changes[column]
+                        for column in manual_table.columns:
+                            if column not in ("Category", "PSF-AAI competencies"):
+                                current[column] = manual_table[column]
+                        st.session_state[draft_key] = current
+                        st.session_state[draft_key + "_source"] = draft_revision
+                        st.session_state[revision_key] = st.session_state.get(revision_key, 0) + 1
+                    edited_table = st.data_editor(
+                        st.session_state[draft_key],
+                        hide_index=True,
+                        num_rows="fixed",
+                        width="stretch",
+                        disabled=disabled_columns,
+                        column_config=table_config,
+                        column_order=MANUAL_REVIEW_COLUMNS,
+                        row_height=52,
+                        height=min(580, 52 * len(manual_table) + 40),
+                        alt="Manual review: phrase, category, selected competencies, AI drafts and source advertisement",
+                        key=f"manual_labels_{page_identity}_{st.session_state.get(revision_key, 0)}",
+                    ) if not manual_table.empty else manual_table
+                    st.session_state[draft_key] = edited_table.copy()
+                    if page_rows:
+                        st.caption(f"{len(page_rows) - len(missing_rows)} of {len(page_rows)} drafts ready on this page · {len(missing_rows)} need generation. Drafts update here as batches finish.")
+                    mapping_updates = []
+                    for index, row in edited_table.iterrows():
+                        occurrence = page_occurrences[index]
+                        saved = page_reviews[index]
+                        selected = list(row["PSF-AAI competencies"]) if row["PSF-AAI competencies"] is not None else []
+                        original = list(manual_table.iloc[index]["PSF-AAI competencies"])
+                        changed = set(selected) != set(original)
+                        if not mapping_available or not (selected or not saved.empty or changed):
+                            continue
+                        with st.expander(f"Evidence: {row['Phrase']} — ad {row['Source advertisement']}", expanded=changed):
+                            if not occurrence or not str(occurrence.get("original_text", "")).strip():
+                                st.warning("This advertisement's source text is unavailable on this device. Ask the admin to open Team updates → Restore shared ad evidence on the computer with the original uploads, then refresh this review table.")
+                            else:
+                                st.text(str(occurrence["original_text"]))
+                            if occurrence and occurrence.get("pending_extraction"):
+                                st.caption("This candidate enters analysis only after the same occurrence is extracted and accepted. Changed evidence requires another review.")
+                            stale = bool(occurrence and not saved.empty and (
+                                saved.reference_hash.ne(frame_hash(active_taxonomy)).any() or
+                                saved.occurrence_hash.ne(occurrence_hash(occurrence)).any()))
+                            if stale:
+                                st.warning("Saved links are stale. Review the source and selected competencies again.")
+                            key = f"table_psf_{page_identity}_{index}"
+                            update_evidence = st.checkbox("Update or confirm this occurrence's mapping", value=changed,
+                                                          key=key + "_update")
+                            old_reasons = dict(zip(saved.competency_id, saved.rationale)) if not saved.empty else {}
+                            reasons = {}
+                            for competency in selected:
+                                if competency not in reference.index:
+                                    continue
+                                st.write(reference.loc[competency, "competency_name"])
+                                st.caption(str(reference.loc[competency].get("competency_description", "")))
+                                if reference.loc[competency].get("range_of_application", ""):
+                                    st.caption("Range of application: " + str(reference.loc[competency]["range_of_application"]))
+                                reasons[competency] = st.text_area("Source evidence and rationale", value=old_reasons.get(competency, ""), key=key + "_" + competency)
+                            no_match = st.text_area("Reason for no mapping", value=old_reasons.get("", ""), key=key + "_none") if not selected else ""
+                            confirmed = st.checkbox("I checked the source context and each selected competency; every link is justified.", key=key + "_confirmed_" + digest(selected)[:8])
+                            if changed or update_evidence:
+                                mapping_updates.append((occurrence, reasons, confirmed, no_match, saved, selected))
+                    reviewed_rows = []
+                    for index, row in edited_table.iterrows():
+                        category = row.get("Category", "")
+                        source_row = page_rows[index]
+                        reviewed_rows.append({
+                            "phrase": source_row.get("phrase", ""), "normalized_phrase": normalize_text(source_row.get("normalized_phrase") or source_row.get("phrase", "")),
+                            "source_type": source_row.get("source_type", ""), "source_id": source_row.get("source_id", ""),
+                            "label": str(category or "").strip(), "psf_competency": "",
+                        })
+                    edited = pd.DataFrame(reviewed_rows, columns=["phrase", "normalized_phrase", "source_type", "source_id", "label", "psf_competency"])
+
+                    def show_conflict_resolutions(rows, key_prefix):
+                        conflicts = annotation_conflicts(rows, labels)
+                        saved_conflicts = annotation_conflicts(pd.DataFrame(columns=["phrase", "label"]), labels)
+                        for normalized, item in saved_conflicts.items():
+                            if normalized not in conflicts:
+                                conflicts[normalized] = item
+                            else:
+                                conflicts[normalized]["labels"] = sorted(
+                                    set(conflicts[normalized]["labels"]) | set(item["labels"]), key=str.casefold
+                                )
+                        resolutions = {}
+                        invalid_choices = []
+                        if conflicts:
+                            st.warning(f"{len(conflicts)} normalized phrase(s) have more than one category across the saved dataset and this page. Choose one category for each; it will be applied to every occurrence, including previously saved rows.")
+                            st.caption("One row per phrase. Choose a category from the values shown for that phrase; the choice will be applied to all saved occurrences.")
+                            table = pd.DataFrame([
+                                {"Phrase": item["phrase"], "Existing categories": " · ".join(item["labels"]), "Choose category": "— Choose a category —"}
+                                for item in conflicts.values()
+                            ], index=list(conflicts.keys()))
+                            choices = ["— Choose a category —"] + sorted(
+                                {label for item in conflicts.values() for label in item["labels"]}, key=str.casefold
+                            )
+                            edited_resolutions = st.data_editor(
+                                table,
+                                hide_index=True,
+                                num_rows="fixed",
+                                width="stretch",
+                                key=f"{key_prefix}_conflict_table_{frame_hash(table)}",
+                                disabled=["Phrase", "Existing categories"],
+                                column_config={
+                                    "Phrase": st.column_config.TextColumn("Normalized phrase", disabled=True),
+                                    "Existing categories": st.column_config.TextColumn(disabled=True),
+                                    "Choose category": st.column_config.SelectboxColumn(options=choices, required=True),
+                                },
+                            )
+                            for normalized, row in edited_resolutions.iterrows():
+                                choice = row["Choose category"]
+                                if choice == "— Choose a category —":
+                                    continue
+                                if choice in conflicts[normalized]["labels"]:
+                                    resolutions[normalized] = choice
+                                else:
+                                    invalid_choices.append(conflicts[normalized]["phrase"])
+                            if invalid_choices:
+                                st.warning("Choose only a category already listed for each phrase: " + ", ".join(invalid_choices))
+                            st.caption("Saving your choices makes each phrase use one category everywhere. Previous values are retained in annotation history.")
+                        resolved = len(resolutions) == len(conflicts) and not invalid_choices
+                        return conflicts, resolutions, resolved
+
+                    conflicts, conflict_resolutions, conflicts_resolved = show_conflict_resolutions(edited, "resolve_label")
+                    if supabase_store.configured() and not reviewer.strip():
+                        st.warning("Your account session is unavailable. Sign in again to save.")
+                    has_category = bool(not edited.empty and edited.label.astype(str).str.strip().ne("").any())
+                    if not has_category:
+                        st.caption("Choose a category or review competency links before saving.")
+                    st.caption("Saving records the values currently in the manual fields, reviewer ID, source, and timestamp. AI drafts remain in a separate file and are never training labels by themselves.")
+                    can_submit = has_category or bool(conflicts) or bool(mapping_updates)
+                    with generate_action:
+                        generate_clicked = action_button("Generate missing AI drafts" if missing_rows or shown.empty else "Regenerate page drafts", icon=":material/auto_awesome:", key=f"suggest_labels_{page_identity}", disabled=shown.empty or taxonomy.empty or not supabase_store.is_admin() or bool(job and job.snapshot()["status"] == "running"))
+                    with save_action:
+                        save_clicked = action_button("Save annotations", icon=":material/save:", type="primary", disabled=not reviewer.strip() or not conflicts_resolved or not can_submit)
+                    if generate_clicked:
+                        generate_ai_drafts(missing_rows or page_rows)
+                    if save_clicked:
+                        try:
+                            for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
+                                if not occurrence or not str(occurrence.get("original_text", "")).strip():
+                                    raise ValueError("Restore the source advertisement text before saving competency links.")
+                                if set(selected) != set(reasons):
+                                    raise ValueError("Select competencies from the active PSF-AAI reference.")
+                                prepare_mapping_review(occurrence, active_taxonomy, reasons, reviewer, confirmed, no_match)
+                        except ValueError as exc:
+                            st.error(str(exc))
+                            return
+                        submitted_rows = edited[edited.label.str.strip().ne("")]
+                        versions = None
+                        if supabase_store.configured():
+                            versions = {r.normalized_phrase: int(r.version) for r in labels.itertuples()}
+                            changed = [i for i, row in edited_table.iterrows()
+                                       if row.get("Category", "") != manual_table.iloc[i].get("Category", "")]
+                            changed_phrases = {normalize_text(page_rows[index].get("normalized_phrase") or page_rows[index].get("phrase", "")) for index in changed}
+                            submitted_rows = submitted_rows[submitted_rows.normalized_phrase.isin(changed_phrases)]
+                        submitted_rows = preserve_occurrence_references(expand_phrase_annotations(submitted_rows, occurrences), labels)
+                        categories_saved = bool(submitted_rows.label.str.strip().ne("").any() or conflicts)
+                        if categories_saved:
+                            labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+                        saved_links = 0
+                        try:
+                            for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
+                                save_mapping_review(occurrence, active_taxonomy, reasons, reviewer,
+                                                    expected_version=int(saved.version.iloc[0]) if not saved.empty else 0,
+                                                    context_confirmed=confirmed, unmapped_reason=no_match)
+                                saved_links += 1
+                        except (ValueError, supabase_store.SupabaseError) as exc:
+                            supabase_store.clear_read_cache()
+                            st.warning(f"Partial save: category annotations {'were saved' if categories_saved else 'were unchanged'}; {saved_links} occurrence mapping(s) saved. Refresh before retrying. {exc}")
+                            return
+                        if mapping_updates:
+                            supabase_store.clear_read_cache()
+                            # Refresh these defaults and versions after the successful batch.
+                            fresh = storage.read_frame(REVIEW_TABLE)
+                            for index, occurrence in enumerate(page_occurrences):
+                                if occurrence:
+                                    page_reviews[index] = fresh[fresh.extraction_id.eq(occurrence["extraction_id"])] if not fresh.empty else pd.DataFrame()
+                            manual_table["PSF-AAI competencies"] = edited_table["PSF-AAI competencies"].copy()
+                        if supabase_store.configured():
+                            st.session_state.pop("review_snapshot", None)
+                            for key in list(st.session_state):
+                                if str(key).startswith(("manual_labels_", "review_draft_")):
+                                    del st.session_state[key]
+                        st.success(f"Saved. The dataset has {len(labels):,} category review rows; updated competency links for {saved_links} advertisement occurrence(s).")
+                        if st.session_state.get("backup_warning"):
+                            st.warning(st.session_state.pop("backup_warning"))
+                        _auto_train_after_review(labels, auto_train)
+                    uploaded = None
+                    if not supabase_store.configured():
+                        with st.expander("Import team annotations", icon=":material/upload:"):
+                            st.caption("Merge reviewed files from teammates. Reviewer IDs and timestamps are preserved; resolve any category conflicts before importing.")
+                            uploaded = st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
+                    imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
+                    import_conflicts, import_resolutions, import_conflicts_resolved = show_conflict_resolutions(imported, "resolve_import_label") if uploaded else ({}, {}, True)
+                    if uploaded and action_button("Import annotations", disabled=not import_conflicts_resolved):
+                        labels = save_annotations(imported, reviewer, conflict_resolutions=import_resolutions, preserve_row_provenance=True)
+                        st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
+                        _auto_train_after_review(labels, auto_train)
+                    if not labels.empty:
+                        with st.expander("Saved category annotations"):
+                            display(labels)
+                    st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
+                    # End polling only when it cannot interrupt a manual decision. Otherwise
+                    # retain this view and its original conflict versions until navigation.
+                    manual_columns = ["Category", "PSF-AAI competencies"]
+                    pending_edits = not edited_table.reindex(columns=manual_columns).equals(manual_table.reindex(columns=manual_columns))
+                    evidence_visible = bool(mapping_updates) or any(
+                        len(value) for value in edited_table.get("PSF-AAI competencies", []) if value is not None
+                    ) or any(not saved.empty for saved in page_reviews)
+                    if polling_drafts and job.snapshot()["status"] != "running" and not pending_edits and not evidence_visible:
+                        st.rerun()
+                review_editor()
 
 
 def training():
@@ -1357,26 +1471,33 @@ def training():
         path = None
         st.caption("Training source: saved researcher-reviewed labels in the shared workspace.")
     else:
-        inventory = load_data_with_skeleton(lambda: inspect_training_folder(storage.ROOT), height=140)
-        with st.expander("Detected files in ./train"):
-            display(pd.DataFrame(inventory))
-        try:
-            path = resolve_training_file(storage.ROOT)
-        except ValueError as exc:
-            st.warning(str(exc))
-            path = None
-        options = [item["filename"] for item in inventory if item["purpose"] in ("labeled phrases", "empty label schema") and item["filename"].lower().endswith(".csv")]
-        if len(options) > 1:
-            current = str(path.relative_to(storage.ROOT / "train")) if path else ""
-            choice = st.selectbox("Labeled training file", options, index=options.index(current) if current in options else 0)
-            if action_button("Use selected training file"):
-                path = select_training_file(storage.ROOT, choice)
-        if path is None:
-            return
-        st.caption(f"Training data file: `{project_relative_path(path)}`")
-    fraction = st.slider("Holdout fraction", .1, .5, .2, .05)
-    include_irrelevant = st.checkbox("Intentionally train IRRELEVANT as a separate class", value=False)
-    max_features = st.number_input("Maximum TF-IDF features", 100, 100000, 10000, 100)
+        with loading_content("training_sources", "pending") as content:
+            inventory = load_data_with_skeleton(lambda: inspect_training_folder(storage.ROOT), height=140)
+            with content():
+                with st.expander("Detected files in ./train"):
+                    display(pd.DataFrame(inventory))
+                try:
+                    path = resolve_training_file(storage.ROOT)
+                except ValueError as exc:
+                    st.warning(str(exc))
+                    path = None
+                options = [item["filename"] for item in inventory if item["purpose"] in ("labeled phrases", "empty label schema") and item["filename"].lower().endswith(".csv")]
+                if len(options) > 1:
+                    current = str(path.relative_to(storage.ROOT / "train")) if path else ""
+                    choice = st.selectbox("Labeled training file", options, index=options.index(current) if current in options else 0)
+                    if action_button("Use selected training file"):
+                        path = select_training_file(storage.ROOT, choice)
+                if path is None:
+                    return
+                st.caption(f"Training data file: `{project_relative_path(path)}`")
+    with content_section("Training configuration", "settings", "training_configuration"):
+        st.caption("Use reviewed labels with a job-ad holdout for evaluation.")
+        left, right = st.columns([1, 1], gap="large")
+        with left:
+            fraction = st.slider("Holdout fraction", .1, .5, .2, .05)
+        with right:
+            include_irrelevant = st.checkbox("Intentionally train IRRELEVANT as a separate class", value=False)
+            max_features = st.number_input("Maximum TF-IDF features", 100, 100000, 10000, 100)
     def load_training_review_data():
         current_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
                           else load_labeled_data(path))
@@ -1384,115 +1505,159 @@ def training():
             current_labels, fraction, include_irrelevant, require_provenance=True
         )
         return current_labels, validated, report
-    labels, data, validation = load_data_with_skeleton(load_training_review_data, height=240)
-    a, b, c = st.columns(3)
-    a.metric("Labeled file rows", validation["total_rows"])
-    b.metric("Distinct usable phrases", validation["rows_used"])
-    c.metric("Classes", validation["number_of_classes"])
-    if not data.empty:
-        chart(distribution(data, "label", "Usable manually labeled examples per category"))
-    for warning in validation["warnings"]:
-        st.warning(warning)
-    if validation["errors"]:
-        st.info("Training unavailable: " + " ".join(validation["errors"]))
-        st.write(f"At least {validation.get('additional_distinct_labels_needed', 30)} more distinct usable labels needed; {validation.get('additional_classes_needed', 2)} additional classes needed. Each class must have five examples with source IDs, reviewer and timestamp.")
-    with st.expander("Dataset validation details"):
-        st.json(validation)
-    config = VECTORIZER_CONFIG | {"max_features": int(max_features)}
-    with st.expander("Advanced training settings", expanded=False):
-        st.json({"TF-IDF": config, "holdout_fraction": fraction, "random_state": 42,
-                 "Logistic Regression": {"max_iter": 1000, "class_weight": "balanced"},
-                 "Multinomial Naive Bayes": {"alpha": 1.0}, "include_irrelevant": include_irrelevant})
-    if supabase_store.configured():
-        st.caption("Team reviewers label together. Only the administrator starts model training; each run uses a fixed shared-label snapshot.")
-    st.caption("Minimum software gate: 30 distinct phrases, two classes, five examples per class, no conflicting labels, complete provenance and a feasible holdout by job-ad source. These minimums do not establish adequate research validation. Model selection requires valid training-only cross-validation, grouped by source with every category in each fold. Holdout scores never choose the winner. Models are trained only by the button below.")
-    if training_data_changed():
-        st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-    if action_button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
-        _start_processing("Train reviewed labels", background_tasks.train, fraction, include_irrelevant,
-                          {"max_features": int(max_features)})
-    metadata = read_model_metadata()
-    if metadata:
-        comparison = storage.read_frame("model_metrics")
-        if not comparison.empty:
-            st.dataframe(comparison.style.apply(lambda row: ["background-color: #d9f0e8" if str(row.get("selected", "")).casefold() == "true" else ""] * len(row), axis=1), hide_index=True, width="stretch")
-        st.write("Selected model:", metadata["model_name"])
-        st.caption("Based on the current labeled validation sample. The evaluated training-partition model is saved without refitting on holdout examples. Review per-class errors and validate on an independent sample before publication.")
+    with loading_content("training_validation", "metrics", cards=3) as content:
+        labels, data, validation = load_data_with_skeleton(load_training_review_data, height=240)
+        with content():
+            content_metrics([
+                ("Labeled file rows", validation["total_rows"], "database"),
+                ("Distinct usable phrases", validation["rows_used"], "sell"),
+                ("Classes", validation["number_of_classes"], "layers"),
+            ], "training")
+            if not data.empty:
+                with content_section("Usable manually labeled examples per category", "bar_chart", "training_distribution"):
+                    left, right = st.columns([2.5, 1], gap="medium", vertical_alignment="center")
+                    with left:
+                        figure = distribution(data, "label", "Usable manually labeled examples per category")
+                        figure.update_layout(title_text="")
+                        chart(figure)
+                    with right:
+                        plotted = list(zip(figure.data[0].y, figure.data[0].x))
+                        small = [(name, int(count)) for name, count in plotted if count < 5]
+                        content_note("Training data insight", f"The chart shows {sum(int(n) for _, n in plotted):,} distinct usable phrases across {len(plotted):,} displayed categories.",
+                                     items=([f"{name}: {n} usable phrases; below the five-example software minimum." for name, n in small]
+                                            or ["Every displayed category meets the five-example software minimum. Validation may still block training."]))
+            for warning in validation["warnings"]:
+                st.warning(warning)
+            if validation["errors"]:
+                st.info("Training unavailable: " + " ".join(validation["errors"]))
+                st.write(f"At least {validation.get('additional_distinct_labels_needed', 30)} more distinct usable labels needed; {validation.get('additional_classes_needed', 2)} additional classes needed. Each class must have five examples with source IDs, reviewer and timestamp.")
+            with st.expander("Dataset validation details"):
+                st.json(validation)
+            config = VECTORIZER_CONFIG | {"max_features": int(max_features)}
+            with st.expander("Advanced training settings", expanded=False):
+                st.json({"TF-IDF": config, "holdout_fraction": fraction, "random_state": 42,
+                         "Logistic Regression": {"max_iter": 1000, "class_weight": "balanced"},
+                         "Multinomial Naive Bayes": {"alpha": 1.0}, "include_irrelevant": include_irrelevant})
+            if supabase_store.configured():
+                st.caption("Team reviewers label together. Only the administrator starts model training; each run uses a fixed shared-label snapshot.")
+            st.caption("Minimum software gate: 30 distinct phrases, two classes, five examples per class, no conflicting labels, complete provenance and a feasible holdout by job-ad source. These minimums do not establish adequate research validation. Model selection requires valid training-only cross-validation, grouped by source with every category in each fold. Holdout scores never choose the winner. Models are trained only by the button below.")
+            if training_data_changed():
+                st.warning("Training data has changed since this model was trained. Retraining is recommended.")
+            if action_button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
+                _start_processing("Train reviewed labels", background_tasks.train, fraction, include_irrelevant,
+                                  {"max_features": int(max_features)})
+            with loading_content("training_saved_model", "table", columns=["model", "accuracy", "macro_f1", "weighted_f1"]) as content:
+                metadata = read_model_metadata()
+                comparison = storage.read_frame("model_metrics") if metadata else pd.DataFrame()
+                with content():
+                    if metadata:
+                        with content_section("Saved model", "model_training", "training_saved"):
+                            if not comparison.empty:
+                                st.dataframe(comparison.style.apply(lambda row: ["background-color: #F5E2E7" if str(row.get("selected", "")).casefold() == "true" else ""] * len(row), axis=1), hide_index=True, width="stretch")
+                            st.write("Selected model:", metadata["model_name"])
+                            st.caption("Based on the current labeled validation sample. The evaluated training-partition model is saved without refitting on holdout examples. Review per-class errors and validate on an independent sample before publication.")
 
 
 def evaluation():
     page_intro("Evaluate models", "Review model evaluation only when the holdout represents independent job-ad sources.")
     with st.expander("How to read the evaluation metrics", expanded=False):
         st.markdown("**Precision** is the share of a model's category predictions that are correct. **Recall** is the share of actual items in a category that the model finds. **F1-score** balances precision and recall. Macro F1 weighs categories equally; Weighted F1 accounts for category frequency.")
-    metadata, metrics = load_data_with_skeleton(
-        lambda: (read_model_metadata(), storage.read_frame("model_metrics")), height=160
-    )
-    if not metadata or metrics.empty:
-        st.info("No research model has been trained. Complete manual labeling and the training gate before any F1-scores or other model results can be reported.")
-        return
-    st.write("Selected model:", metadata["model_name"])
-    try:
-        training_frame = (storage.read_frame("training_snapshot") if supabase_store.configured() else load_labeled_data(resolve_training_file(storage.ROOT)))
-        overlap = source_overlap(training_frame, metadata)
-    except (ValueError, OSError):
-        overlap = None
-        training_frame = pd.DataFrame()
-    split_info = metadata.get("split", {})
-    too_few_test_sources = split_info.get("strategy", "").startswith("source-disjoint") and len(set(split_info.get("test_source_ids", []))) < 2
-    if overlap or too_few_test_sources or split_info.get("strategy", "").startswith("stratified phrase-level"):
-        st.error("These saved scores do not provide adequate evidence of generalization across independent job ads, so they are withheld from research reporting. Label more independent ads across categories, then retrain with a source-disjoint evaluation.")
-        if overlap:
-            st.caption(f"Detected {len(overlap)} source ID(s) in both partitions. Existing model artifacts and metrics are retained for audit, but are not displayed as research results.")
-        elif too_few_test_sources:
-            st.caption(f"The held-out partition contains only {len(set(split_info.get('test_source_ids', [])))} independent job-ad source. That is too limited to show generalization across postings; the saved metrics are withheld.")
-        return
-    a, b, c = st.columns(3)
-    a.metric("Selected holdout accuracy", f"{metadata['accuracy']:.3f}")
-    b.metric("Selected holdout Macro F1", f"{metadata['macro_f1']:.3f}")
-    c.metric("Selected holdout Weighted F1", f"{metadata['weighted_f1']:.3f}")
-    if metadata.get("selection_basis") == SELECTION_BASIS:
-        st.caption("Model selected by training cross-validation before holdout scoring. Holdout scores do not choose the winner; other model scores are diagnostic comparisons.")
-    else:
-        st.warning("This saved run used the earlier model-selection procedure. Its scores are internal model comparisons, not an independent final evaluation. Retrain to select by training cross-validation; existing artifacts are preserved.")
-    if training_data_changed():
-        st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-    display(metrics)
-    data = metrics.melt(id_vars="model", value_vars=["accuracy", "macro_f1", "weighted_f1"], var_name="metric", value_name="score")
-    data.score = pd.to_numeric(data.score)
-    chart(bar(data, "model", "score", "Model Metric Comparison", "metric"))
-    choice = st.selectbox("Evaluation model", metrics.model.tolist(), index=metrics.model.tolist().index(metadata["model_name"]))
-    slug = "nb" if choice.startswith("Multinomial") else "lr"
-    matrix, per_class, predictions = load_data_with_skeleton(
-        lambda: (
-            storage.read_frame(f"evaluation_{slug}_confusion"),
-            storage.read_frame(f"evaluation_{slug}_per_class"),
-            storage.read_frame(f"evaluation_{slug}_predictions"),
-        ), height=220
-    )
-    matrix = matrix.set_index("actual").apply(pd.to_numeric)
-    result_heatmap(matrix, "Model Confusion Matrix — actual rows, predicted columns")
-    display(per_class)
-    display(predictions)
-    st.subheader("Stratified cross-validation (training partition only)")
-    st.json(metadata["cross_validation_results"][choice])
-    with st.expander("Reproducibility metadata"):
-        st.json(metadata)
-    phrase = st.text_input("Phrase to classify with the saved selected model")
-    if action_button("Predict competency category", disabled=not phrase.strip()):
-        prediction = predict_competency_category(phrase)
-        st.json(prediction)
-        st.caption("Confidence is the classifier's uncalibrated probability estimate, not a guarantee of correctness. This preview does not change human annotations.")
-    for filename in ("model_metrics.csv", "classification_report.csv", "confusion_matrix.csv", "model_comparison.csv", "test_predictions.csv"):
-        path = storage.ROOT / "outputs/tables" / filename
-        if path.exists():
-            st.download_button(filename, path.read_bytes(), filename, "text/csv", key="evaluation_"+filename)
-    st.download_button("model_metadata.json", json.dumps(metadata, indent=2), "model_metadata.json", "application/json")
+    with loading_content("evaluation_eligibility", "evaluation") as content:
+        metadata, metrics = load_data_with_skeleton(
+            lambda: (read_model_metadata(), storage.read_frame("model_metrics")), height=160
+        )
+        if metadata and not metrics.empty:
+            try:
+                training_frame = (storage.read_frame("training_snapshot") if supabase_store.configured() else load_labeled_data(resolve_training_file(storage.ROOT)))
+                overlap = source_overlap(training_frame, metadata)
+            except (ValueError, OSError):
+                overlap = None
+                training_frame = pd.DataFrame()
+            split_info = metadata.get("split", {})
+            too_few_test_sources = split_info.get("strategy", "").startswith("source-disjoint") and len(set(split_info.get("test_source_ids", []))) < 2
+            labels_changed = (training_data_changed() if not (
+                overlap or too_few_test_sources or split_info.get("strategy", "").startswith("stratified phrase-level")) else False)
+        with content():
+            if not metadata or metrics.empty:
+                with content_section("Model evaluation results", "query_stats", "evaluation_empty"):
+                    st.info("No research model has been trained. Complete manual labeling and the training gate before any F1-scores or other model results can be reported.")
+                    with st.container(horizontal=True, gap="medium", wrap=True):
+                        page_button("pages/07_ML_Training.py", "Open model training", primary=True, key="evaluation_open_training")
+                        page_button("pages/06_Manual_Labeling.py", "Review phrases", key="evaluation_open_review")
+                return
+            st.write("Selected model:", metadata["model_name"])
+            if overlap or too_few_test_sources or split_info.get("strategy", "").startswith("stratified phrase-level"):
+                st.error("These saved scores do not provide adequate evidence of generalization across independent job ads, so they are withheld from research reporting. Label more independent ads across categories, then retrain with a source-disjoint evaluation.")
+                if overlap:
+                    st.caption(f"Detected {len(overlap)} source ID(s) in both partitions. Existing model artifacts and metrics are retained for audit, but are not displayed as research results.")
+                elif too_few_test_sources:
+                    st.caption(f"The held-out partition contains only {len(set(split_info.get('test_source_ids', [])))} independent job-ad source. That is too limited to show generalization across postings; the saved metrics are withheld.")
+                return
+            content_metrics([
+                ("Selected holdout accuracy", f"{metadata['accuracy']:.3f}", "target"),
+                ("Selected holdout Macro F1", f"{metadata['macro_f1']:.3f}", "query_stats"),
+                ("Selected holdout Weighted F1", f"{metadata['weighted_f1']:.3f}", "bar_chart"),
+            ], "evaluation")
+            if metadata.get("selection_basis") == SELECTION_BASIS:
+                st.caption("Model selected by training cross-validation before holdout scoring. Holdout scores do not choose the winner; other model scores are diagnostic comparisons.")
+            else:
+                st.warning("This saved run used the earlier model-selection procedure. Its scores are internal model comparisons, not an independent final evaluation. Retrain to select by training cross-validation; existing artifacts are preserved.")
+            if labels_changed:
+                st.warning("Training data has changed since this model was trained. Retraining is recommended.")
+            with content_section("Model evaluation results", "bar_chart", "evaluation_results"):
+                display(metrics)
+                data = metrics.melt(id_vars="model", value_vars=["accuracy", "macro_f1", "weighted_f1"], var_name="metric", value_name="score")
+                data.score = pd.to_numeric(data.score)
+                left, right = st.columns([2.5, 1], gap="medium", vertical_alignment="center")
+                with left:
+                    chart(bar(data, "model", "score", "Model Metric Comparison", "metric"))
+                with right:
+                    macro = data.loc[data.metric.eq("macro_f1"), ["model", "score"]].dropna()
+                    detail = (f"Displayed holdout Macro F1 ranges from {macro.score.min():.3f} to {macro.score.max():.3f}."
+                              if not macro.empty else "No Macro F1 values are available in this comparison.")
+                    content_note("Evaluation insight", f"The chart compares {data.model.nunique()} saved {'model' if data.model.nunique() == 1 else 'models'}. {detail}",
+                                 items=[f"Selected classifier: {metadata['model_name']}.",
+                                        ("This run selected its model using training cross-validation. These holdout comparisons do not select a new winner."
+                                         if metadata.get("selection_basis") == SELECTION_BASIS else
+                                         "This legacy run used an earlier selection procedure. Treat its scores as internal comparisons and retrain before final evaluation.")], icon="target")
+            choice = st.selectbox("Evaluation model", metrics.model.tolist(), index=metrics.model.tolist().index(metadata["model_name"]))
+            slug = "nb" if choice.startswith("Multinomial") else "lr"
+            with loading_content("evaluation_details", "heatmap", columns=range(min(12, metadata.get("number_of_classes", 1))), rows=min(12, metadata.get("number_of_classes", 1))) as content:
+                matrix, per_class, predictions = load_data_with_skeleton(
+                    lambda: (
+                        storage.read_frame(f"evaluation_{slug}_confusion"),
+                        storage.read_frame(f"evaluation_{slug}_per_class"),
+                        storage.read_frame(f"evaluation_{slug}_predictions"),
+                    ), height=220
+                )
+                with content():
+                    matrix = matrix.set_index("actual").apply(pd.to_numeric)
+                    result_heatmap(matrix, "Model Confusion Matrix — actual rows, predicted columns")
+                    display(per_class)
+                    display(predictions)
+                    with st.expander("Stratified cross-validation (training partition only)"):
+                        st.json(metadata["cross_validation_results"][choice])
+                    with st.expander("Reproducibility metadata"):
+                        st.json(metadata)
+                    phrase = st.text_input("Phrase to classify with the saved selected model")
+                    if action_button("Predict competency category", disabled=not phrase.strip()):
+                        prediction = predict_competency_category(phrase)
+                        st.json(prediction)
+                        st.caption("Confidence is the classifier's uncalibrated probability estimate, not a guarantee of correctness. This preview does not change human annotations.")
+                    for filename in ("model_metrics.csv", "classification_report.csv", "confusion_matrix.csv", "model_comparison.csv", "test_predictions.csv"):
+                        path = storage.ROOT / "outputs/tables" / filename
+                        if path.exists():
+                            st.download_button(filename, path.read_bytes(), filename, "text/csv", key="evaluation_"+filename)
+                    st.download_button("model_metadata.json", json.dumps(metadata, indent=2), "model_metadata.json", "application/json")
 
 
 def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf", reviewer_id=None):
     if prefix != "manual":
-        st.subheader("Review competency links")
-    st.caption("A skill occurrence is a distinct phrase in one advertisement. Select several competencies only when this source context supports each meaning. Broad wording alone is insufficient. Saving replaces the links for this occurrence only.")
+        with st.container(key="psf_mapping_review_heading", gap="xsmall"):
+            section_heading("Review competency links", "link",
+                            "Employer skill → PSF-AAI competency. Roles and levels are reference metadata, not inferred applicant attainment. Similarity scores are heuristic evidence, not calibrated probabilities.")
+    else:
+        st.caption("A skill occurrence is a distinct phrase in one advertisement. Select several competencies only when this source context supports each meaning. Broad wording alone is insufficient. Saving replaces the links for this occurrence only.")
     if skills.empty or taxonomy.empty:
         st.info("Accepted skill occurrences and an active PSF-AAI reference are required to review links.")
         return
@@ -1501,17 +1666,22 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
     occurrences = skills.drop_duplicates("extraction_id").set_index("extraction_id")
     extraction_id = st.selectbox("Source advertisement" if prefix == "manual" else "Skill occurrence", occurrences.index.tolist(),
                                  format_func=lambda key: f"{occurrences.loc[key, 'original_phrase']} — ad {occurrences.loc[key, 'source_id']}",
-                                 key=f"{prefix}_review_occurrence")
+                                 index=0 if prefix == "manual" else None, placeholder="Choose a skill occurrence",
+                                 key=f"{prefix}_review_occurrence" if prefix == "manual" else f"{prefix}_review_occurrence_choice",
+                                 help="A skill occurrence is one distinct phrase in one advertisement. Save only competencies justified by this source context; saving replaces the links for this occurrence only.")
+    if extraction_id is None:
+        st.caption("Choose a skill occurrence to inspect its source and review competency links.")
+        return
     occurrence = occurrences.loc[extraction_id].to_dict() | {"extraction_id": extraction_id}
     source = jobs[jobs.source_id.eq(occurrence["source_id"])] if not jobs.empty else jobs
     if not source.empty:
         source_record = source.reindex(columns=[key for key in ("source_id", "job_title", "company", "url") if key in source])
         source_record = source_record.rename(columns={"source_id": "Source ad ID", "job_title": "Job title",
                                                      "company": "Employer", "url": "Source URL"})
-        st.dataframe(source_record, width="stretch", hide_index=True, row_height=38, height=100,
+        st.dataframe(source_record, width="stretch", hide_index=True, row_height=38 if prefix == "manual" else 30, height=100 if prefix == "manual" else 70,
                      column_config={"Source URL": st.column_config.LinkColumn("Source URL")},
                      alt="Source advertisement record for the selected competency review")
-    with st.expander("Source advertisement text", expanded=True):
+    with st.expander("Source advertisement text", expanded=prefix == "manual"):
         st.text(str(occurrence.get("original_text", "")))
     if occurrence.get("pending_extraction") is True:
         st.info("This candidate is not in the current extraction. Saved links enter analysis only after the same occurrence is extracted and accepted. Changed evidence will require another review.")
@@ -1521,7 +1691,7 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
     saved = reviews[reviews.extraction_id.eq(extraction_id)] if not reviews.empty else reviews
     current = mapping[mapping.extraction_id.eq(extraction_id)]
     reference = taxonomy.fillna("").set_index("competency_id")
-    defaults = saved.competency_id.tolist() if not saved.empty else current.competency_id.tolist()
+    defaults = saved.competency_id.tolist() if not saved.empty else []
     defaults = [key for key in defaults if key in reference.index]
     if not current.empty and current.mapping_review_status.eq("STALE").any():
         st.warning("The source or reference changed. Check the saved choices and update this review.")
@@ -1535,7 +1705,7 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
             st.warning("Saved links need review because the source or PSF-AAI reference changed. Check each choice and rationale before saving again.")
             st.write("Previously saved competencies: " + (" · ".join(names) or "No justified match"))
         else:
-            st.success("Saved competencies: " + " · ".join(names) if names else "Saved: no justified competency match.")
+            st.success("Saved competencies: " + " · ".join(names) if names else "Saved: no justified competency match.", icon=":material/check_circle:")
         saved_at = pd.to_datetime(saved.iloc[0].get("timestamp", ""), utc=True, errors="coerce")
         when = saved_at.tz_convert("Asia/Manila").strftime("%d %b %Y, %I:%M %p PHT") if pd.notna(saved_at) else "Date unavailable"
         st.caption(f"Saved by {saved.iloc[0].get('reviewer', '')} · {when}")
@@ -1546,9 +1716,9 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
                             help="Select another option to add it. Remove a selected tag with its × button. Each link needs its own source-based rationale.")
     st.caption(f"{len(chosen)} competencies selected. Broad wording alone does not justify multiple links.")
     if not saved.empty and set(chosen) != set(defaults):
-        st.info("Unsaved competency changes. Complete the evidence below and update the links.")
+        st.info("Unsaved competency changes. Complete the evidence below and update the links.", icon=":material/info:")
     old_reasons = dict(zip(saved.competency_id, saved.rationale)) if not saved.empty else {}
-    with st.form(f"psf_review_{revision}"):
+    with st.form(f"psf_review_{revision}", border=True):
         reviewer = reviewer_id
         account_reviewer = str(st.session_state.get("supabase_user_email", "")).strip()
         if account_reviewer or supabase_store.configured():
@@ -1583,44 +1753,30 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
 
 def analysis_workflow():
     stages = [
-        ("Select job ads", "Confirm scope, sources and the study dataset.", "article"),
-        ("Clean and group", "Lowercase analysis text; reconcile title variants.", "auto_awesome"),
-        ("Extract and review", "Identify skills; clarify ambiguous phrases.", "content_paste_search"),
-        ("Compare PSF-AAI", "Check competency links against source evidence.", "link"),
-        ("Describe results", "Count distinct ads; chart and export findings.", "bar_chart"),
+        ("Select job ads", "Choose dataset, sources and scope.", "database"),
+        ("Clean and group", "Standardize text and reconcile title variants.", "cleaning_services"),
+        ("Extract and review", "Identify skills, education and experience.", "content_paste_search"),
+        ("Compare PSF-AAI", "Match job evidence with PSF-AAI competencies.", "layers"),
+        ("Describe results", "Analyze demand, gaps and key findings.", "bar_chart"),
     ]
-    st.markdown("**Analysis pipeline**")
-    with st.container(horizontal=True, gap="small", key="analysis_pipeline", border=True, vertical_alignment="center"):
-        for index, (title, detail, icon) in enumerate(stages, 1):
-            with st.container(width="stretch", key=f"pipeline_stage_{index}"):
-                st.badge(str(index), icon=f":material/{icon}:", color="violet")
-                st.markdown(f"**{title}**")
-                st.caption(detail)
-    with st.expander("Complete processing workflow"):
-        steps = [
-            ("Collect", "Archive the advertisement, provider, original URL and collection dates."),
-            ("Screen", "Researchers confirm Philippine provenance, role relevance and sufficient text; record exclusions."),
-            ("Remove confirmed duplicates", "Inspect duplicate candidates before excluding repeated advertisements."),
-            ("Clean and standardize", "Lowercase analysis values; preserve source wording and normalization evidence."),
-            ("Extract requirements", "Keep skills, credentials and experience distinct, linked to each advertisement."),
-            ("Classify competencies", "Use documented category rules and researcher labels; count each skill once per ad."),
-            ("Map PSF-AAI", "Inspect definitions and available Range of Application; justify uncertain links."),
-            ("Aggregate", "Calculate distinct-ad counts and proportions within the selected dataset."),
-            ("Visualize", "Explore readable charts by family, title, geography and framework role."),
-            ("Interpret and report", "Export evidence and explain scope, uncertainty and limitations."),
-        ]
-        for number, (title, detail) in enumerate(steps, 1):
-            st.markdown(f"**{number}. {title}** — {detail}")
+    cards = ''.join(f'<li><span class="material-symbols-rounded" aria-hidden="true">{icon}</span>'
+                    f'<div><strong>{title}</strong><p>{detail}</p></div></li>' for title, detail, icon in stages)
+    st.html('<section class="fow-analysis-pipeline" aria-label="Analysis pipeline">'
+            '<h2>Analysis Pipeline</h2><ol>' + cards + '</ol></section>')
 
 
-def result_chart_options():
+def result_chart_options(*, include_export=False):
     with st.container(horizontal=True, gap="medium", vertical_alignment="bottom", key="result_chart_controls"):
         with st.container(horizontal=True, key="result_chart_selectors"):
-            order = st.selectbox("Chart order", ["Alphabetical", "Highest demand"], index=1, key="result_chart_order", width=240)
-            limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key="result_chart_limit", width=180)
+            order = st.selectbox("Chart order", ["Alphabetical", "Highest demand"], index=1, key="result_chart_order")
+            limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key="result_chart_limit")
         with st.container(key="result_chart_note"):
             st.caption(f"Up to {limit} aggregated categories per chart. Full evidence tables are paginated and exportable. " +
                        ("Darker bars mark the highest count, including ties." if order == "Highest demand" else "Alphabetical order supports label lookup, rather than demand ranking."))
+        if include_export:
+            with st.container(key="result_chart_export"):
+                if action_button("Export results", icon=":material/download:", key="results_export", type="primary"):
+                    st.switch_page("pages/14_Reports.py")
     return order, limit
 
 
@@ -1640,14 +1796,18 @@ def result_single_metric(title, label, value, unit, detail, *, key):
         st.caption(" · ".join(part for part in (unit, detail) if part))
 
 
-def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15):
+def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False):
     if frame.empty:
         st.caption("No evidence for this chart in the current selection.")
         return
     figure = ranked_bar(frame, label, value, title, order=order, limit=limit)
+    if highlight_max:
+        maximum = max((count for trace in figure.data for count in trace.x), default=0)
+        for trace in figure.data:
+            trace.update(marker_color=["#99043B" if count == maximum else "#958277" for count in trace.x])
     if len(frame) != 1:
         chart(figure)
-        return
+        return figure
     category = figure.data[0].y[0]
     count = figure.data[0].x[0]
     percentage = next((field for field in ("job_ads_pct", "employer_demand_pct") if field in frame), None)
@@ -1659,6 +1819,178 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
     key_part = "".join(character.lower() if character.isalnum() else "_" for character in f"{title}_{category}")[:72]
     result_single_metric(title, category, count, "Job advertisements", detail,
                          key=f"result_single_{key_part}")
+    return figure
+
+
+def psf_competency_demand_insight(figure, total_competencies):
+    rows = [(str(label), int(count)) for trace in figure.data for label, count in zip(trace.y, trace.x)] if figure else []
+    if not rows:
+        st.caption("No displayed competency demand is available for an insight.")
+        return
+    shown = pd.DataFrame(rows, columns=["competency", "job_ads"]).sort_values(
+        ["job_ads", "competency"], ascending=[False, True], kind="stable")
+    levels = shown.job_ads.drop_duplicates().tolist()
+
+    def group_names(count):
+        names = shown.loc[shown.job_ads.eq(count), "competency"].tolist()
+        return ", ".join(names[:3]) + (f" and {len(names) - 3} others" if len(names) > 3 else "")
+
+    maximum, minimum = levels[0], levels[-1]
+    if len(shown) == 1:
+        summary = f"{group_names(maximum)} appears in {maximum:,} distinct advertisements. Only one competency is displayed."
+        implication = "A single displayed competency does not provide a comparison of demand."
+    elif len(levels) == 1:
+        summary = f"All {len(shown):,} displayed competencies have the same count: {maximum:,} distinct advertisements each."
+        implication = "The displayed counts do not distinguish a higher-demand competency."
+    else:
+        leaders = int(shown.job_ads.eq(maximum).sum())
+        summary = (f"{group_names(maximum)} {'has' if leaders == 1 else 'share'} the highest displayed count, "
+                   f"at {maximum:,} distinct advertisements{' each' if leaders > 1 else ''}.")
+        implication = (f"Observed coverage varies from {minimum:,} to {maximum:,} advertisements among the displayed competencies. "
+                       "These counts describe the selected advertisements and their competency links.")
+    takeaways = [f"Highest shown: {group_names(maximum)} ({maximum:,} ads each)."]
+    if len(levels) > 2:
+        takeaways.append(f"Next count: {group_names(levels[1])} ({levels[1]:,} ads each).")
+    if len(levels) > 1:
+        takeaways.append(f"Lowest shown: {group_names(minimum)} ({minimum:,} ads each).")
+    takeaways.append(f"View coverage: {len(shown):,} of {total_competencies:,} competencies. Full results remain in the table below.")
+    st.html('<aside class="fow-key-insight fow-competency-demand-insight" aria-label="Competency Demand Insight">'
+            '<h3><span class="material-symbols-rounded" aria-hidden="true">target</span>Competency Demand Insight</h3>'
+            f'<p>{escape(summary)}</p><h4>Implication</h4><p>{escape(implication)}</p><h4>Key Takeaways</h4><ul>'
+            + ''.join(f'<li>{escape(text)}</li>' for text in takeaways)
+            + '</ul><p class="fow-insight-scope">Maroon marks the highest displayed count, including ties. '
+            'An advertisement can support several competencies.</p></aside>')
+
+
+def alignment_status_insight(figure):
+    counts = {str(label): int(count) for trace in figure.data for label, count in zip(trace.y, trace.x)}
+    total = sum(counts.values())
+    if not total:
+        st.caption("No alignment evidence groups are available for an insight.")
+        return
+    maximum = max(counts.values())
+    leaders = [label for label, count in counts.items() if count == maximum]
+    unit = "evidence group" if maximum == 1 else "evidence groups"
+    if len(counts) == 1:
+        summary = f"Only one status is displayed: {leaders[0]} ({maximum:,} {unit})."
+    elif len(leaders) == len(counts):
+        summary = f"All {len(leaders)} displayed statuses are tied at {maximum:,} {unit} each."
+    else:
+        summary = (f"{', '.join(leaders).capitalize()} {'has' if len(leaders) == 1 else 'share'} the highest displayed count: "
+                   f"{maximum:,} {unit}{' each' if len(leaders) > 1 else ''} ({maximum / total:.1%}{' each' if len(leaders) > 1 else ''}).")
+    breakdown = " · ".join(f"{label}: {count:,} ({count / total:.1%})" for label, count in counts.items())
+    implication = "These statuses describe recorded correspondence under the configured thresholds; they do not establish competency equivalence or model accuracy."
+    if len(counts) == 1:
+        implication = "Only one recorded status is present, so this view does not compare different alignment outcomes."
+    elif leaders == ["not mapped"]:
+        implication = "Inspect recurring unmapped skills against the source reference. This status alone does not establish a framework gap or an emerging skill."
+    elif leaders == ["partially aligned"]:
+        implication = "Partial correspondence is the most common recorded status. Review the supporting source evidence before interpreting these links as confirmed matches."
+    st.html('<aside class="fow-key-insight" aria-label="Alignment Insight">'
+            '<h3><span class="material-symbols-rounded" aria-hidden="true">target</span>Alignment Insight</h3>'
+            f'<p>{escape(summary)}</p><p>{escape(breakdown)}</p><h4>Implication</h4><p>{escape(implication)}</p>'
+            f'<p>{total:,} displayed phrase–competency evidence {"group" if total == 1 else "groups"}; these percentages do not use distinct job advertisements as their denominator.</p></aside>')
+
+
+def result_insight(title, summary, rows, list_title="Top 3"):
+    items = "".join(
+        f"<li><span>{escape(str(name))}</span><strong>{int(count):,} {'ad' if int(count) == 1 else 'ads'}</strong></li>"
+        for name, count in rows[:3]
+    )
+    icon = {"Title Insight": "workspace_premium", "Heatmap Insight": "bar_chart", "Selection Insight": "target",
+            "Location Insight": "location_on", "Education Insight": "menu_book", "Timeline Insight": "schedule"}.get(title, "lightbulb")
+    st.html(
+        '<aside class="fow-key-insight" aria-label="' + escape(title) + '">'
+        f'<h3><span class="material-symbols-rounded" aria-hidden="true">{icon}</span>{escape(title)}</h3><p>{escape(summary)}</p>'
+        + (f"<h4>{escape(list_title)}</h4><ol>{items}</ol>" if items else "")
+        + "</aside>"
+    )
+
+
+def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Key Insight", list_title="Top 3"):
+    """Use the reference's single chart-and-insight card without changing data."""
+    embedded = key in {"titles", "family_heatmap", "selected_title"}
+    with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
+        chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
+        with chart_column:
+            render_chart()
+        with insight_column:
+            result_insight(insight_title, summary, rows, list_title)
+
+
+def result_role_distribution(roles):
+    bands = roles.groupby("job_ads").size().sort_index(ascending=False)
+    total = int(bands.sum())
+    if not total:
+        return
+    colors = ("#86142D", "#A99B92", "#D6A33D", "#D9C7BE")
+    groups = [(f"{int(ads):,} ads each", int(count)) for ads, count in bands.head(3).items()]
+    if len(bands) > 3:
+        groups.append(("Other ad counts", int(bands.iloc[3:].sum())))
+    stops, legend, offset = [], [], 0
+    for color, (label, count) in zip(colors, groups):
+        end = offset + count / total * 100
+        stops.append(f"{color} {offset:.3f}% {end:.3f}%")
+        legend.append(f'<li><i style="background:{color}" aria-hidden="true"></i><span>{escape(label)}<small>{count:,} {"role" if count == 1 else "roles"} · {count / total:.1%}</small></span></li>')
+        offset = end
+    st.html('<aside class="fow-key-insight fow-distribution" aria-label="Reference-role distribution">'
+            '<h3><span class="material-symbols-rounded" aria-hidden="true">pie_chart</span>Distribution Summary</h3>'
+            f'<p>{total:,} displayed reference roles have competency links to the selected advertisements. An advertisement may link to several roles.</p>'
+            f'<div class="fow-role-distribution"><div class="fow-role-donut" role="img" aria-label="{total} linked reference roles grouped by advertisement count" style="background:conic-gradient({", ".join(stops)})">'
+            f'<span><strong>{total:,}</strong><small>Linked roles</small></span></div><ul>{"".join(legend)}</ul></div></aside>')
+
+
+def _plotted_counts(figure, label, value):
+    return pd.DataFrame([(str(name), int(count)) for trace in (figure.data if figure is not None else [])
+                         for name, count in zip(trace.y, trace.x)], columns=[label, value])
+
+
+def featured_result_chart(label, value, heading, total, render_chart, *, key):
+    """Derive the companion insight from the exact visible chart rows."""
+    embedded = key in {"titles", "selected_title", "unmapped_evidence", "unmapped_recurring"}
+    with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
+        chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
+        with chart_column:
+            figure = render_chart()
+        data = _plotted_counts(figure, label, value)
+        data = data.sort_values([value, label], ascending=[False, True], kind="stable")
+        if data.empty:
+            summary, rows = "No reportable evidence in this selection.", []
+        else:
+            concept = {
+                "Top requested skills": "skill",
+                "Top technical skills": "technical skill",
+                "Top enabling skills": "enabling skill",
+                "Most common broad area": "competency area",
+                "Top occupational titles": "job title",
+                "Most stated education level": "education level",
+                "Most linked competency": "PSF-AAI competency",
+                "Most represented reference roles": "PSF-AAI reference role",
+                "Most frequent unmapped skill": "unmapped skill",
+                "Recurring unmapped skill": "recurring unmapped skill",
+            }.get(heading, "category")
+            maximum = int(data[value].max())
+            leaders = data.loc[data[value].eq(maximum), label].astype(str).tolist()
+            share = f" ({maximum / total * 100:.1f}% of {total:,} selected ads)" if total else ""
+            unit = "ad" if maximum == 1 else "ads"
+            if len(data) == 1:
+                summary = f"{leaders[0]} appears in {maximum:,} {unit}{share}. Only one {concept} is displayed."
+            elif len(leaders) == 1:
+                summary = f"{leaders[0]} has the highest displayed {concept} count, appearing in {maximum:,} {unit}{share}."
+            else:
+                plural = concept[:-1] + "ies" if concept.endswith("y") else concept + "s"
+                summary = f"{len(leaders):,} {plural} tie for the highest displayed count at {maximum:,} {unit} each{share}."
+            rows = list(zip(data[label].head(3), data[value].head(3)))
+        insight_title, list_title = {
+            "titles": ("Title Insight", "Top Displayed Titles"),
+            "education": ("Education Insight", "Stated Levels"),
+            "selected_title": ("Selection Insight", "Top Displayed Skills"),
+            "psf_competencies": ("Key Insight", "Top Displayed Competencies"),
+            "unmapped_evidence": ("Evidence Insight", "Top Displayed Skills"),
+            "unmapped_recurring": ("Review Insight", "Top Displayed Candidates"),
+        }.get(key, ("Key Insight", "Top Displayed Skills"))
+        with insight_column:
+            result_insight(insight_title, summary, rows, list_title)
 
 
 def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denominators=None,
@@ -1705,376 +2037,626 @@ def _competency_heatmap_view(cells, roles, competence, limit):
     if selected_competencies != st.session_state.get(competency_key, competency_default):
         st.session_state[competency_key] = selected_competencies
 
+    heatmap_output = st.container(key="psf_role_competency_heatmap_output")
     chosen_roles = st.multiselect("Reference roles in the heatmap", role_options,
                                   default=role_default, key=role_key)
     chosen_competencies = st.multiselect("PSF-AAI competencies in the heatmap", competency_options,
                                          default=competency_default, key=competency_key)
     selected_cells = cells[cells.psf_job_role.isin(chosen_roles) & cells.psf_competency.isin(chosen_competencies)]
     if selected_cells.empty:
-        st.info("Select at least one role and competency with reviewed mapping evidence.")
+        heatmap_output.info("Select at least one role and competency with reviewed mapping evidence.")
     else:
         matrix = selected_cells.pivot(index="psf_job_role", columns="psf_competency", values="job_ads")
         matrix = matrix.reindex(index=chosen_roles, columns=chosen_competencies).fillna(0).astype(int)
         row_denominators = roles.set_index("psf_job_role").job_ads.reindex(matrix.index).fillna(0).astype(int)
         shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
-        result_heatmap(matrix, "Reviewed PSF-AAI competencies across reference roles", count_label="Job advertisements",
-                       share_matrix=shares, row_denominators=row_denominators,
-                       share_label="Share of role ads", denominator_label="Advertisements linked to role",
-                       row_group_label="reference role", transpose=True)
-        st.caption("Cells count distinct advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Color uses the share of all ads linked to that role; hidden competencies stay in the denominator. An ad can support several competencies and roles, so percentages may overlap and cell counts must not be summed into unique ads.")
+        with heatmap_output:
+            result_heatmap(matrix, "Reviewed PSF-AAI competencies across reference roles", count_label="Job advertisements",
+                           share_matrix=shares, row_denominators=row_denominators,
+                           share_label="Share of role ads", denominator_label="Advertisements linked to role",
+                           row_group_label="reference role", transpose=True)
+            st.caption("Cells count distinct advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Color uses the share of all ads linked to that role; hidden competencies stay in the denominator. An ad can support several competencies and roles, so percentages may overlap and cell counts must not be summed into unique ads.")
     table = st.expander("View all role-by-competency counts", key="result_role_competency_table", on_change="rerun")
     if table.open:
         display(cells.rename(columns={"psf_job_role": "PSF-AAI reference role", "psf_competency": "PSF-AAI competency",
                                       "job_ads": "Job advertisements"}))
 
 
-def _job_market_results(tables, meta):
+@st.fragment(key="job_market_results")
+def _job_market_results(tables, meta, revision=None):
+    try:
+        _job_market_content(tables, meta, revision)
+    except (ValueError, OSError, KeyError, TypeError, supabase_store.SupabaseError) as exc:
+        loaded = st.session_state.get("_fow_market_loaded", {})
+        loaded.get("sections", set()).discard(st.session_state.get("_fow_market_active_section"))
+        st.error(str(exc))
+        st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")
+
+
+def _job_market_content(tables, meta, revision=None):
+    st.session_state["_table_number"] = 0
+    # Normal page loads pass the existing bundle revision; standalone renders hash their inputs.
+    revision = revision or digest([VERSION, meta, {
+        name: frame_hash(tables[name].drop(columns=["original_text"], errors="ignore")) for name in (
+            "cleaned_jobs", "extracted_job_skills", "psf_mapping", "psf_framework_order", "verified_psf_aai"
+        ) if name in tables
+    }])
+    loaded = st.session_state.get("_fow_market_loaded", {})
+    if loaded.get("revision") != revision:
+        loaded = {"revision": revision, "sections": set()}
+        st.session_state["_fow_market_loaded"] = loaded
+        st.session_state.setdefault("_fow_loading_ready", {}).pop("job_market_psf_charts", None)
+    # Keep hidden section controls out of Streamlit's widget-cleanup cycle.
+    for key in ("result_title_view", "result_family", "result_specific_title", "result_region", "result_city",
+                "result_skill_family_heatmap_families", "result_psf_role", "result_psf_order",
+                "result_competency_heatmap_roles", "result_competency_heatmap_competencies"):
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
     jobs = tables["cleaned_jobs"]
-    profile = tables if "education_level_counts" in tables else job_profile_tables(jobs)
-    geography = tables if "location_evidence" in tables else location_tables(jobs)
-    chart_keys = {"chart_skill_demand", "chart_skill_family_demand", "chart_family_ad_counts"}
-    views = tables if chart_keys.issubset(tables) else skill_chart_tables(tables["extracted_job_skills"], jobs)
+    chart_keys = {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review", "chart_skill_family_demand", "chart_family_ad_counts"}
+    views = (tables if chart_keys.issubset(tables) else _session_cached_value(
+        "_fow_market_skill_cache", revision, lambda: skill_chart_tables(tables["extracted_job_skills"], jobs),
+        ttl=None, max_entries=1))
     skills, demand, unclear = (views[key] for key in ("chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review"))
     denominator = jobs.source_id.nunique() if "source_id" in jobs else 0
-    analysis_workflow()
     unclear_count = unclear.normalized_phrase.nunique() if not unclear.empty else 0
-    metrics = [
-        ("Job ads in sample", denominator, "work", "From selected dataset", "green"),
-        ("Distinct skills in charts", len(demand), "bar_chart", "Unique chart skills", "blue"),
-        ("Distinct phrases withheld", unclear_count, "chat_bubble", "Kept in audit" if unclear_count else "No phrases withheld", "orange" if unclear_count else "green"),
-    ]
+    framework = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
+    role_field = next((field for field in ("job_role", "psf_job_role") if field in framework), None)
+    if role_field and not framework.empty:
+        reference_roles = framework[role_field].fillna("").map(normalize_text).str.split("; ").explode()
+        reference_role_count = int(reference_roles.loc[reference_roles.ne("")].nunique())
+        reference_role_value = f"{reference_role_count:,}"
+    else:
+        reference_role_value = "—"
+    metrics = [("Job ads in sample", denominator, "work"),
+               ("Distinct chart skills", len(demand), "bar_chart"),
+               ("Distinct phrases withheld", unclear_count, "sell"),
+               ("PSF-AAI reference roles", reference_role_value, "layers")]
     with st.container(horizontal=True, gap="medium", key="result_metrics"):
-        for index, (label, value, icon, badge, color) in enumerate(metrics, 1):
+        for index, (label, value, icon) in enumerate(metrics, 1):
             with st.container(border=True, key=f"result_metric_{index}"):
-                st.metric(label, f"{value:,}", icon=f":material/{icon}:")
-                st.badge(badge, color=color)
-    order, limit = result_chart_options()
+                st.metric(label, f"{value:,}" if isinstance(value, int) else value, icon=f":material/{icon}:")
+    order, limit = result_chart_options(include_export=True)
 
     def plot(frame, label, value, title):
-        result_count_chart(frame, label, value, title, order=order, limit=limit)
+        return result_count_chart(frame, label, value, title, order=order, limit=limit)
 
     def skill_counts(rows, total):
         out = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
         out["job_ads_pct"] = out.job_ads / total * 100 if total else float("nan")
         return out
 
-    def takeaway(frame, label, value):
-        if not frame.empty and len(frame) > 1:
-            maximum = frame[value].max()
-            names = frame.loc[frame[value].eq(maximum), label].astype(str).sort_values().tolist()
-            st.write(f"Most represented: {', '.join(names[:3])}" +
-                     (f" and {len(names) - 3} other tied entries" if len(names) > 3 else "") +
-                     f" — {maximum:,} {'ad' if maximum == 1 else 'ads'}" + (" each." if len(names) > 1 else "."))
-
-    with st.container(horizontal=True, vertical_alignment="center", key="result_section_toolbar"):
-        st.subheader("Results section")
-        if action_button("Export results", icon=":material/download:", key="results_export", type="primary"):
-            st.switch_page("pages/14_Reports.py")
+    st.subheader("Results Section", icon=":material/bar_chart:")
     with st.container(key="result_sections"):
         section = st.segmented_control("Results section", ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"],
                                        default="Skills", key="result_section", width="stretch", label_visibility="collapsed")
-    if section == "Skills":
-        st.subheader("Which skills do these employers request?")
-        if not demand.empty:
-            leaders = demand.sort_values(["employer_demand_count", "employer_skill"], ascending=[False, True]).head(3)
-            st.write("Among the most frequently observed: " + "; ".join(f"{row.employer_skill} ({row.employer_demand_count:,} {'ad' if row.employer_demand_count == 1 else 'ads'})" for row in leaders.itertuples()) + ".")
-        plot(demand, "employer_skill", "employer_demand_count", "Employer-requested skills")
-        withheld_reasons = unclear.review_reason.fillna("") if not unclear.empty else pd.Series(dtype=str)
-        def ads_for_reason(prefixes):
-            if unclear.empty:
-                return 0
-            return int(unclear.loc[withheld_reasons.str.startswith(tuple(prefixes)), "source_id"].nunique())
-        not_reported_ads = ads_for_reason(("Not reported (missing placeholder)",))
-        experience_phrase_ads = ads_for_reason(("Experience-duration requirement", "Unclear year-duration phrase", "No-experience requirement"))
-        irrelevant_ads = ads_for_reason(("Researcher or classifier marked",))
-        chart_summary = meta.get("chart_presentation", {})
-        no_chartable_ads = int(chart_summary.get("ads_without_chartable_skill", max(0, denominator - skills.source_id.nunique()))) if denominator else 0
-        st.caption(f"Missing / not-mentioned placeholders: {not_reported_ads:,} ads. No chartable skill evidence, regardless of PSF status: {no_chartable_ads:,} of {denominator:,} ads.")
-        st.caption(f"Experience/year wording: {experience_phrase_ads:,} ads; excluded from skills and PSF-AAI demand. Irrelevant labels: {irrelevant_ads:,} ads; excluded.")
-        st.caption(f"One advertisement counts once per skill, including case and list-format variants. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
-        st.caption("Unmapped but skill-like phrases remain in employer demand; their PSF-AAI correspondence is reviewed separately.")
-        for kind, title in (("Technical", "Technical skills"), ("Soft / Enabling", "Enabling and interpersonal skills")):
-            rows = skills[skills.get("skill_type", pd.Series("", index=skills.index)).eq(kind)]
-            plot(skill_counts(rows, denominator), "skill_label", "job_ads", title)
-        if not skills.empty:
-            categories = skills.copy()
-            categories["category_group"] = categories.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
-            counts = categories.groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
-            plot(counts, "category_group", "job_ads", "Broad competency areas")
-            st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
-        with st.expander("How technical and enabling categories are determined"):
-            st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
-            st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
-            st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
-        with st.expander(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)"):
-            st.caption("Missing values, experience wording, vague-only descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. Original phrases and saved labels stay here for review; specific skill mentions remain counted.")
-            display(unclear)
-        with st.expander("Skill-demand table"):
-            display(demand)
+    section_key = {"Skills": "skills", "Roles and locations": "roles", "Qualifications": "qualifications",
+                   "PSF-AAI demand": "psf_aai"}.get(section, "none")
+    st.session_state["_fow_market_active_section"] = section_key
+    ready = st.session_state.setdefault("_fow_loading_ready", {})
+    if section_key in loaded["sections"]:
+        ready["job_market_view_load"] = True
+    else:
+        ready.pop("job_market_view_load", None)
+    st.html('<style>[class*="st-key-job_market_section_"]{display:none!important}'
+            f'.st-key-job_market_section_{section_key}' + '{display:flex!important}</style>')
+    with loading_content("job_market_view_load", "market_section", view=section, rows=limit, defer=True) as section_content:
+        with section_content(), st.container(key=f"job_market_section_{section_key}"):
+            if section == "Skills":
+                featured_result_chart(
+                    "employer_skill", "employer_demand_count", "Top requested skills", denominator,
+                    lambda: plot(demand, "employer_skill", "employer_demand_count", "Employer-requested skills"),
+                    key="skills",
+                )
+                withheld_reasons = unclear.review_reason.fillna("") if not unclear.empty else pd.Series(dtype=str)
+                def ads_for_reason(prefixes):
+                    if unclear.empty:
+                        return 0
+                    return int(unclear.loc[withheld_reasons.str.startswith(tuple(prefixes)), "source_id"].nunique())
+                not_reported_ads = ads_for_reason(("Not reported (missing placeholder)",))
+                experience_phrase_ads = ads_for_reason(("Experience-duration requirement", "Unclear year-duration phrase", "No-experience requirement"))
+                irrelevant_ads = ads_for_reason(("Researcher or classifier marked",))
+                chart_summary = meta.get("chart_presentation", {})
+                no_chartable_ads = int(chart_summary.get("ads_without_chartable_skill", max(0, denominator - skills.source_id.nunique()))) if denominator else 0
+                st.caption(f"Missing / not-mentioned placeholders: {not_reported_ads:,} ads. No chartable skill evidence, regardless of PSF status: {no_chartable_ads:,} of {denominator:,} ads.")
+                st.caption(f"Experience/year wording: {experience_phrase_ads:,} ads; excluded from skills and PSF-AAI demand. Irrelevant labels: {irrelevant_ads:,} ads; excluded.")
+                st.caption(f"One advertisement counts once per skill, including case and list-format variants. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
+                st.caption("Unmapped but skill-like phrases remain in employer demand; their PSF-AAI correspondence is reviewed separately.")
+                for kind, title in (("Technical", "Technical skills"), ("Soft / Enabling", "Enabling and interpersonal skills")):
+                    rows = skills[skills.get("skill_type", pd.Series("", index=skills.index)).eq(kind)]
+                    skill_heading = "Top technical skills" if kind == "Technical" else "Top enabling skills"
+                    counts = skill_counts(rows, denominator)
+                    featured_result_chart("skill_label", "job_ads", skill_heading, denominator,
+                                          lambda: plot(counts, "skill_label", "job_ads", title),
+                                          key=f"{kind.casefold().replace(' ', '_')}_skills")
+                if not skills.empty:
+                    categories = skills.copy()
+                    categories["category_group"] = categories.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
+                    counts = categories.groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
+                    featured_result_chart("category_group", "job_ads", "Most common broad area", denominator,
+                                          lambda: plot(counts, "category_group", "job_ads", "Broad competency areas"),
+                                          key="broad_competency_areas")
+                    st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
+                with st.expander("How technical and enabling categories are determined"):
+                    st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
+                    st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
+                    st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
+                with st.expander(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)"):
+                    st.caption("Missing values, experience wording, vague-only descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. Original phrases and saved labels stay here for review; specific skill mentions remain counted.")
+                    display(unclear)
+                with st.expander("Skill-demand table"):
+                    display(demand)
 
-    if section == "Roles and locations":
-        title_view = st.selectbox("Job-title overview", ["Most common job titles", "Related role groups", "Specific titles (alphabetical)"], key="result_title_view")
-        grouped = title_view == "Related role groups"
-        common_titles = title_view == "Most common job titles"
-        alphabetical_titles = title_view == "Specific titles (alphabetical)"
-        title_field = "job_role_group" if grouped else "common_job_title" if common_titles else "job_title"
-        title_counts = (profile["job_role_group_counts"] if grouped else
-                        profile["common_job_title_counts"] if common_titles else profile["job_title_counts"])
-        if not title_counts.empty:
-            chart_title = "Related role groups" if grouped else ("Specific job titles (alphabetical)" if alphabetical_titles else "Most common job titles")
-            title_order = "Alphabetical" if alphabetical_titles else order
-            result_count_chart(title_counts, title_field, "job_ads", chart_title, order=title_order, limit=limit)
-        st.caption("Most-common titles consolidate clear seniority and branch/specialty variants when one recognized occupation is stated. Composite and unrecognized titles stay distinct. Related role groups use source families; specific titles preserve exact normalized wording. Counts are distinct ads, and original titles remain auditable.")
-        with st.expander("Inspect common-title normalization"):
-            display(profile["common_job_title_evidence"])
-        with st.expander("Inspect source-family role grouping"):
-            display(profile["job_title_group_evidence"])
-            display(profile["job_title_family_counts"])
-        takeaway(title_counts, title_field, "job_ads")
-        evidence = profile["job_title_group_evidence"]
-        def reset_exploration():
-            for key in ("result_family", "result_specific_title", "result_region", "result_city"):
-                st.session_state[key] = "All"
-            st.session_state.pop("result_skill_family_heatmap_families", None)
-        st.button("Reset exploration filters", on_click=reset_exploration, icon=":material/restart_alt:")
+            if section == "Roles and locations":
+                profile = (tables if "education_level_counts" in tables else _session_cached_value(
+                    "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
+                geography = (tables if "location_evidence" in tables else _session_cached_value(
+                    "_fow_market_geography_cache", revision, lambda: location_tables(jobs), ttl=None, max_entries=1))
+                with st.container(border=True, key="job_market_title_overview"):
+                    st.subheader("Job-title overview", icon=":material/work:")
+                    title_view = st.selectbox("Job-title overview", ["Most common job titles", "Related role groups", "Specific titles (alphabetical)"], key="result_title_view", label_visibility="collapsed")
+                    grouped = title_view == "Related role groups"
+                    common_titles = title_view == "Most common job titles"
+                    alphabetical_titles = title_view == "Specific titles (alphabetical)"
+                    title_field = "job_role_group" if grouped else "common_job_title" if common_titles else "job_title"
+                    title_counts = (profile["job_role_group_counts"] if grouped else
+                                    profile["common_job_title_counts"] if common_titles else profile["job_title_counts"])
+                    if not title_counts.empty:
+                        chart_title = "Related role groups" if grouped else ("Specific job titles (alphabetical)" if alphabetical_titles else "Most common job titles")
+                        title_order = "Alphabetical" if alphabetical_titles else order
+                        featured_result_chart(
+                            title_field, "job_ads", "Top occupational titles", denominator,
+                            lambda: result_count_chart(title_counts, title_field, "job_ads", chart_title,
+                                                       order=title_order, limit=limit),
+                            key="titles",
+                        )
+                    st.caption("Most-common titles consolidate clear seniority and branch/specialty variants when one recognized occupation is stated. Composite and unrecognized titles stay distinct. Related role groups use source families; specific titles preserve exact normalized wording. Counts are distinct ads, and original titles remain auditable.")
+                    with st.expander("Inspect common-title normalization"):
+                        display(profile["common_job_title_evidence"])
+                    with st.expander("Inspect source-family role grouping"):
+                        display(profile["job_title_group_evidence"])
+                        display(profile["job_title_family_counts"])
+                evidence = profile["job_title_group_evidence"]
+                def reset_exploration():
+                    for key in ("result_family", "result_specific_title", "result_region", "result_city"):
+                        st.session_state[key] = "All"
+                    st.session_state.pop("result_skill_family_heatmap_families", None)
+                st.button("Reset exploration filters", on_click=reset_exploration, icon=":material/restart_alt:")
 
-        st.subheader("How do requested skills vary by occupational family?")
-        family_demand = views.get("chart_skill_family_demand", pd.DataFrame())
-        family_ads = views.get("chart_family_ad_counts", pd.DataFrame())
-        family_options = family_ads.loc[family_ads.job_family.ne("not stated"), "job_family"].tolist() if not family_ads.empty else []
-        top_skills = demand.sort_values(["employer_demand_count", "employer_skill"], ascending=[False, True], kind="stable").head(min(limit, 15)).employer_skill.tolist()
-        if family_options and top_skills:
-            family_sizes = family_ads.set_index("job_family").family_ads
-            heatmap_families_default = sorted(family_options, key=lambda name: (-family_sizes.get(name, 0), name))[:8]
-            family_key = "result_skill_family_heatmap_families"
-            family_selection = [name for name in st.session_state.get(family_key, heatmap_families_default) if name in family_options]
-            if family_selection != st.session_state.get(family_key, heatmap_families_default):
-                st.session_state[family_key] = family_selection
-            chosen_families = st.multiselect("Occupational families in the heatmap", family_options,
-                                             default=heatmap_families_default, key=family_key)
-            selected_family_demand = family_demand[
-                family_demand.job_family.isin(chosen_families) & family_demand.skill_label.isin(top_skills)]
-            if selected_family_demand.empty:
-                st.info("No chartable skill evidence is available for the selected occupational families.")
-            else:
-                matrix = selected_family_demand.pivot(index="job_family", columns="skill_label", values="job_ads")
-                matrix = matrix.reindex(index=chosen_families, columns=top_skills).fillna(0).astype(int)
-                row_denominators = family_sizes.reindex(matrix.index).fillna(0).astype(int)
-                shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
-                result_heatmap(matrix, "Top requested skills by occupational family", count_label="Job advertisements",
-                               share_matrix=shares, row_denominators=row_denominators,
-                               share_label="Share of family ads", denominator_label="Advertisements in family",
-                               row_group_label="occupational family", transpose=True)
-            missing_family_ads = int(family_ads.loc[family_ads.job_family.eq("not stated"), "family_ads"].sum())
-            if missing_family_ads:
-                st.caption(f"Occupational family not stated or classifiable: {missing_family_ads:,} ads; excluded from this comparison.")
-            st.caption("Color compares the share of advertisements in each family that request a skill. Denominators include ads with no chartable skill; skill categories overlap, so row percentages can exceed 100% in total. Hover for counts and family size.")
-            all_family_table = st.expander("View all skill-by-family counts", key="result_all_skill_family_table", on_change="rerun")
-            if all_family_table.open:
-                with all_family_table:
-                    display(family_demand.rename(columns={"job_family": "Occupational family", "skill_label": "Skill",
-                                                           "job_ads": "Job advertisements", "family_ads": "Family advertisements",
-                                                           "job_ads_pct": "Share of family ads (%)"}))
-        elif family_options:
-            st.info("No chartable skill evidence is available for the selected advertisements.")
-        else:
-            st.info("No classifiable occupational families are available for the skill comparison.")
+                with st.container(border=True, key="job_market_family_section"):
+                    st.subheader("How do requested skills vary by occupational family?", icon=":material/layers:")
+                    family_demand = views.get("chart_skill_family_demand", pd.DataFrame())
+                    family_ads = views.get("chart_family_ad_counts", pd.DataFrame())
+                    family_options = family_ads.loc[family_ads.job_family.ne("not stated"), "job_family"].tolist() if not family_ads.empty else []
+                    top_skills = demand.sort_values(["employer_demand_count", "employer_skill"], ascending=[False, True], kind="stable").head(min(limit, 15)).employer_skill.tolist()
+                    if family_options and top_skills:
+                        family_sizes = family_ads.set_index("job_family").family_ads
+                        heatmap_families_default = sorted(family_options, key=lambda name: (-family_sizes.get(name, 0), name))[:8]
+                        family_key = "result_skill_family_heatmap_families"
+                        family_selection = [name for name in st.session_state.get(family_key, heatmap_families_default) if name in family_options]
+                        if family_selection != st.session_state.get(family_key, heatmap_families_default):
+                            st.session_state[family_key] = family_selection
+                        chosen_families = st.multiselect("Occupational families in the heatmap", family_options,
+                                                         default=heatmap_families_default, key=family_key)
+                        selected_family_demand = family_demand[
+                            family_demand.job_family.isin(chosen_families) & family_demand.skill_label.isin(top_skills)]
+                        if selected_family_demand.empty:
+                            st.info("No chartable skill evidence is available for the selected occupational families.")
+                        else:
+                            matrix = selected_family_demand.pivot(index="job_family", columns="skill_label", values="job_ads")
+                            matrix = matrix.reindex(index=chosen_families, columns=top_skills).fillna(0).astype(int)
+                            row_denominators = family_sizes.reindex(matrix.index).fillna(0).astype(int)
+                            shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
+                            cells = selected_family_demand.copy()
+                            cells["family_ads"] = cells.job_family.map(family_sizes).fillna(0).astype(int)
+                            cells["share"] = cells.job_ads.div(cells.family_ads.where(cells.family_ads.gt(0), 1)).mul(100)
+                            cells = cells.sort_values(["share", "job_ads", "skill_label", "job_family"],
+                                                      ascending=[False, False, True, True], kind="stable")
+                            best = cells.iloc[0]
+                            tied = cells[cells.share.eq(best.share)]
+                            family_summary = (f"{len(tied):,} displayed skill–family pairs tie for the highest within-family share ({best.share:.1f}%)."
+                                              if len(tied) > 1 else
+                                              f"{best.skill_label} has the highest displayed within-family share in {best.job_family}: "
+                                              f"{int(best.job_ads):,} of {int(best.family_ads):,} ads ({best.share:.1f}%).")
+                            family_rows = [(f"{row.skill_label} · {row.job_family}", row.job_ads)
+                                           for row in cells.head(3).itertuples()]
+                            featured_visual_chart(
+                                lambda: result_heatmap(matrix, "Top requested skills by occupational family",
+                                                        count_label="Job advertisements", share_matrix=shares,
+                                                        row_denominators=row_denominators, share_label="Share of family ads",
+                                                        denominator_label="Advertisements in family",
+                                                        row_group_label="occupational family", transpose=True),
+                                family_summary, family_rows, key="family_heatmap", insight_title="Heatmap Insight",
+                                list_title="Top Skill × Family",
+                            )
+                        missing_family_ads = int(family_ads.loc[family_ads.job_family.eq("not stated"), "family_ads"].sum())
+                        if missing_family_ads:
+                            st.caption(f"Occupational family not stated or classifiable: {missing_family_ads:,} ads; excluded from this comparison.")
+                        st.caption("Color compares the share of advertisements in each family that request a skill. Denominators include ads with no chartable skill; skill categories overlap, so row percentages can exceed 100% in total. Hover for counts and family size.")
+                        all_family_table = st.expander("View all skill-by-family counts", key="result_all_skill_family_table", on_change="rerun")
+                        if all_family_table.open:
+                            with all_family_table:
+                                display(family_demand.rename(columns={"job_family": "Occupational family", "skill_label": "Skill",
+                                                                       "job_ads": "Job advertisements", "family_ads": "Family advertisements",
+                                                                       "job_ads_pct": "Share of family ads (%)"}))
+                    elif family_options:
+                        st.info("No chartable skill evidence is available for the selected advertisements.")
+                    else:
+                        st.info("No classifiable occupational families are available for the skill comparison.")
 
-        st.subheader("Explore a selected title")
-        title_evidence = profile["job_title_source_evidence"]
-        family_options = sorted(title_evidence.job_family.unique().tolist())
-        family = st.selectbox("Occupational family", ["All", *family_options], key="result_family")
-        family_rows = title_evidence if family == "All" else title_evidence[title_evidence.job_family.eq(family)]
-        specific_options = ["All", *sorted(family_rows.job_title.unique().tolist())]
-        if st.session_state.get("result_specific_title", "All") not in specific_options:
-            st.session_state["result_specific_title"] = "All"
-        specific = st.selectbox("Specific job title", specific_options, key="result_specific_title")
-        scoped = family_rows if specific == "All" else family_rows[family_rows.job_title.eq(specific)]
-        source_ids = scoped.source_id
-        selected_title_demand = skill_counts(skills[skills.source_id.isin(source_ids)], source_ids.nunique())
-        selected_title_label = specific if specific != "All" else (family if family != "All" else "all selected advertisements")
-        result_count_chart(selected_title_demand, "skill_label", "job_ads", f"Top skills for {selected_title_label}",
-                           order=order, limit=min(limit, 10))
-        st.caption(f"Selected group: {selected_title_label} · {source_ids.nunique():,} advertisements. Percentages use these ads as the denominator.")
-        if 0 < source_ids.nunique() < 10:
-            st.caption("Small group; treat this ranking as descriptive for these advertisements, not a stable estimate for the occupation.")
-        if len(selected_title_demand) > min(limit, 10):
-            all_title_skills = st.expander("View all skills for this selection", key="result_all_title_skills", on_change="rerun")
-            if all_title_skills.open:
-                st.caption("The searchable table includes every chartable skill for the selected group, not only the top bars.")
-                display(ordered_result_table(selected_title_demand, "skill_label", order, "job_ads"))
-        st.subheader("Where are the advertised jobs?")
-        locations = geography["location_evidence"]
-        focused_locations = locations[locations.source_id.isin(source_ids)]
-        region_options = sorted(value for value in focused_locations.region.unique() if value)
-        if st.session_state.get("result_region", "All") not in ["All", *region_options]:
-            st.session_state["result_region"] = "All"
-        selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
-        if selected_region == "All":
-            st.session_state["result_city"] = "All"
-            location_rows = focused_locations[focused_locations.region.ne("")]
-            count_field = "region"
-            denominator_for_locations = source_ids.nunique()
-            location_title = "Advertisements by Philippine region"
-            area_rows = location_rows
-        else:
-            region_rows = focused_locations[focused_locations.region.eq(selected_region)]
-            city_options = sorted(value for value in region_rows.locality.unique() if value)
-            if st.session_state.get("result_city", "All") not in ["All", *city_options]:
-                st.session_state["result_city"] = "All"
-            selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
-            locality_rows = region_rows[region_rows.locality.ne("")]
-            location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
-            count_field = "locality"
-            denominator_for_locations = region_rows.source_id.nunique()
-            location_title = f"Cities and municipalities in {selected_region}"
-            area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
-        location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
-        if denominator_for_locations:
-            location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
-        else:
-            location_counts["job_ads_pct"] = float("nan")
-        plot(location_counts, count_field, "job_ads", location_title)
-        takeaway(location_counts, count_field, "job_ads")
-        location_ids = area_rows.source_id
-        plot(skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique()),
-             "skill_label", "job_ads", "Skills in the selected geographical area")
-        missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
-        unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
-        if selected_region == "All":
-            st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
-        else:
-            st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
-        st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
-        st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
-        all_locations_table = st.expander("View all regional or city counts", key="result_all_location_counts", on_change="rerun")
-        if all_locations_table.open:
-            display(location_counts.rename(columns={count_field: "Region" if selected_region == "All" else "City or municipality",
-                                                    "job_ads": "Job advertisements", "job_ads_pct": "Share of comparison group (%)"}))
-        with st.expander("Location standardization evidence", key="result_location_standardization"):
-            display(focused_locations)
-        trend_jobs = jobs[jobs.source_id.isin(location_ids)]
-        if "posting_date_parsed" in trend_jobs:
-            dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
-            monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
-            if len(monthly) > 1:
-                coverage = px.bar(monthly, x="month", y="postings", title="Posting months represented in the dataset",
-                                  labels={"month": "Posting month", "postings": "Job advertisements"},
-                                  color_discrete_sequence=[st.get_option("theme.primaryColor")])
-                coverage.update_traces(texttemplate="%{y:,d}", textposition="outside", cliponaxis=False,
-                                       hovertemplate="<b>%{x}</b><br>Job advertisements: %{y:,d}<extra></extra>")
-                coverage.update_xaxes(type="category", categoryorder="array", categoryarray=monthly.month.tolist(),
-                                      title="Posting month", automargin=True)
-                coverage.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero",
-                                      title="Job advertisements", showgrid=False, zeroline=False)
-                chart(coverage)
-            elif len(monthly) == 1:
-                result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
-                                     monthly.postings.iloc[0], "Job advertisements",
-                                     "One month is present; this is coverage, not a time trend.",
-                                     key="result_single_posting_month")
-            if not dates.empty:
-                st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
-            else:
-                st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
+                with st.container(border=True, key="job_market_title_section"):
+                    st.subheader("Explore a selected title", icon=":material/person_search:")
+                    title_evidence = profile["job_title_source_evidence"]
+                    family_options = sorted(title_evidence.job_family.unique().tolist())
+                    with st.container(horizontal=True, key="result_title_exploration_filters"):
+                        family = st.selectbox("Occupational family", ["All", *family_options], key="result_family")
+                        family_rows = title_evidence if family == "All" else title_evidence[title_evidence.job_family.eq(family)]
+                        specific_options = ["All", *sorted(family_rows.job_title.unique().tolist())]
+                        if st.session_state.get("result_specific_title", "All") not in specific_options:
+                            st.session_state["result_specific_title"] = "All"
+                        specific = st.selectbox("Specific job title", specific_options, key="result_specific_title")
+                    scoped = family_rows if specific == "All" else family_rows[family_rows.job_title.eq(specific)]
+                    source_ids = scoped.source_id
+                    selected_title_demand = skill_counts(skills[skills.source_id.isin(source_ids)], source_ids.nunique())
+                    selected_title_label = specific if specific != "All" else (family if family != "All" else "all selected advertisements")
+                    featured_result_chart(
+                        "skill_label", "job_ads", "Top requested skills", source_ids.nunique(),
+                        lambda: result_count_chart(selected_title_demand, "skill_label", "job_ads",
+                                                   f"Top skills for {selected_title_label}",
+                                                   order=order, limit=min(limit, 10)),
+                        key="selected_title",
+                    )
+                    st.caption(f"Selected group: {selected_title_label} · {source_ids.nunique():,} advertisements. Percentages use these ads as the denominator.")
+                    if 0 < source_ids.nunique() < 10:
+                        st.caption("Small group; treat this ranking as descriptive for these advertisements, not a stable estimate for the occupation.")
+                    if len(selected_title_demand) > min(limit, 10):
+                        all_title_skills = st.expander("View all skills for this selection", key="result_all_title_skills", on_change="rerun")
+                        if all_title_skills.open:
+                            st.caption("The searchable table includes every chartable skill for the selected group, not only the top bars.")
+                            display(ordered_result_table(selected_title_demand, "skill_label", order, "job_ads"))
+                st.subheader("Geographical distribution", icon=":material/location_on:")
+                locations = geography["location_evidence"]
+                focused_locations = locations[locations.source_id.isin(source_ids)]
+                region_options = sorted(value for value in focused_locations.region.unique() if value)
+                if st.session_state.get("result_region", "All") not in ["All", *region_options]:
+                    st.session_state["result_region"] = "All"
+                selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
+                if selected_region == "All":
+                    st.session_state["result_city"] = "All"
+                    location_rows = focused_locations[focused_locations.region.ne("")]
+                    count_field = "region"
+                    denominator_for_locations = source_ids.nunique()
+                    location_title = "Advertisements by Philippine region"
+                    area_rows = location_rows
+                else:
+                    region_rows = focused_locations[focused_locations.region.eq(selected_region)]
+                    city_options = sorted(value for value in region_rows.locality.unique() if value)
+                    if st.session_state.get("result_city", "All") not in ["All", *city_options]:
+                        st.session_state["result_city"] = "All"
+                    selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
+                    locality_rows = region_rows[region_rows.locality.ne("")]
+                    location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
+                    count_field = "locality"
+                    denominator_for_locations = region_rows.source_id.nunique()
+                    location_title = f"Cities and municipalities in {selected_region}"
+                    area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
+                location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
+                if denominator_for_locations:
+                    location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
+                else:
+                    location_counts["job_ads_pct"] = float("nan")
+                location_ids = area_rows.source_id
+                location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
+                with st.container(border=True, key="job_market_featured_geography"):
+                    location_chart_col, skill_chart_col, insight_col = st.columns([1.05, 1.2, .9], vertical_alignment="center")
+                    with location_chart_col:
+                        location_figure = result_count_chart(location_counts, count_field, "job_ads", location_title,
+                                                             order=order, limit=limit)
+                    with skill_chart_col:
+                        skill_figure = result_count_chart(location_skill_counts, "skill_label", "job_ads",
+                                                          "Skills in the selected geographical area", order=order, limit=min(limit, 10))
+                    with insight_col:
+                        locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
+                        location_summary = "No classifiable location is available in this selection."
+                        if not locations_shown.empty:
+                            maximum = int(locations_shown.job_ads.max())
+                            leaders = locations_shown.loc[locations_shown.job_ads.eq(maximum), count_field].tolist()
+                            location_summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator_for_locations:,} ads."
+                                                if len(locations_shown) == 1 else
+                                                f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator_for_locations:,} ads."
+                                                if len(leaders) == 1 else
+                                                f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator_for_locations:,} ads each.")
+                        skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads").sort_values(
+                            ["job_ads", "skill_label"], ascending=[False, True], kind="stable")
+                        skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
+                        result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
+                                       skill_top_rows, "Top Displayed Skills")
+                missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
+                unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
+                if selected_region == "All":
+                    st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
+                else:
+                    st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
+                st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
+                st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
+                all_locations_table = st.expander("View all regional or city counts", key="result_all_location_counts", on_change="rerun")
+                if all_locations_table.open:
+                    display(location_counts.rename(columns={count_field: "Region" if selected_region == "All" else "City or municipality",
+                                                            "job_ads": "Job advertisements", "job_ads_pct": "Share of comparison group (%)"}))
+                with st.expander("Location standardization evidence", key="result_location_standardization"):
+                    display(focused_locations)
+                trend_jobs = jobs[jobs.source_id.isin(location_ids)]
+                if "posting_date_parsed" in trend_jobs:
+                    dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
+                    monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
+                    if len(monthly) > 1:
+                        coverage = px.bar(monthly, x="month", y="postings", title="Posting months represented in the dataset",
+                                          labels={"month": "Posting month", "postings": "Job advertisements"},
+                                          color_discrete_sequence=[st.get_option("theme.primaryColor")])
+                        coverage.update_traces(texttemplate="%{y:,d}", textposition="outside", cliponaxis=False,
+                                               hovertemplate="<b>%{x}</b><br>Job advertisements: %{y:,d}<extra></extra>")
+                        coverage.update_xaxes(type="category", categoryorder="array", categoryarray=monthly.month.tolist(),
+                                              title="Posting month", automargin=True)
+                        coverage.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero",
+                                              title="Job advertisements", showgrid=False, zeroline=False)
+                        timeline_sorted = monthly.sort_values(["postings", "month"], ascending=[False, True], kind="stable")
+                        peak = timeline_sorted.iloc[0]
+                        peak_months = timeline_sorted.loc[timeline_sorted.postings.eq(peak.postings), "month"]
+                        timeline_summary = (f"{peak.month} has the most dated postings ({int(peak.postings):,} ads)."
+                                            if len(peak_months) == 1 else
+                                            f"{len(peak_months):,} displayed months tie for the most dated postings ({int(peak.postings):,} ads each).")
+                        timeline_rows = list(zip(timeline_sorted.month.head(3), timeline_sorted.postings.head(3)))
+                        featured_visual_chart(
+                            lambda: chart(coverage),
+                            timeline_summary + " This describes dataset coverage, not market growth.",
+                            timeline_rows, key="posting_timeline", insight_title="Timeline Insight",
+                            list_title="Most represented months",
+                        )
+                    elif len(monthly) == 1:
+                        result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
+                                             monthly.postings.iloc[0], "Job advertisements",
+                                             "One month is present; this is coverage, not a time trend.",
+                                             key="result_single_posting_month")
+                    if not dates.empty:
+                        st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
+                    else:
+                        st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
 
-    if section == "Qualifications":
-        st.subheader("What qualifications are stated?")
-        for row in profile["requirement_field_coverage"].itertuples():
-            label = row.source_field.removesuffix("_requirement").capitalize()
-            st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads; not stated in {row.not_stated_job_ads:,}.")
-        education = profile["education_level_counts"]
-        if not education.empty:
-            if len(education) == 1:
-                result_count_chart(education, "education_level", "job_ads",
-                                   "Education levels stated in advertisements", order="Highest demand", limit=limit)
-            else:
-                chart(education_bar(education))
-            takeaway(education, "education_level", "job_ads")
-        else:
-            st.info("No unambiguous education level is available; inspect the source evidence below.")
-        coverage = profile["requirement_field_coverage"].set_index("source_field")
-        missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
-        st.caption(f"Education requirements were not specified in {missing_education:,} out of {denominator:,} ads ({100 * missing_education / denominator if denominator else 0:.1f}%). Multiple or unclear education levels are retained for review, outside the ordered chart.")
-        st.caption("Not specified describes the advertisement text; it does not mean that education was not required.")
-        with st.expander("Education standardization evidence"):
-            display(profile["education_level_evidence"])
-        st.subheader("Experience requirements")
-        experience_evidence = profile["experience_year_evidence"]
-        exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
-        exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
-        if len(exact_years) >= 2:
-            exact_pct = 100 * len(exact_years) / denominator if denominator else 0
-            st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")
-        elif len(exact_years) == 1:
-            st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
-        if not profile["experience_band_counts"].empty:
-            bands = profile["experience_band_counts"].drop(columns="band_order", errors="ignore").rename(
-                columns={"experience_band": "Experience requirement", "job_ads": "Job advertisements",
-                         "job_ads_pct": "Share of selected ads (%)"}
-            )
-            display(bands)
-        else:
-            st.caption("No numerical requirement falls unambiguously within a single experience band.")
-        st.caption("Bands include only numerical requirements contained entirely within one interval. Spanning, open-ended and descriptive requirements remain in the evidence table rather than being forced into a band.")
-        years = profile["experience_year_counts"]
-        if years.empty:
-            st.info("No unambiguous experience-year requirement is available in the source fields. Missing years are not treated as zero experience.")
-        else:
-            display(years.rename(columns={"requirement": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
-        st.caption("Year summaries use explicit experience fields only. Missing and ambiguous wording is excluded from the numeric summary and retained below. A stated number is not assumed to be an upper hiring limit.")
-        with st.expander("Requirement fields and parsing evidence"):
-            display(profile["education_requirement_counts"])
-            display(profile["experience_requirement_counts"])
-            display(profile["experience_year_evidence"])
-            display(profile["experience_band_evidence"])
-        with st.expander("Potential requirements found in advertisement text"):
-            st.caption("Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")
-            display(profile["requirement_evidence"])
+            if section == "Qualifications":
+                profile = (tables if "education_level_counts" in tables else _session_cached_value(
+                    "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
+                coverage = profile["requirement_field_coverage"].set_index("source_field")
+                with st.container(border=True, key="job_market_qualification_summary"):
+                    st.subheader("What qualifications are stated?", icon=":material/school:")
+                    for row in profile["requirement_field_coverage"].itertuples():
+                        label = row.source_field.removesuffix("_requirement").capitalize()
+                        st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads; not stated in {row.not_stated_job_ads:,}.")
+                education = profile["education_level_counts"]
+                missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
+                stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
+                with st.container(border=True, key="job_market_education"):
+                    education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
+                    with education_column:
+                        st.subheader("Education levels stated in advertisements", icon=":material/bar_chart:")
+                        if len(education) == 1:
+                            level = education.iloc[0]
+                            with st.container(key="result_education_highlight"):
+                                st.metric(str(level.education_level), f"{int(level.job_ads):,}")
+                            st.caption(f"Job advertisements · {level.job_ads_pct:.1f}% of selected advertisements. One classifiable level is present.")
+                        elif not education.empty:
+                            chart(education_bar(education).update_layout(title_text=""))
+                        else:
+                            st.info("No unambiguous education level is available; inspect the source evidence below.")
+                    with insight_column:
+                        summary = f"Education is stated in {stated_education:,} of {denominator:,} advertisements."
+                        if not education.empty:
+                            leading = education.sort_values(["job_ads", "education_level"], ascending=[False, True]).iloc[0]
+                            tied_levels = education.loc[education.job_ads.eq(leading.job_ads), "education_level"]
+                            if len(education) == 1:
+                                summary += f" {leading.education_level} is the only classifiable level shown ({int(leading.job_ads):,} ads)."
+                            elif len(tied_levels) > 1:
+                                summary += f" {len(tied_levels):,} classifiable levels share the highest count ({int(leading.job_ads):,} ads each)."
+                            else:
+                                summary += f" {leading.education_level} has the highest classifiable count ({int(leading.job_ads):,} ads)."
+                        result_insight("Education Insight", summary,
+                                       [("Education stated", stated_education), ("Education not stated", missing_education)], "Field Coverage")
+                    st.caption(f"Education requirements were not specified in {missing_education:,} out of {denominator:,} ads ({100 * missing_education / denominator if denominator else 0:.1f}%). Multiple or unclear education levels are retained for review, outside the ordered chart.")
+                    st.caption("Not specified describes the advertisement text; it does not mean that education was not required.")
+                    with st.expander("Education standardization evidence"):
+                        display(profile["education_level_evidence"])
+                with st.container(border=True, key="job_market_experience"):
+                    st.subheader("Experience requirements", icon=":material/work:")
+                    experience_evidence = profile["experience_year_evidence"]
+                    exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
+                    exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
+                    if len(exact_years) >= 2:
+                        exact_pct = 100 * len(exact_years) / denominator if denominator else 0
+                        st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")
+                    elif len(exact_years) == 1:
+                        st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
+                    if not profile["experience_band_counts"].empty:
+                        display(profile["experience_band_counts"].drop(columns="band_order", errors="ignore").rename(
+                            columns={"experience_band": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
+                    else:
+                        st.html('<div class="fow-experience-empty"><span class="material-symbols-rounded" aria-hidden="true">assignment</span>'
+                                '<h4>No numerical requirement falls unambiguously within a single experience band.</h4></div>')
+                    st.caption("Bands include only numerical requirements contained entirely within one interval. Spanning, open-ended and descriptive requirements remain in the evidence table rather than being forced into a band.")
+                    years = profile["experience_year_counts"]
+                    if years.empty:
+                        st.info("No unambiguous experience-year requirement is available in the source fields. Missing years are not treated as zero experience.")
+                    else:
+                        display(years.rename(columns={"requirement": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
+                    st.caption("Year summaries use explicit experience fields only. Missing and ambiguous wording is excluded from the numeric summary and retained below. A stated number is not assumed to be an upper hiring limit.")
+                    with st.expander("Requirement fields and parsing evidence"):
+                        display(profile["education_requirement_counts"])
+                        display(profile["experience_requirement_counts"])
+                        display(profile["experience_year_evidence"])
+                        display(profile["experience_band_evidence"])
+                    with st.expander("Potential requirements found in advertisement text"):
+                        st.caption("Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")
+                        display(profile["requirement_evidence"])
 
-    if section == "PSF-AAI demand":
-        st.subheader("How does observed demand relate to PSF-AAI?")
-        st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
-        mappings = tables["psf_mapping"]
-        if not mappings.empty:
-            all_linked = mappings[mappings.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) & mappings.psf_competency.fillna("").ne("")].copy()
-            all_linked["psf_competency"] = all_linked.psf_competency.map(normalize_text)
-            all_linked["psf_job_role"] = all_linked.psf_job_role.map(normalize_text)
-            reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
-            if "competency_name" not in reference:
-                reference = reference.rename(columns={"psf_competency": "competency_name"})
-            role_options = sorted(set(role for value in all_linked.psf_job_role for role in value.split("; ") if role))
-            role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
-            linked = all_linked
-            if role != "All":
-                linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
-                linked["psf_job_role"] = role
-            role_denominator = linked.source_id.nunique()
-            psf_views = psf_demand_tables(linked, jobs, reference,
-                                          denominator=role_denominator if role != "All" else denominator)
-            psf_order = st.selectbox("Competency order", ["Highest demand", "Framework order", "Alphabetical"], key="result_psf_order")
-            competence = psf_views["psf_chart_demand"]
-            if not competence.empty:
-                result_count_chart(competence, "psf_competency", "job_ads", "PSF-AAI competencies linked to employer demand", order=psf_order, limit=limit)
-                takeaway(competence, "psf_competency", "job_ads")
-            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Framework order follows the active reference; role links can overlap.")
-            roles = linked.assign(psf_job_role=linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
-            roles = roles[roles.psf_job_role.ne("")]
-            roles = roles.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
-            roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
-            plot(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles")
-            cells = psf_views["psf_role_competency_demand"]
-            if not cells.empty:
-                _competency_heatmap_view(cells, roles, competence, limit)
-            else:
-                st.info("No role-level PSF-AAI competency evidence is available for this selection.")
-        else:
-            st.info("No PSF-AAI mapping evidence is available for this selection.")
+            if section == "PSF-AAI demand":
+                st.subheader("How does observed demand relate to PSF-AAI?")
+                st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
+                mappings = chart_mapping_rows(tables["psf_mapping"])
+                if not mappings.empty:
+                    chart_columns = [key for key in ("source_id", "psf_competency", "psf_job_role", "status", "normalized_skill") if key in mappings]
+                    all_linked = mappings.loc[mappings.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) &
+                                              mappings.psf_competency.fillna("").ne(""), chart_columns].copy()
+                    all_linked["psf_competency"] = all_linked.psf_competency.map(normalize_text)
+                    all_linked["psf_job_role"] = all_linked.psf_job_role.map(normalize_text)
+                    reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
+                    if "competency_name" not in reference:
+                        reference = reference.rename(columns={"psf_competency": "competency_name"})
+                    role_options = sorted(set(role for value in all_linked.psf_job_role for role in value.split("; ") if role))
+                    with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
+                        if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
+                            st.session_state["result_psf_role"] = "All"
+                        role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
+                        psf_order = st.selectbox("Competency order", ["Highest demand", "Framework order", "Alphabetical"], key="result_psf_order")
+                    linked = all_linked
+                    if role != "All":
+                        linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
+                        linked["psf_job_role"] = role
+                    role_denominator = linked.source_id.nunique()
+                    with loading_content("job_market_psf_charts", "psf_charts", columns=role_options[:8], rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
+                        def prepare_psf_charts():
+                            available = {"psf_chart_demand", "psf_role_competency_demand"}.issubset(tables)
+                            psf_views = (tables if role == "All" and available else
+                                         psf_demand_tables(linked, jobs, reference,
+                                                          denominator=role_denominator if role != "All" else denominator))
+                            roles = linked.assign(psf_job_role=linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
+                            roles = roles[roles.psf_job_role.ne("")]
+                            roles = roles.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
+                            roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
+                            return psf_views["psf_chart_demand"], roles, psf_views["psf_role_competency_demand"]
+                        reference_columns = [key for key in ("competency_id", "competency_name", "job_role") if key in reference]
+                        cache_key = digest([VERSION, role, denominator, frame_hash(linked), frame_hash(reference[reference_columns])])
+                        competence, roles, cells = _session_cached_value(
+                            "_fow_psf_chart_cache", cache_key, prepare_psf_charts, ttl=None, max_entries=2)
+                        with content():
+                            if not competence.empty:
+                                featured_result_chart(
+                                    "psf_competency", "job_ads", "Most linked competency",
+                                    role_denominator if role != "All" else denominator,
+                                    lambda: result_count_chart(competence, "psf_competency", "job_ads",
+                                                               "PSF-AAI competencies linked to employer demand",
+                                                               order=psf_order, limit=limit),
+                                    key="psf_competencies",
+                                )
+                            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Framework order follows the active reference; role links can overlap.")
+                            with st.container(border=True, key="job_market_featured_psf_roles"):
+                                role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
+                                with role_chart_column:
+                                    role_figure = result_count_chart(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", order=order, limit=limit)
+                                with distribution_column:
+                                    result_role_distribution(_plotted_counts(role_figure, "psf_job_role", "job_ads"))
+                            if not cells.empty:
+                                with st.container(border=True, key="job_market_featured_psf_heatmap"):
+                                    _competency_heatmap_view(cells, roles, competence, limit)
+                            else:
+                                st.info("No role-level PSF-AAI competency evidence is available for this selection.")
+                            st.html('<span data-fow-psf-ready="true" hidden></span>')
+                else:
+                    st.info("No PSF-AAI mapping evidence is available for this selection.")
+    loaded["sections"].add(section_key)
     records = st.expander("Selected job records", key="job_market_source_records", on_change="rerun")
     if records.open:
         with records:
             st.caption("Lowercase analysis values. Source IDs and case-sensitive links are preserved; original evidence is available in Reports.")
             display(tables["normalized_jobs"] if "normalized_jobs" in tables else analysis_job_values(jobs))
+
+
+def _unmapped_results(tables, meta):
+    st.caption("A missing PSF-AAI match does not establish a framework gap. Recurring phrases remain candidates for researcher review.")
+    order, limit = result_chart_options()
+    jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
+    views = tables if "chart_skill_occurrences" in tables else skill_chart_tables(skills, jobs)
+    counts = unmapped_chart_counts(views["chart_skill_occurrences"], tables["alignment_results"])
+    threshold = int(meta["settings"]["emerging_min_jobs"])
+    recurring = counts.loc[counts.job_ads.ge(threshold)].copy()
+    denominator = jobs.source_id.nunique() if "source_id" in jobs else 0
+    with st.container(horizontal=True, key="unmapped_summary", gap="medium"):
+        for key, label, value, icon in (("labels", "Unmapped skill labels", len(counts), "layers"),
+                                       ("recurring", "Recurring labels for review", len(recurring), "bar_chart")):
+            with st.container(key=f"unmapped_metric_{key}", width="stretch"):
+                st.metric(label, f"{value:,}", icon=f":material/{icon}:",
+                          help="Distinct chartable labels across the active study dataset, before the chart display limit.")
+        with st.container(key="unmapped_review_status", width="stretch"):
+            status = "Researcher review required" if len(counts) else "No unmapped labels to review"
+            st.html('<div class="fow-unmapped-status"><span class="material-symbols-rounded" aria-hidden="true">manage_search</span>'
+                    f'<div><strong>{escape(status)}</strong><p>Unmapped does not establish an emerging skill.</p></div></div>')
+    raw = tables["unmapped_skills"]
+    for key, title, shown, insight_heading in (
+        ("unmapped_evidence", "Unmapped skill evidence", counts, "Most frequent unmapped skill"),
+        ("unmapped_recurring", "Recurring unmapped phrases for review", recurring, "Recurring unmapped skill"),
+    ):
+        with st.container(border=True, key=f"{key}_panel"):
+            if shown.empty:
+                st.subheader(title, icon=":material/bar_chart:" if key == "unmapped_evidence" else ":material/manage_search:")
+                st.info("No chartable unmapped skills in the active dataset." if key == "unmapped_evidence" else
+                        f"No chartable unmapped labels meet the {threshold}-advertisement review threshold.")
+            else:
+                featured_result_chart("skill_label", "job_ads", insight_heading, denominator,
+                    lambda shown=shown, title=title: result_count_chart(shown, "skill_label", "job_ads", title,
+                                                                     order=order, limit=limit), key=key)
+            details = st.expander("Unmapped evidence (detailed)" if key == "unmapped_evidence" else "Recurring phrases (detailed)",
+                                  icon=":material/table_view:", key=f"{key}_details", on_change="rerun")
+            if details.open:
+                with details:
+                    evidence = (raw if key == "unmapped_evidence" or raw.empty else
+                                raw.loc[raw.normalized_skill.map(chart_skill_key).isin(shown.normalized_skill)].copy())
+                    display(ordered_result_table(evidence, "employer_skill", order, "employer_demand_count"))
+    st.caption("Wording variants share one chart label; each advertisement counts once per label. Detailed evidence retains original unmapped rows for audit, including groups excluded from the charts. Charts omit mapped groups; full evidence remains exportable.")
+    st.info(f"Review candidates require at least {threshold} distinct advertisements and NOT MAPPED status. Rejected or unreviewed fragments are not counted as employer skills. Recurrence alone does not establish emergence.", icon=":material/info:")
+
+
+def report_deliverables(tables, meta):
+    with st.container(key="reports_deliverables_heading", gap="xsmall"):
+        st.html('<header class="fow-deliverables-heading">'
+                '<span class="material-symbols-rounded" aria-hidden="true">description</span>'
+                '<h3>Research deliverables</h3>'
+                '<p>Downloads cover the active study dataset. Keep the metadata with the exported evidence.</p>'
+                '</header>')
+    cards = [
+        ("excel", "Research Results (Excel)", "Download the full research results in spreadsheet format (.xlsx).", "table_view",
+         "Download research_results.xlsx", lambda: export_excel(tables, meta), "research_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ("report", "Written Research Report", "Download the generated research report draft for review (.md).", "description",
+         "Download report (.md)", lambda: export_research_report(tables, meta), "philippine_job_ads_psf_aai_report.md", "text/markdown"),
+        ("summary", "HTML Research Summary", "Download the research summary in HTML format.", "code",
+         "Download summary (HTML)", lambda: export_html(tables, meta), "research_summary.html", "text/html"),
+        ("metadata", "Analysis Metadata", "Download the dataset scope, counts, settings and analysis metadata.", "database",
+         "Download metadata", lambda: json.dumps(meta, indent=2, default=str), "analysis_metadata.json", "application/json"),
+    ]
+    with st.container(horizontal=True, key="reports_deliverables_grid", gap="medium", vertical_alignment="top"):
+        for key, title, description, icon, label, content, filename, mime in cards:
+            with st.container(border=True, key=f"report_deliverable_{key}", width="stretch", gap="small"):
+                st.html(f'<div class="fow-deliverable-icon"><span class="material-symbols-rounded" aria-hidden="true">{icon}</span></div>')
+                st.markdown(f"#### {title}")
+                st.write(description)
+                st.download_button(label, content, filename, mime, key=f"report_download_{key}",
+                                   type="primary" if key == "excel" else "secondary", icon=":material/download:",
+                                   width="stretch", on_click="ignore")
+        with st.container(border=True, key="report_deliverable_snapshot", width="stretch", gap="small"):
+            st.html('<div class="fow-deliverable-icon"><span class="material-symbols-rounded" aria-hidden="true">photo_camera</span></div>')
+            st.markdown("#### Report Snapshot")
+            st.write("Save these research files together on this host.")
+            save_snapshot = action_button("Save snapshot locally", key="save_report_snapshot", icon=":material/download:", width="stretch")
+    if save_snapshot:
+        with st.spinner("Preparing the complete report snapshot…"):
+            workbook = export_excel(tables, meta)
+            research_report = export_research_report(tables, meta)
+            summary = export_html(tables, meta)
+        folder = ROOT / "outputs/reports" / timestamp().replace(":", "-")
+        folder.mkdir(parents=True, exist_ok=True)
+        storage.atomic_bytes(folder / "research_results.xlsx", workbook)
+        storage.atomic_bytes(folder / "philippine_job_ads_psf_aai_report.md", research_report)
+        storage.atomic_bytes(folder / "research_summary.html", summary)
+        storage.atomic_bytes(folder / "analysis_metadata.json", json.dumps(meta, indent=2, default=str).encode())
+        for name, frame in tables.items():
+            storage.atomic_bytes(folder / f"{name}.csv", export_csv(frame))
+        st.success(f"Report saved to {folder}")
 
 
 def research_page(page):
@@ -2086,347 +2668,440 @@ def research_page(page):
         "Reports": "Export the selected evidence, research tables, and analysis metadata.",
     }
     page_intro(page, descriptions.get(page, ""))
-    if not current_analysis():
-        return
-    tables, meta = load_data_with_skeleton(filtered_bundle, height=300)
-    jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
-    demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
-        _job_market_results(tables, meta)
-    elif page == "PSF Mapping":
-        st.caption("Employer skill → PSF-AAI competency. Roles and levels are reference metadata, not inferred applicant attainment. Similarity scores are heuristic evidence, not calibrated probabilities.")
-        psf_mapping_review(skills, jobs, storage.read_frame("cleaned_psf_aai"),
-                           tables["psf_mapping"], tables["psf_mapping_reviews"])
-        st.subheader("Competency demand")
-        st.caption("Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
-        order, limit = result_chart_options()
-        competence = tables["psf_competency_demand"]
-        if not competence.empty:
-            psf_order = st.selectbox("Competency order", ["Framework order", "Highest demand", "Alphabetical"], key="result_psf_order")
-            plot_competence = tables.get("psf_chart_demand")
-            if plot_competence is None:
-                plot_competence = competence.assign(psf_competency=competence.psf_competency.map(normalize_text), framework_order=range(len(competence)))
-                plot_competence = plot_competence.rename(columns={"job_ad_count": "job_ads"})
-            result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=psf_order, limit=limit)
-        display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
-        st.subheader("Occurrence-level mapping evidence")
-        display(ordered_result_table(tables["psf_mapping"], "psf_competency", order))
-    elif page == "Employer–PSF Alignment":
-        st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
-        active_reference = storage.read_frame("cleaned_psf_aai")
-        has_range = ("range_of_application" in active_reference and
-                     active_reference.range_of_application.fillna("").astype(str).str.strip().ne("").any())
-        st.caption("Results show the PSF competency description and verified Range of Application as supporting reference evidence; these fields help researchers inspect the comparison and do not establish equivalence." if has_range else "Results show the PSF competency description as supporting evidence. The active TESDA PDF has no separate Range of Application field, so no range text is available to compare.")
-        rates = meta["rates_before_status_display_filter"]
-        cols = st.columns(3)
-        for col, field in zip(cols, ("alignment_rate", "partially_aligned_rate", "unmapped_rate")):
-            if rates.get(field) is not None:
-                col.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%")
-        order, limit = result_chart_options()
-        chart(distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status", "Status of Phrase–Competency Evidence Groups", limit=limit, order=order))
-        st.subheader("Phrase-level results and PSF-AAI basis")
-        display(ordered_result_table(alignment, "employer_skill", order))
-        display(ordered_result_table(demand, "employer_skill", order, "employer_demand_count"))
-        st.caption(meta["denominators"])
-    elif page == "Unmapped / Emerging Skills":
-        st.caption("Not clearly mapped to PSF-AAI does not establish that the framework lacks a skill. Emerging candidates require human and longitudinal validation.")
-        order, limit = result_chart_options()
-        for key, title in (("unmapped_skills", "Unmapped skill evidence"), ("emerging_skills", "Recurring unmapped phrases for review")):
-            st.subheader(title)
-            frame = tables[key]
-            if not frame.empty:
-                views = tables if "chart_skill_demand" in tables else skill_chart_tables(skills, jobs)
-                occurrences = views["chart_skill_occurrences"]
-                rows = occurrences[occurrences.original_normalized_phrase.isin(frame.normalized_skill)]
-                # A mapped formatting variant must not inflate an unmapped variant's count.
-                mapped_variants = alignment.loc[alignment.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]), "normalized_skill"]
-                mixed_keys = occurrences.loc[occurrences.original_normalized_phrase.isin(mapped_variants), "normalized_phrase"]
-                rows = rows[~rows.normalized_phrase.isin(mixed_keys)]
-                shown = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
-                if not shown.empty:
-                    result_count_chart(shown, "skill_label", "job_ads", title, order="Highest demand", limit=limit)
-                st.caption("Documented wording variants share one label; each ad counts once. This table retains original phrase evidence. Mapped groups are omitted; unclear phrases remain in the chart audit.")
-            display(ordered_result_table(frame, "employer_skill", order, "employer_demand_count"))
-        st.caption(f"Emerging-candidate screening requires at least {meta['settings']['emerging_min_jobs']} distinct job ads and NOT MAPPED status. Rejected/unreviewed n-grams are not counted as employer skills.")
-    elif page == "Reports":
-        meta = dict(meta, chart_view_settings={
-            "order": st.session_state.get("result_chart_order", "Highest demand"),
-            "psf_order": st.session_state.get("result_psf_order", "Framework order"),
-            "job_title_view": st.session_state.get("result_title_view", "Most common job titles"),
-            "items_per_chart": st.session_state.get("result_chart_limit", 15),
-            "focused_job_title": st.session_state.get("result_focus_job_title"),
-            "focused_location": st.session_state.get("result_focus_location"),
-            "note": "Display settings do not limit the complete exported tables or selected-job denominator.",
-        })
-        tables.update(job_profile_tables(jobs))
-        tables["corrections"] = corrections()
-        def load_report_tables():
-            extras = {
-                "nlp_processed": storage.read_frame("nlp_processed"),
-                "usability": storage.read_frame("usability"),
-            }
-            for slug in ("nb", "lr"):
-                for report_name in ("per_class", "confusion", "predictions"):
-                    extras[f"evaluation_{slug}_{report_name}"] = storage.read_frame(
-                        f"evaluation_{slug}_{report_name}"
-                    )
-            for kind in FIELDS:
-                extras["quality_"+kind] = storage.read_frame("quality_"+kind)
-            return extras
-        tables.update(load_data_with_skeleton(load_report_tables, height=220))
-        downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports", on_change="rerun")
-        if downloads.open:
-            with downloads:
-                for name, frame in tables.items():
-                    st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
-        st.subheader("Research deliverables")
-        st.caption("Downloads use the current sample and filters. Keep the metadata with the exported evidence.")
-        st.download_button("Download research_results.xlsx", lambda: export_excel(tables, meta), "research_results.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", icon=":material/table_view:", on_click="ignore")
-        st.download_button("Download written research report (.md)", lambda: export_research_report(tables, meta), "philippine_job_ads_psf_aai_report.md", "text/markdown", on_click="ignore")
-        st.download_button("Download HTML research summary", lambda: export_html(tables, meta), "research_summary.html", "text/html", on_click="ignore")
-        st.download_button("Download analysis metadata", json.dumps(meta, indent=2, default=str), "analysis_metadata.json", "application/json")
-        if action_button("Save this report snapshot locally"):
-            with st.spinner("Preparing the complete report snapshot…"):
-                workbook = export_excel(tables, meta)
-                research_report = export_research_report(tables, meta)
-                summary = export_html(tables, meta)
-            folder = ROOT / "outputs/reports" / timestamp().replace(":", "-")
-            folder.mkdir(parents=True, exist_ok=True)
-            storage.atomic_bytes(folder / "research_results.xlsx", workbook)
-            storage.atomic_bytes(folder / "philippine_job_ads_psf_aai_report.md", research_report)
-            storage.atomic_bytes(folder / "research_summary.html", summary)
-            storage.atomic_bytes(folder / "analysis_metadata.json", json.dumps(meta, indent=2, default=str).encode())
-            for name, frame in tables.items():
-                storage.atomic_bytes(folder / f"{name}.csv", export_csv(frame))
-            st.success(f"Report saved to {folder}")
+        analysis_workflow()
+    loading_kind = {"Job Market Analysis": "market", "Employer–PSF Alignment": "alignment",
+                    "PSF Mapping": "mapping", "Unmapped / Emerging Skills": "unmapped", "Reports": "reports"}[page]
+    loading_cards = 3 if page == "Employer–PSF Alignment" else 4 if page == "Job Market Analysis" else None
+    loading_view = st.session_state.get("result_section", "Skills") if page == "Job Market Analysis" else "selected" if st.session_state.get("psf_review_occurrence_choice") else None
+    with loading_content("research_results_content", loading_kind, cards=loading_cards, view=loading_view,
+                         rows=st.session_state.get("result_chart_limit", 15)) as content:
+        if not current_analysis():
+            return
+        tables, meta = filtered_bundle()
+        jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
+        demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
+        active_reference = storage.read_frame("cleaned_psf_aai") if page in {"PSF Mapping", "Employer–PSF Alignment"} else None
+        if page == "Reports":
+            meta = dict(meta, chart_view_settings={
+                "order": st.session_state.get("result_chart_order", "Highest demand"),
+                "psf_order": st.session_state.get("result_psf_order", "Framework order"),
+                "job_title_view": st.session_state.get("result_title_view", "Most common job titles"),
+                "items_per_chart": st.session_state.get("result_chart_limit", 15),
+                "focused_job_title": st.session_state.get("result_focus_job_title"),
+                "focused_location": st.session_state.get("result_focus_location"),
+                "note": "Display settings do not limit the complete exported tables or selected-job denominator.",
+            })
+            tables.update(job_profile_tables(jobs))
+            tables["corrections"] = corrections()
+            def load_report_tables():
+                extras = {
+                    "nlp_processed": storage.read_frame("nlp_processed"),
+                    "usability": storage.read_frame("usability"),
+                }
+                for slug in ("nb", "lr"):
+                    for report_name in ("per_class", "confusion", "predictions"):
+                        extras[f"evaluation_{slug}_{report_name}"] = storage.read_frame(
+                            f"evaluation_{slug}_{report_name}"
+                        )
+                for kind in FIELDS:
+                    extras["quality_"+kind] = storage.read_frame("quality_"+kind)
+                return extras
+            tables.update(load_report_tables())
+        with content():
+            if page == "Job Market Analysis":
+                _job_market_results(tables, meta, revision=st.session_state.get("_fow_loaded_bundle_revision"))
+            elif page == "PSF Mapping":
+                with st.container(border=True, key="psf_mapping_review_panel"):
+                    psf_mapping_review(skills, jobs, active_reference,
+                                       tables["psf_mapping"], tables["psf_mapping_reviews"])
+                with st.container(border=True, key="psf_mapping_demand_panel"):
+                    with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
+                        section_heading("Competency demand", "bar_chart",
+                                        "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
+                    order, limit = result_chart_options()
+                    competence = tables["psf_competency_demand"]
+                    if not competence.empty:
+                        psf_order = st.selectbox("Competency order", ["Framework order", "Highest demand", "Alphabetical"], key="result_psf_order")
+                        plot_competence = tables.get("psf_chart_demand")
+                        if plot_competence is None:
+                            plot_competence = psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
+                        with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
+                            with st.container(key="psf_mapping_demand_chart", width="stretch"):
+                                plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=psf_order, limit=limit, highlight_max=True)
+                            with st.container(key="psf_mapping_demand_insight", width="stretch"):
+                                psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique())
+                    display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
+                evidence = st.expander("Occurrence-level mapping evidence", icon=":material/layers:",
+                                       key="psf_mapping_evidence", on_change="rerun")
+                if evidence.open:
+                    with evidence:
+                        display(ordered_result_table(tables["psf_mapping"], "psf_competency", order))
+            elif page == "Employer–PSF Alignment":
+                st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
+                has_range = ("range_of_application" in active_reference and
+                             active_reference.range_of_application.fillna("").astype(str).str.strip().ne("").any())
+                st.caption("Results show the PSF competency description and verified Range of Application as supporting reference evidence; these fields help researchers inspect the comparison and do not establish equivalence." if has_range else "Results show the PSF competency description as supporting evidence. The active TESDA PDF has no separate Range of Application field, so no range text is available to compare.")
+                rates = meta["rates_before_status_display_filter"]
+                with st.container(horizontal=True, gap="medium", key="alignment_metrics"):
+                    for field, icon in (("alignment_rate", "bar_chart"), ("partially_aligned_rate", "layers"), ("unmapped_rate", "warning")):
+                        if rates.get(field) is not None:
+                            with st.container(key=f"alignment_metric_{field}"):
+                                st.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%", icon=f":material/{icon}:")
+                order, limit = result_chart_options()
+                with st.container(border=True, key="employer_psf_status_panel"):
+                    status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
+                                                "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)
+                    status_chart.update_traces(texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
+                                               textfont=dict(color="#171923", size=12))
+                    maximum = max((max(trace.x) for trace in status_chart.data if len(trace.x)), default=0)
+                    status_chart.update_xaxes(range=[0, max(1, maximum * 1.05)])
+                    with st.container(horizontal=True, key="alignment_chart_and_insight", gap="medium", vertical_alignment="center"):
+                        with st.container(key="alignment_status_chart", width="stretch"):
+                            chart(status_chart)
+                        with st.container(key="alignment_status_insight", width="stretch"):
+                            alignment_status_insight(status_chart)
+                evidence = st.expander("Phrase-level results and PSF-AAI basis", icon=":material/layers:",
+                                       key="employer_psf_evidence", on_change="rerun")
+                if evidence.open:
+                    with evidence:
+                        st.caption("Phrase–competency evidence groups")
+                        display(ordered_result_table(alignment, "employer_skill", order))
+                        st.caption("Occurrence-level employer demand")
+                        display(ordered_result_table(demand, "employer_skill", order, "employer_demand_count"))
+                with st.container(key="employer_psf_denominators"):
+                    st.info(meta["denominators"], icon=":material/info:")
+            elif page == "Unmapped / Emerging Skills":
+                _unmapped_results(tables, meta)
+            elif page == "Reports":
+                downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports", icon=":material/database:", on_change="rerun")
+                if downloads.open:
+                    with downloads:
+                        for name, frame in tables.items():
+                            st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
+                report_deliverables(tables, meta)
 
 
 def feedback():
     page_intro("Feedback", "Record corrections and usability feedback while preserving the original predictions.")
-    reviewer = st.text_input("Reviewer ID", key="feedback_reviewer")
-    source = st.selectbox("Correction target", ["extraction", "alignment"])
-    if current_analysis():
-        tables, _ = load_data_with_skeleton(filtered_bundle, height=240)
-        frame = tables["all_candidates"] if source == "extraction" else tables["alignment_results"]
-        key = "extraction_id" if source == "extraction" else "alignment_id"
-        if not frame.empty:
-            display(frame)
-            row_id = st.selectbox("Record ID", frame[key].tolist())
-            row = frame.loc[frame[key].eq(row_id)].iloc[0]
-            if source == "extraction":
-                st.caption("Review one or several competency links for this occurrence on PSF Mapping.")
-            fields = ["normalized_phrase", "competency_category", "accepted"] if source == "extraction" else ["status"]
-            field = st.selectbox("Field to correct", fields)
-            st.write("Original/current value:", str(row[field]))
-            if field == "status":
-                corrected = st.selectbox("Corrected value", STATUSES)
-            elif field == "accepted":
-                corrected = st.selectbox("Corrected value", ["True", "False"])
-            else:
-                corrected = st.text_input("Corrected value", str(row[field]))
-            comment = st.text_area("Reason / comment")
-            if action_button("Save correction", key=f"save_correction_{source}_{row_id}"):
-                if not corrected.strip():
-                    raise ValueError("Enter a corrected value.")
-                save_correction(source, row_id, field, row[field], corrected, reviewer, comment)
-                st.success("Correction saved separately from original predictions. Dependent comparisons use the corrected value.")
-            if source == "extraction" and action_button(
-                "Add this reviewed phrase to training data",
-                key=f"add_reviewed_phrase_{source}_{row_id}",
-            ):
-                save_annotations(pd.DataFrame([{"phrase": row.normalized_phrase, "label": row.competency_category, "psf_competency": row.psf_competency, "source_type": "jobs", "source_id": row.source_id}]), reviewer)
-                st.success("Added to annotations. Retraining requires an explicit action on ML Training.")
-    correction_rows = load_data_with_skeleton(corrections, height=140)
-    display(correction_rows)
-    st.subheader("Usability evaluation")
-    cfg = storage.settings()
-    with st.form("usability"):
-        respondent_type = st.selectbox("Respondent type", ["industry professionals", "employers", "researchers", "job seekers"])
-        responses = {name: st.slider(name.replace("_", " ").title(), cfg["likert_min"], cfg["likert_max"], cfg["likert_min"]) for name in ("ease_of_use", "clarity", "navigation", "usefulness", "visualization_quality", "overall_satisfaction")}
-        comment = st.text_area("Evaluation comment")
-        if action_form_submit_button("Save usability evaluation"):
-            if not reviewer.strip():
-                raise ValueError("Enter a reviewer ID above the form.")
-            record = responses | {"reviewer": reviewer, "respondent_type": respondent_type, "comment": comment, "timestamp": timestamp(), "scale_min": cfg["likert_min"], "scale_max": cfg["likert_max"]}
-            data = pd.concat([storage.read_frame("usability"), pd.DataFrame([record])], ignore_index=True)
-            storage.save_frame("usability", data)
-            st.success("Evaluation recorded.")
-    usability = load_data_with_skeleton(lambda: storage.read_frame("usability"), height=120)
-    if not usability.empty:
-        display(usability)
-        st.download_button("Download usability evaluations", export_csv(usability), "usability.csv")
-    stakeholder = load_data_with_skeleton(lambda: storage.read_frame("cleaned_stakeholder"), height=120)
-    if not stakeholder.empty:
-        st.subheader("Stakeholder evaluations")
-        display(stakeholder)
-        for field in ("importance_rating", "usability_rating"):
-            numeric = pd.to_numeric(stakeholder[field], errors="coerce")
-            st.write(f"{field}: {numeric.count()} numeric responses; mean {numeric.mean():.2f}" if numeric.count() else f"{field}: no numeric responses")
+    with loading_content("feedback_summary", "metrics", cards=4) as summary_content:
+        frame = pd.DataFrame()
+        with content_section("Add correction", "edit_square", "feedback_correction"):
+            with st.container(horizontal=True, key="feedback_identity", vertical_alignment="bottom", wrap=True):
+                reviewer = st.text_input("Reviewer ID", key="feedback_reviewer", width="stretch")
+                source = st.selectbox("Correction target", ["extraction", "alignment"], width="stretch")
+            with loading_content("feedback_records", "table", columns=EXTRACTION_COLUMNS if source == "extraction" else ALIGNMENT_COLUMNS) as content:
+                if current_analysis():
+                    tables, _ = filtered_bundle()
+                    frame = tables["all_candidates"] if source == "extraction" else tables["alignment_results"]
+                    key = "extraction_id" if source == "extraction" else "alignment_id"
+                    with content():
+                        if not frame.empty:
+                            display(frame)
+                            record_column, field_column = st.columns(2, gap="medium")
+                            with record_column:
+                                row_id = st.selectbox("Record ID", frame[key].tolist())
+                            row = frame.loc[frame[key].eq(row_id)].iloc[0]
+                            if source == "extraction":
+                                st.caption("Review one or several competency links for this occurrence on PSF Mapping.")
+                            fields = ["normalized_phrase", "competency_category", "accepted"] if source == "extraction" else ["status"]
+                            with field_column:
+                                field = st.selectbox("Field to correct", fields)
+                            original_column, corrected_column = st.columns(2, gap="medium")
+                            with original_column:
+                                st.text_input("Original/current value", str(row[field]), disabled=True, key=f"feedback_current_{source}_{row_id}_{field}")
+                            with corrected_column:
+                                if field == "status":
+                                    corrected = st.selectbox("Corrected value", STATUSES)
+                                elif field == "accepted":
+                                    corrected = st.selectbox("Corrected value", ["True", "False"])
+                                else:
+                                    corrected = st.text_input("Corrected value", str(row[field]))
+                            comment = st.text_area("Reason / comment")
+                            if action_button("Save correction", key=f"save_correction_{source}_{row_id}", type="primary", icon=":material/save:"):
+                                if not corrected.strip():
+                                    raise ValueError("Enter a corrected value.")
+                                save_correction(source, row_id, field, row[field], corrected, reviewer, comment)
+                                st.success("Correction saved separately from original predictions. Dependent comparisons use the corrected value.")
+                            if source == "extraction" and action_button(
+                                "Add this reviewed phrase to training data",
+                                key=f"add_reviewed_phrase_{source}_{row_id}",
+                            ):
+                                save_annotations(pd.DataFrame([{"phrase": row.normalized_phrase, "label": row.competency_category, "psf_competency": row.psf_competency, "source_type": "jobs", "source_id": row.source_id}]), reviewer)
+                                st.success("Added to annotations. Retraining requires an explicit action on ML Training.")
+        with loading_content("feedback_correction_history", "table", columns=["table", "row_id", "field", "original_prediction", "corrected_prediction", "reviewer", "comment", "timestamp"]) as content:
+            correction_rows = load_data_with_skeleton(corrections, height=140)
+            with content():
+                with content_section("Recent corrections", "history", "feedback_history"):
+                    if correction_rows.empty:
+                        st.caption("No saved corrections yet.")
+                    else:
+                        display(correction_rows)
+        with summary_content():
+            content_metrics([
+                ("Available records", f"{len(frame):,}", "description"),
+                ("Saved corrections", f"{len(correction_rows):,}", "edit_square"),
+                ("Correction target", source.title(), "layers"),
+                ("Reviewer", reviewer.strip() or "Not set", "person"),
+            ], "feedback")
+        with content_section("Usability evaluation", "bar_chart", "feedback_usability"):
+            with loading_content("feedback_usability_form", "form", controls=["select", *["slider" for _ in USABILITY_ITEMS], "textarea", "button"], view="usability") as content:
+                cfg = storage.settings()
+                with content():
+                    with st.form("usability", border=False):
+                        left, right = st.columns([1, 2.5], gap="large")
+                        with left:
+                            respondent_type = st.selectbox("Respondent type", ["industry professionals", "employers", "researchers", "job seekers"])
+                            content_note("Evaluation scale", f"Rate each aspect from {cfg['likert_min']} (low) to {cfg['likert_max']} (high).", icon="info")
+                        with right:
+                            responses = {name: st.slider(name.replace("_", " ").title(), cfg["likert_min"], cfg["likert_max"], cfg["likert_min"]) for name in USABILITY_ITEMS}
+                        comment = st.text_area("Evaluation comment")
+                        if action_form_submit_button("Save usability evaluation", type="primary", icon=":material/save:"):
+                            if not reviewer.strip():
+                                raise ValueError("Enter a reviewer ID above the form.")
+                            record = responses | {"reviewer": reviewer, "respondent_type": respondent_type, "comment": comment, "timestamp": timestamp(), "scale_min": cfg["likert_min"], "scale_max": cfg["likert_max"]}
+                            data = pd.concat([storage.read_frame("usability"), pd.DataFrame([record])], ignore_index=True)
+                            storage.save_frame("usability", data)
+                            st.success("Evaluation recorded.")
+        with loading_content("feedback_usability_results", "table", columns=["ease_of_use", "clarity", "navigation", "usefulness", "visualization_quality", "overall_satisfaction", "reviewer", "respondent_type", "comment", "timestamp", "scale_min", "scale_max"]) as content:
+            usability = load_data_with_skeleton(lambda: storage.read_frame("usability"), height=120)
+            with content():
+                if not usability.empty:
+                    display(usability)
+                    st.download_button("Download usability evaluations", export_csv(usability), "usability.csv")
+        with loading_content("feedback_stakeholders", "table", columns=FIELDS["stakeholder"]) as content:
+            stakeholder = load_data_with_skeleton(lambda: storage.read_frame("cleaned_stakeholder"), height=120)
+            with content():
+                if not stakeholder.empty:
+                    st.subheader("Stakeholder evaluations")
+                    display(stakeholder)
+                    for field in ("importance_rating", "usability_rating"):
+                        numeric = pd.to_numeric(stakeholder[field], errors="coerce")
+                        st.write(f"{field}: {numeric.count()} numeric responses; mean {numeric.mean():.2f}" if numeric.count() else f"{field}: no numeric responses")
 
 def methodology():
     page_intro("Methodology", "Definitions, analytical decisions, and limits of the study.")
     analysis_workflow()
-    st.markdown((Path(__file__).resolve().parents[1] / "METHODOLOGY.md").read_text(encoding="utf-8"))
+    with loading_content("methodology_document", "document", rows=8) as content:
+        document = (Path(__file__).resolve().parents[1] / "METHODOLOGY.md").read_text(encoding="utf-8")
+        with content():
+            st.download_button("Download methodology", document, "methodology.md", "text/markdown",
+                               key="download_methodology", icon=":material/download:", on_click="ignore")
+            sections = document.split("\n## ")
+            with st.container(key="methodology_sections"):
+                introduction = sections[0].split("\n", 1)[1] if sections[0].startswith("# ") else sections[0]
+                st.markdown(introduction)
+                for index, section in enumerate(sections[1:]):
+                    title, _, body = section.partition("\n")
+                    with st.expander(title, expanded=index == 0, icon=":material/menu_book:"):
+                        st.markdown(body)
+
 
 def research_readiness():
     page_intro("Research readiness", "A practical audit of the current data and model workflow. Passing app checks does not by itself make results ready for a thesis or publication.")
-    try:
-        path = resolve_training_file(storage.ROOT)
-        def load_readiness_labels():
-            current_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
-                              else load_labeled_data(path))
-            current_usable, current_validation = cached_label_validation(
-                current_labels, require_provenance=True
-            )
-            return current_labels, current_usable, current_validation
-        labels, usable, validation = load_data_with_skeleton(load_readiness_labels, height=220)
-    except (ValueError, OSError) as exc:
-        path, labels, usable, validation = None, pd.DataFrame(), pd.DataFrame(), {"errors": [str(exc)], "warnings": []}
-    metadata = read_model_metadata()
-    audit = assess_research_readiness(labels, metadata, validation)
-    history_path = storage.ROOT / "data/feedback/annotation_history.csv"
-    history = (pd.DataFrame(supabase_store.read_annotation_history(supabase_store.get_token())) if supabase_store.configured()
-               else pd.read_csv(history_path, dtype=str, keep_default_na=False) if history_path.is_file() else pd.DataFrame())
-    disagreements = historical_category_disagreements(history)
-    profile = research_data_profile(labels)
-    st.warning("Not yet ready for defensible research findings" if audit["findings"] else "No software risks detected; researcher sign-off is still required")
-    st.caption("This page separates mechanical checks from decisions that require the research team. It never certifies labels, sampling, or model validity automatically.")
-    a, b, c, d = st.columns(4)
-    a.metric("Saved labels", f"{len(labels):,}")
-    b.metric("Usable distinct phrases", f"{validation.get('rows_used', 0):,}")
-    source_count = labels.source_id.fillna("").astype(str).str.strip().nunique() if "source_id" in labels else 0
-    c.metric("Distinct job-ad source IDs", f"{source_count:,}")
-    d.metric("Reviewer ID spellings", f"{len(audit['reviewer_ids']):,}")
-    st.subheader("Active job-ad sample")
-    jobs = load_data_with_skeleton(lambda: storage.read_frame("cleaned_jobs"), height=160)
-    if jobs.empty:
-        st.warning("No cleaned job-ad sample is active. Upload, review, and save the study sample before extracting or reporting findings.")
-    else:
-        job_sources = jobs.get("source_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
-        job_titles = jobs.get("job_title", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
-        posting_dates = pd.to_datetime(jobs.get("posting_date", pd.Series(dtype=str)), errors="coerce").dropna()
-        scope_reviewed = bool(storage.read_json("cleaning_jobs", {}).get("philippine_aai_scope_reviewed", False))
-        job_a, job_b, job_c, job_d = st.columns(4)
-        job_a.metric("Cleaned job ads", f"{len(jobs):,}")
-        job_b.metric("Distinct ad IDs", f"{job_sources[job_sources.ne('')].nunique():,}")
-        job_c.metric("Job titles", f"{job_titles[job_titles.ne('')].nunique():,}")
-        job_d.metric("Scope review recorded", "Yes" if scope_reviewed else "No")
-        if not posting_dates.empty:
-            st.caption(f"Posting dates in the active file: {posting_dates.min().date()} to {posting_dates.max().date()}. A saved scope check records a researcher action; it does not independently verify every ad.")
-        else:
-            st.caption("Posting dates are missing or could not be parsed. Record the sample collection window in the study notes.")
-        label_sources = set(labels.get("source_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip())
-        active_sources = set(job_sources[job_sources.ne("")])
-        shared_sources = label_sources & active_sources
-        if not shared_sources:
-            st.warning("The labeled phrases come from different source IDs than the active 16-ad analysis sample. Treat classifier predictions on this sample as exploratory and review them against each ad.")
-        else:
-            st.caption(f"{len(shared_sources)} source ID(s) occur in both the labeled phrase data and the active analysis sample.")
-        extraction_meta = storage.read_json("extraction_metadata", {})
-        if not extraction_meta or not extraction_freshness(extraction_meta)[1]:
-            st.warning("The saved extraction is out of date. Run Competency Extraction again after finalizing the job sample, reviewed PSF-AAI reference, and selected model before using reports.")
-        elif not extraction_meta.get("model_available"):
-            st.info("The current extraction was created without the selected classifier. Rerun extraction if you intend to use classifier categories.")
-        else:
-            st.success("The saved extraction matches the current jobs, taxonomy, labels, settings, and model.")
-    st.subheader("Where the labels came from")
-    st.caption("Counts below describe saved annotation rows and distinct phrases within each posting. Several phrase rows from one posting still represent one job ad, not independent observations.")
-    display(profile["sources"])
-    st.subheader("Reviewer IDs recorded")
-    st.caption("Spellings are shown exactly as saved. The app does not merge or correct reviewer identities; confirm whether variants belong to the same person before reporting reviewer counts.")
-    display(profile["reviewers"])
-    class_distribution = validation.get("class_distribution", {})
-    if class_distribution:
-        classes = pd.DataFrame([{"category": name, "distinct usable phrases": count}
-                                for name, count in class_distribution.items()])
-        classes["share of usable phrases"] = classes["distinct usable phrases"] / max(1, int(validation.get("rows_used", 0)))
-        classes["share of usable phrases"] = classes["share of usable phrases"].map(lambda value: f"{value:.1%}")
-        st.subheader("Categories included in model training")
-        st.caption("IRRELEVANT rows and duplicate phrases are excluded from this count. A model score cannot make up for narrow source coverage or inconsistent labels.")
-        display(classes.sort_values("distinct usable phrases", ascending=False, ignore_index=True))
-    st.subheader("What needs attention")
-    for item in audit["findings"]:
-        st.warning(f"**{item['title']}**\n\n{item['detail']}")
-    if not disagreements.empty:
-        st.subheader("Earlier category disagreements to review")
-        st.caption("These are historical saved decisions, not current rows in the training table. The table is read-only; use the source evidence and your labeling protocol to decide whether any follow-up is needed.")
-        display(disagreements)
-    with st.expander("Dataset and model checks", expanded=False):
-        if validation:
-            st.json(validation)
-        if metadata:
-            st.json({key: metadata.get(key) for key in ("training_timestamp", "training_file", "rows_available", "rows_used", "number_of_classes", "selected_model", "split")})
-        else:
-            st.info("No saved classifier metadata is available.")
-    st.subheader("Recommended next actions")
-    st.markdown("1. Confirm every ad meets the written Philippine AI/analytics inclusion rules; remove out-of-scope ads with a saved audit trail.\n2. Label phrases from more distinct job ads; the app's 20-source warning threshold is only a workflow flag, not a statistically justified sample-size target. More phrases from the same ads do not replace independent sources.\n3. Reconcile reviewer IDs with the actual reviewers, agree on category definitions, double-code a planned subset, and document disagreement resolution.\n4. Rerun extraction after the final sample, framework, and model are selected; manually verify phrases and PSF-AAI mappings against source evidence.\n5. Train only for an explicit classifier purpose and only when whole-ad holdout evaluation is possible. Keep its metrics exploratory until evaluated on untouched job-ad sources.\n6. Report job-ad counts and percentages using the number of eligible, reviewed ads as the denominator; archive source URLs, collection dates, inclusion rules, and the dataset hash.")
-    if path:
-        st.caption(f"Audited training file: `{project_relative_path(path)}`")
+    with loading_content("readiness_review_audit", "readiness", cards=4) as content:
+        try:
+            path = resolve_training_file(storage.ROOT)
+            def load_readiness_labels():
+                current_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
+                                  else load_labeled_data(path))
+                current_usable, current_validation = cached_label_validation(
+                    current_labels, require_provenance=True
+                )
+                return current_labels, current_usable, current_validation
+            labels, usable, validation = load_data_with_skeleton(load_readiness_labels, height=220)
+        except (ValueError, OSError) as exc:
+            path, labels, usable, validation = None, pd.DataFrame(), pd.DataFrame(), {"errors": [str(exc)], "warnings": []}
+        metadata = read_model_metadata()
+        audit = assess_research_readiness(labels, metadata, validation)
+        history_path = storage.ROOT / "data/feedback/annotation_history.csv"
+        history = (pd.DataFrame(supabase_store.read_annotation_history(supabase_store.get_token())) if supabase_store.configured()
+                   else pd.read_csv(history_path, dtype=str, keep_default_na=False) if history_path.is_file() else pd.DataFrame())
+        disagreements = historical_category_disagreements(history)
+        profile = research_data_profile(labels)
+        with content():
+            st.warning("Not yet ready for defensible research findings" if audit["findings"] else "No software risks detected; researcher sign-off is still required", icon=":material/info:")
+            st.caption("This page separates mechanical checks from decisions that require the research team. It never certifies labels, sampling, or model validity automatically.")
+            sources = labels.get("source_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+            content_metrics([
+                ("Saved labels", f"{len(labels):,}", "layers"),
+                ("Usable distinct phrases", f"{validation.get('rows_used', 0):,}", "sell"),
+                ("Distinct job-ad source IDs", f"{sources[sources.ne('')].nunique():,}", "database"),
+                ("Reviewer ID spellings", f"{len(audit['reviewer_ids']):,}", "person"),
+            ], "readiness")
+            with loading_content("readiness_job_audit", "study_metrics", cards=4) as content:
+                jobs = load_data_with_skeleton(lambda: storage.read_frame("cleaned_jobs"), height=160)
+                with content():
+                    if jobs.empty:
+                        with content_section("Active study dataset", "work", "readiness_study"):
+                            st.warning("No cleaned study dataset is active. Upload, review, and save the job ads before extracting or reporting findings.")
+                    else:
+                        job_sources = jobs.get("source_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+                        job_titles = jobs.get("job_title", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+                        posting_dates = pd.to_datetime(jobs.get("posting_date", pd.Series(dtype=str)), errors="coerce").dropna()
+                        scope_reviewed = bool(storage.read_json("cleaning_jobs", {}).get("philippine_aai_scope_reviewed", False))
+                        with st.container(horizontal=True, key="readiness_study_metrics", vertical_alignment="center", gap="medium", wrap=True):
+                            with st.container(width=220, key="readiness_study_title"):
+                                st.subheader("Active study dataset", icon=":material/work:")
+                            for index, (label, value) in enumerate([
+                                ("Cleaned job ads", f"{len(jobs):,}"),
+                                ("Distinct ad IDs", f"{job_sources[job_sources.ne('')].nunique():,}"),
+                                ("Job titles", f"{job_titles[job_titles.ne('')].nunique():,}"),
+                                ("Scope review recorded", "Yes" if scope_reviewed else "No"),
+                            ]):
+                                suffix = ("_yes" if scope_reviewed else "_no") if index == 3 else ""
+                                with st.container(width="stretch", key=f"readiness_study_metric_{index}{suffix}"):
+                                    st.metric(label, value)
+                        if not posting_dates.empty:
+                            st.caption(f"Posting dates in the active file: {posting_dates.min().date()} to {posting_dates.max().date()}. A saved scope check records a researcher action; it does not independently verify every ad.")
+                        else:
+                            st.caption("Posting dates are missing or could not be parsed. Record the dataset collection window in the study notes.")
+                        label_sources = set(labels.get("source_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip())
+                        active_sources = set(job_sources[job_sources.ne("")])
+                        shared_sources = label_sources & active_sources
+                        if labels.empty:
+                            st.info("No researcher-reviewed training labels are saved yet. Complete manual review before training a classifier.")
+                        elif not shared_sources:
+                            st.warning("The labeled phrases come from different source IDs than the active study dataset. Review classifier predictions against each advertisement before using them in findings.")
+                        else:
+                            st.caption(f"{len(shared_sources)} source ID(s) occur in both the labeled phrase data and the active analysis sample.")
+                        extraction_meta = storage.read_json("extraction_metadata", {})
+                        if not extraction_meta or not extraction_freshness(extraction_meta)[1]:
+                            st.warning("The saved extraction is out of date. Run Competency Extraction again after finalizing the job sample, reviewed PSF-AAI reference, and selected model before using reports.")
+                        elif not extraction_meta.get("model_available"):
+                            st.info("The current extraction was created without the selected classifier. Rerun extraction if you intend to use classifier categories.")
+                        else:
+                            st.success("The saved extraction matches the current jobs, taxonomy, labels, settings, and model.")
+                    with content_section("Where the labels came from", "source", "readiness_sources"):
+                        st.caption("Counts describe saved annotation rows and distinct phrases within each posting. Several phrases from one posting still represent one job ad, not independent observations.")
+                        display(profile["sources"])
+                    class_distribution = validation.get("class_distribution", {})
+                    with st.container(horizontal=True, key="readiness_label_profiles", gap="medium", wrap=True):
+                        with st.container(width="stretch"), content_section("Reviewer IDs recorded", "person", "readiness_reviewers"):
+                            st.caption("IDs are shown exactly as saved. Confirm whether spelling variants belong to the same person before reporting reviewer counts.")
+                            display(profile["reviewers"])
+                        with st.container(width="stretch"), content_section("Categories included in model training", "layers", "readiness_categories"):
+                            st.caption("IRRELEVANT rows and duplicate phrases are excluded. Model scores cannot make up for narrow source coverage or inconsistent labels.")
+                            if class_distribution:
+                                classes = pd.DataFrame([{"category": name, "distinct usable phrases": count}
+                                                        for name, count in class_distribution.items()])
+                                classes["share of usable phrases"] = classes["distinct usable phrases"] / max(1, int(validation.get("rows_used", 0)))
+                                classes["share of usable phrases"] = classes["share of usable phrases"].map(lambda value: f"{value:.1%}")
+                                display(classes.sort_values("distinct usable phrases", ascending=False, ignore_index=True))
+                            else:
+                                st.info("No usable category counts are available. Review and save labels before model training.")
+                    with content_section("What needs attention", "warning", "readiness_attention"):
+                        findings = []
+                        for item in audit["findings"]:
+                            icon = "error_outline" if item.get("status") == "blocking" else "manage_search"
+                            findings.append('<li><span class="material-symbols-rounded" aria-hidden="true">' + icon + '</span><div><strong>'
+                                            + escape(item["title"]) + '</strong><p>' + escape(item["detail"]) + '</p></div></li>')
+                        if findings:
+                            st.html('<ul class="fow-readiness-findings">' + ''.join(findings) + '</ul>')
+                        else:
+                            st.caption("No software risks detected; researcher sign-off is still required.")
+                    if not disagreements.empty:
+                        history_details = st.expander("Earlier category disagreements to review", icon=":material/history:", key="readiness_disagreements", on_change="rerun")
+                        if history_details.open:
+                            with history_details:
+                                st.caption("These are historical saved decisions, not current training rows. Use the source evidence and your labeling protocol to decide whether follow-up is needed.")
+                                display(disagreements)
+                    checks = st.expander("Dataset and model checks", icon=":material/fact_check:", key="readiness_diagnostics", on_change="rerun")
+                    if checks.open:
+                        with checks:
+                            if validation:
+                                st.json(validation)
+                            if metadata:
+                                st.json({key: metadata.get(key) for key in ("training_timestamp", "training_file", "rows_available", "rows_used", "number_of_classes", "selected_model", "split")})
+                            else:
+                                st.info("No saved classifier metadata is available.")
+                    with content_section("Recommended next actions", "checklist", "readiness_actions"):
+                        st.markdown("1. Confirm every ad meets the written Philippine AI/analytics inclusion rules; remove out-of-scope ads with a saved audit trail.\n2. Label phrases from more distinct job ads; the app's 20-source warning threshold is only a workflow flag, not a statistically justified sample-size target. More phrases from the same ads do not replace independent sources.\n3. Reconcile reviewer IDs with the actual reviewers, agree on category definitions, double-code a planned subset, and document disagreement resolution.\n4. Rerun extraction after the final study dataset, framework, and model are selected; manually verify phrases and PSF-AAI mappings against source evidence.\n5. Train only for an explicit classifier purpose and only when whole-ad holdout evaluation is possible. Keep its metrics exploratory until evaluated on untouched job-ad sources.\n6. Report job-ad counts and percentages using the number of eligible, reviewed ads as the denominator; archive source URLs, collection dates, inclusion rules, and the dataset hash.")
+                        if path:
+                            st.caption(f"Audited training file: `{project_relative_path(path)}`")
 
 def settings_page():
     page_intro("Settings", "Configure the research workspace and documented analysis parameters.")
-    st.subheader("Shared team workspace")
-    if supabase_store.configured():
-        st.success("Supabase is connected. Saved tables and settings are shared with signed-in teammates; local CSVs remain as backups.")
+    with loading_content("settings_workspace_status", "workspace_status", view="shared" if supabase_store.configured() else "local") as content:
         local_jobs_path = Path(ROOT) / "data/processed/cleaned_jobs.csv"
-        if local_jobs_path.is_file() and storage.read_frame("cleaned_jobs").empty:
-            st.warning("This computer has a cleaned job dataset, but the shared workspace does not yet. An admin can copy it below; teammates will then see it after refreshing.")
-        st.caption("To copy this computer's existing processed tables into empty shared slots, use the one-time import below. Existing shared rows are preserved.")
-        if action_button("Copy local workspace to shared database", type="secondary"):
-            with st.spinner("Copying local processed tables and annotations to Supabase…"):
-                seeded, skipped = storage.seed_shared_workspace()
-            st.success(f"Copied {len(seeded)} tables: {', '.join(seeded) if seeded else 'none needed'}.")
-            if skipped:
-                st.info(f"Kept {len(skipped)} existing shared tables unchanged: {', '.join(skipped)}.")
-    else:
-        st.info("Supabase is not configured. This app is using local files on this computer.")
-        st.caption("For a shared site, configure SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Streamlit secrets, then run the schema in supabase_schema.sql.")
-    st.subheader("Generated extraction results")
-    st.caption("Clear a full extraction to free active storage. A compressed local archive is created first; uploaded data, labels, mapping reviews, and candidate phrases are kept.")
-    if supabase_store.is_admin():
-        if action_button("Prepare extraction cleanup", type="secondary", icon=":material/delete_sweep:", action_id="prepare_extraction_cleanup"):
-            st.session_state["confirm_clear_extraction_data"] = True
-        if st.session_state.get("confirm_clear_extraction_data"):
-            st.warning("This clears active extracted phrases and NLP diagnostics for the whole team. The generated extraction can be rebuilt later from the saved uploads.")
-            if action_button("Confirm archive and clear", type="primary", icon=":material/delete_forever:", action_id="confirm_extraction_cleanup"):
-                try:
-                    archive = storage.clear_extraction_data()
+        needs_shared_copy = supabase_store.configured() and local_jobs_path.is_file() and storage.read_frame("cleaned_jobs").empty
+        with content():
+            connection_status = st.empty()
+            maintenance = st.container(horizontal=True, key="settings_maintenance", gap="medium", wrap=True)
+            if supabase_store.configured():
+                connection_status.success("Supabase is connected. Saved tables and settings are shared with signed-in teammates; local CSVs remain as backups.")
+                with maintenance, content_section("Shared team workspace", "database", "settings_shared"):
+                    local_jobs_path = Path(ROOT) / "data/processed/cleaned_jobs.csv"
+                    if needs_shared_copy:
+                        st.warning("This computer has a cleaned job dataset, but the shared workspace does not yet. An admin can copy it below; teammates will then see it after refreshing.")
+                    st.caption("To copy this computer's existing processed tables into empty shared slots, use the one-time import below. Existing shared rows are preserved.")
+                    if action_button("Copy local workspace to shared database", type="secondary"):
+                        with st.spinner("Copying local processed tables and annotations to Supabase…"):
+                            seeded, skipped = storage.seed_shared_workspace()
+                        st.success(f"Copied {len(seeded)} tables: {', '.join(seeded) if seeded else 'none needed'}.")
+                        if skipped:
+                            st.info(f"Kept {len(skipped)} existing shared tables unchanged: {', '.join(skipped)}.")
+            else:
+                connection_status.info("Supabase is not configured. This app is using local files on this computer.")
+                with maintenance, content_section("Shared team workspace", "database", "settings_shared"):
+                    st.caption("For a shared site, configure SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in Streamlit secrets, then run the schema in supabase_schema.sql.")
+    with maintenance, content_section("Generated extraction results", "folder_delete", "settings_cleanup"):
+        st.caption("Clear a full extraction to free active storage. A compressed local archive is created first; uploaded data, labels, mapping reviews, and candidate phrases are kept.")
+        if supabase_store.is_admin():
+            if action_button("Prepare extraction cleanup", type="secondary", icon=":material/delete_sweep:", action_id="prepare_extraction_cleanup"):
+                st.session_state["confirm_clear_extraction_data"] = True
+            if st.session_state.get("confirm_clear_extraction_data"):
+                st.warning("This clears active extracted phrases and NLP diagnostics for the whole team. The generated extraction can be rebuilt later from the saved uploads.")
+                if action_button("Confirm archive and clear", type="primary", icon=":material/delete_forever:", action_id="confirm_extraction_cleanup"):
+                    try:
+                        archive = storage.clear_extraction_data()
+                        st.session_state.pop("confirm_clear_extraction_data", None)
+                        backup = archive.relative_to(ROOT) if archive else "no local extraction files were present"
+                        st.success(f"Extraction results cleared. Compressed backup: {backup}.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Cleanup stopped safely: {exc}")
+                if action_button("Cancel cleanup", type="secondary", action_id="cancel_extraction_cleanup"):
                     st.session_state.pop("confirm_clear_extraction_data", None)
-                    backup = archive.relative_to(ROOT) if archive else "no local extraction files were present"
-                    st.success(f"Extraction results cleared. Compressed backup: {backup}.")
                     st.rerun()
-                except Exception as exc:
-                    st.error(f"Cleanup stopped safely: {exc}")
-            if action_button("Cancel cleanup", type="secondary", action_id="cancel_extraction_cleanup"):
-                st.session_state.pop("confirm_clear_extraction_data", None)
-                st.rerun()
-    else:
-        st.info("Sign in with a workspace admin account to clear shared extraction results.")
-    cfg = storage.settings()
-    with st.form("settings_form"):
-        st.subheader("Matching thresholds")
-        aligned = st.slider("Aligned threshold", .01, 1., float(cfg["aligned_threshold"]), .01)
-        partial = st.slider("Partially aligned threshold", .0, .99, float(cfg["partial_threshold"]), .01)
-        fuzzy = st.slider("Taxonomy fuzzy match threshold", .5, 1., float(cfg["fuzzy_threshold"]), .01)
-        semantic = st.slider("Taxonomy semantic match threshold", .5, 1., float(cfg["semantic_threshold"]), .01)
-        path = st.text_input("Optional local sentence-transformers model directory", cfg["semantic_model"])
-        st.subheader("Extraction and screening")
-        stopwords = st.text_area("Additional stopwords (one per line; phrases retain internal stopwords)", "\n".join(cfg["stopwords"]))
-        batch = st.number_input("NLP batch size", 1, 1024, cfg["batch_size"])
-        limit = st.number_input("Maximum discovered n-grams per record", 50, 10000, cfg["max_candidates"])
-        emerging = st.number_input("Minimum job ads for an emerging-skill candidate", 1, 100000, cfg["emerging_min_jobs"])
-        st.subheader("Usability evaluation")
-        low = st.number_input("Likert scale minimum", 0, 9, cfg["likert_min"])
-        high = st.number_input("Likert scale maximum", 1, 10, cfg["likert_max"])
-        if action_form_submit_button("Save settings", type="primary"):
-            if partial >= aligned or low >= high:
-                raise ValueError("Partial threshold must be below aligned, and Likert minimum below maximum.")
-            if path.strip():
-                from .psf_mapping import semantic_model
-                semantic_model(path.strip())
-            storage.save_json("settings", {"aligned_threshold": aligned, "partial_threshold": partial, "fuzzy_threshold": fuzzy, "semantic_threshold": semantic, "semantic_model": path.strip(), "stopwords": [s.strip().casefold() for s in stopwords.splitlines() if s.strip()], "batch_size": batch, "max_candidates": limit, "emerging_min_jobs": emerging, "likert_min": low, "likert_max": high})
-            st.success("Settings saved. Re-run extraction to refresh the analysis snapshot.")
-    st.caption("Extraction semantic mode uses only a model already present in the local directory above. Manual Labeling AI drafts use the pinned model described on that page and download it on first use. The app does not call a generative AI API.")
+        else:
+            st.info("Sign in with a workspace admin account to clear shared extraction results.")
+    controls = [control for _, _, fields in SETTINGS_SECTIONS
+                for control in ["heading", *(field[2] for field in fields)]] + ["button"]
+    with loading_content("settings_form_content", "settings", controls=controls, field_columns=2) as content:
+        cfg = storage.settings()
+        with content():
+            with st.form("settings_form", border=False):
+                values = {}
+                for title, icon, fields in SETTINGS_SECTIONS:
+                    with content_section(title, icon, f"settings_{fields[0][0]}"):
+                        with st.container(horizontal=True, key=f"settings_fields_{fields[0][0]}", gap="medium"):
+                            if title == "Usability evaluation":
+                                content_note("Likert scale range", "Set the minimum and maximum values used for usability ratings.", icon="info")
+                            for key, label, control, minimum, maximum, step in fields:
+                                with st.container(key=f"setting_input_{key}", width="stretch"):
+                                    if key == "semantic_model":
+                                        content_note("About matching thresholds", "These configurable similarity cutoffs are research heuristics. Higher cutoffs require a closer match; they are not official PSF-AAI standards or calibrated probabilities.", icon="info")
+                                    if control == "slider":
+                                        values[key] = st.slider(label, minimum, maximum, float(cfg[key]), step)
+                                    elif control == "number":
+                                        values[key] = st.number_input(label, minimum, maximum, int(cfg[key]), step)
+                                    elif control == "textarea":
+                                        values[key] = st.text_area(label, "\n".join(cfg[key]))
+                                    else:
+                                        values[key] = st.text_input(label, cfg[key])
+                if action_form_submit_button("Save settings", type="primary"):
+                    if values["partial_threshold"] >= values["aligned_threshold"] or values["likert_min"] >= values["likert_max"]:
+                        raise ValueError("Partial threshold must be below aligned, and Likert minimum below maximum.")
+                    path = values["semantic_model"].strip()
+                    if path:
+                        from .psf_mapping import semantic_model
+                        semantic_model(path)
+                    values["semantic_model"] = path
+                    values["stopwords"] = [word.strip().casefold() for word in values["stopwords"].splitlines() if word.strip()]
+                    storage.save_json("settings", values)
+                    st.success("Settings saved. Re-run extraction to refresh the analysis snapshot.")
+            st.caption("Extraction semantic mode uses a model already present in the configured local directory. Manual-review drafts use the separate pretrained model shown on that page.")
 
 PAGES = {"Home": home, "Job Data Upload": upload, "Data Quality": quality,
          "Job Market Analysis": lambda: research_page("Job Market Analysis"),
@@ -2442,20 +3117,32 @@ PAGES = {"Home": home, "Job Data Upload": upload, "Data Quality": quality,
 def render(page):
     storage.initialize()
     st.session_state["_table_number"] = 0
+    if st.session_state.get("_fow_current_page") != page:
+        st.session_state["_fow_loading_ready"] = {}
+    st.session_state["_fow_first_page_render"] = st.session_state.get("_fow_rendered_page") != page
     st.session_state["_fow_current_page"] = page
-    apply_design()
     st.sidebar.caption(f"Research workspace · v{VERSION}")
     from .auth_ui import render_account_menu
     with st.container(horizontal=True, vertical_alignment="center", key="workspace_toolbar"):
         with st.container(width="stretch"):
             workspace_breadcrumb(page)
         render_account_menu()
-    _processing_status()
     try:
         if supabase_store.configured() and page in {"Job Data Upload", "Data Quality", "Competency Extraction", "Settings", "Feedback", "PSF Framework"} and not supabase_store.is_admin():
             st.info("This step is managed by the project administrator. Open Review and label phrases to contribute your annotations.")
             return
-        PAGES[page]()
+        content_key = {
+            "Home": "overview", "Job Data Upload": "upload", "Data Quality": "quality",
+            "Competency Extraction": "extraction", "Manual Labeling": "review", "ML Training": "training",
+            "Model Evaluation": "evaluation", "Feedback": "feedback", "Methodology": "methodology",
+            "Research Readiness": "readiness", "Settings": "settings",
+        }.get(page)
+        if content_key:
+            with st.container(key=f"workspace_page_{content_key}"):
+                PAGES[page]()
+        else:
+            PAGES[page]()
+        st.session_state["_fow_rendered_page"] = page
     except (ValueError, OSError, KeyError, TypeError, supabase_store.SupabaseError) as exc:
         st.error(str(exc))
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")

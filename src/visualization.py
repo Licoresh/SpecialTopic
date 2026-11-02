@@ -2,6 +2,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from .analytics import counts
+from .config import VERSION
 import streamlit as st
 from textwrap import wrap
 from html import escape
@@ -28,6 +29,7 @@ def style_chart(fig):
                       title=dict(font=dict(size=17), x=.02, xanchor="left"),
                       legend=dict(orientation="h", y=-.2, x=0),
                       hovermode="closest",
+                      uirevision=f"fow-{VERSION}",
                       colorway=st.get_option("theme.chartCategoricalColors"),
                       hoverlabel=dict(bgcolor="#4D1020", bordercolor="#4D1020",
                                       font=dict(color="#FFFFFF", size=13), align="left", namelength=-1))

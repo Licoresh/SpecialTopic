@@ -6,6 +6,160 @@ import pytest
 from src import storage, supabase_store as backend
 
 
+@pytest.fixture
+def loading_phases(monkeypatch):
+    from contextlib import contextmanager
+    import streamlit as st
+    from src import ui
+    active, events = set(), []
+
+    @contextmanager
+    def region(key, kind, **kwargs):
+        active.add(key)
+        events.append(("pending", key))
+        def content():
+            active.discard(key)
+            events.append(("render", key))
+            return st.container(key=f"synthetic_{key}_body")
+        try:
+            yield content
+        finally:
+            active.discard(key)
+
+    def read(key, name, value):
+        assert key in active, f"{name} ran after {key} was replaced"
+        events.append(("read", name))
+        return value
+
+    monkeypatch.setattr(ui, "loading_content", region)
+    return read, events
+
+
+def test_upload_preview_and_archive_receive_original_bytes(workspace, monkeypatch, loading_phases):
+    from types import SimpleNamespace
+    from src import ui
+    read, events = loading_phases
+    payload = b"job_title,job_description\nSynthetic analyst,Use SQL for synthetic reporting.\n"
+    uploaded = SimpleNamespace(name="synthetic-upload.csv", getvalue=lambda: payload)
+    monkeypatch.setattr(ui.st, "file_uploader", lambda *a, **k: uploaded)
+    def parse(data, filename, sheet, encoding):
+        assert data is payload
+        assert filename == uploaded.name
+        return read("upload_preview", "preview", pd.DataFrame({"job_title": ["Synthetic analyst"]}))
+    monkeypatch.setattr(ui, "cached_load", parse)
+    monkeypatch.setattr(ui, "column_mapping", lambda *args: None)
+    archived = Mock()
+    monkeypatch.setattr(storage, "archive_raw", archived)
+    app = AppTest.from_string("from src.ui import upload\nupload('jobs')").run(timeout=30)
+    assert not app.exception and not app.error
+    next(button for button in app.button if button.label == "Save raw upload").click().run(timeout=30)
+    assert not app.exception and not app.error
+    archived.assert_called_once_with(payload, uploaded.name, "jobs")
+    assert events.index(("read", "preview")) < events.index(("render", "upload_preview"))
+
+
+def test_evaluation_checks_snapshot_and_eligibility_before_showing_scores(workspace, monkeypatch, loading_phases):
+    from src import ui
+    read, events = loading_phases
+    name = "Logistic Regression"
+    metadata = {"model_name": name, "accuracy": .5, "macro_f1": .4, "weighted_f1": .45,
+                "number_of_classes": 2, "selection_basis": ui.SELECTION_BASIS,
+                "split": {"strategy": "source-disjoint", "test_source_ids": ["SYNTHETIC-C", "SYNTHETIC-D"]},
+                "cross_validation_results": {name: {"synthetic": True}}}
+    frames = {
+        "model_metrics": pd.DataFrame({"model": [name], "accuracy": [.5], "macro_f1": [.4], "weighted_f1": [.45]}),
+        "training_snapshot": pd.DataFrame({"source_id": ["SYNTHETIC-A", "SYNTHETIC-C"]}),
+        "evaluation_lr_confusion": pd.DataFrame({"actual": ["A", "B"], "A": [1, 0], "B": [0, 1]}),
+        "evaluation_lr_per_class": pd.DataFrame({"label": ["A"], "f1": [.4]}),
+        "evaluation_lr_predictions": pd.DataFrame({"actual": ["A"], "predicted": ["A"]}),
+    }
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    monkeypatch.setattr(ui, "read_model_metadata", lambda: read("evaluation_eligibility", "metadata", metadata))
+    def frame(key, *a, **k):
+        region = "evaluation_details" if key.startswith("evaluation_") else "evaluation_eligibility"
+        return read(region, key, frames[key])
+    monkeypatch.setattr(storage, "read_frame", frame)
+    monkeypatch.setattr(ui, "source_overlap", lambda *a: read("evaluation_eligibility", "overlap", set()))
+    monkeypatch.setattr(ui, "training_data_changed", lambda: read("evaluation_eligibility", "changed", False))
+    app = AppTest.from_string("from src.ui import evaluation\nevaluation()").run(timeout=30)
+    assert not app.exception and not app.error
+    replacement = events.index(("render", "evaluation_eligibility"))
+    assert all(events.index(("read", key)) < replacement for key in ("training_snapshot", "overlap", "changed"))
+    assert {item.label: item.value for item in app.metric}["Selected holdout Macro F1"] == "0.400"
+    content = " ".join(item.proto.body for item in app.get("html"))
+    assert "ranges from 0.400 to 0.400" in content
+    frames["model_metrics"].loc[0, "macro_f1"] = .7
+    metadata["macro_f1"] = .7
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    content = " ".join(item.proto.body for item in app.get("html"))
+    assert "ranges from 0.700 to 0.700" in content
+    assert "ranges from 0.400 to 0.400" not in content
+
+
+def test_training_saved_metrics_load_before_their_result_slot(workspace, monkeypatch, loading_phases):
+    from src import ui
+    read, events = loading_phases
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    monkeypatch.setattr(backend, "is_admin", lambda: False)
+    labels = pd.DataFrame(columns=["phrase", "label"])
+    report = {"total_rows": 0, "rows_used": 0, "number_of_classes": 0,
+              "warnings": [], "errors": ["Synthetic empty labels; do not train."]}
+    def frame(key, *a, **k):
+        if key == "labeled_competencies":
+            return read("training_validation", key, labels)
+        assert key == "model_metrics"
+        return read("training_saved_model", key, pd.DataFrame({"model": ["Synthetic saved model"], "accuracy": [.5]}))
+    monkeypatch.setattr(storage, "read_frame", frame)
+    monkeypatch.setattr(ui, "cached_label_validation", lambda *a, **k: (labels, report))
+    monkeypatch.setattr(ui, "training_data_changed", lambda: False)
+    monkeypatch.setattr(ui, "read_model_metadata", lambda: read("training_saved_model", "saved_metadata", {"model_name": "Synthetic saved model"}))
+    app = AppTest.from_string("from src.ui import training\ntraining()").run(timeout=30)
+    assert not app.exception and not app.error
+    assert events.index(("read", "model_metrics")) < events.index(("render", "training_saved_model"))
+    assert next(button for button in app.button if button.label == "Train / Retrain Models").disabled
+
+
+def test_quality_metadata_and_cleaning_load_inside_their_result_regions(workspace, jobs, monkeypatch, loading_phases):
+    from src import ui
+    read, events = loading_phases
+    storage.save_frame("mapped_jobs", jobs)
+    original_frame, original_json, original_clean = storage.read_frame, storage.read_json, ui.cached_clean
+    def frame(key, *a, **k):
+        value = original_frame(key, *a, **k)
+        return read("quality_source_jobs", key, value) if key == "mapped_jobs" else value
+    def state(key, *a, **k):
+        value = original_json(key, *a, **k)
+        return read("quality_source_jobs", key, value) if key == "cleaning_jobs" else value
+    monkeypatch.setattr(storage, "read_frame", frame)
+    monkeypatch.setattr(storage, "read_json", state)
+    monkeypatch.setattr(ui, "cached_clean", lambda *a, **k: read("quality_preview_jobs", "clean", original_clean(*a, **k)))
+    app = AppTest.from_string("from src.ui import quality\nquality()").run(timeout=30)
+    assert not app.exception and not app.error
+    assert events.index(("read", "cleaning_jobs")) < events.index(("render", "quality_source_jobs"))
+    assert events.index(("read", "clean")) < events.index(("render", "quality_preview_jobs"))
+
+
+@pytest.mark.parametrize("page", ["feedback", "settings_page"])
+def test_feedback_tables_and_settings_load_inside_their_result_regions(workspace, monkeypatch, loading_phases, page):
+    from src import ui
+    from src.config import DEFAULTS
+    read, events = loading_phases
+    monkeypatch.setattr(ui, "current_analysis", lambda: read("feedback_records", "freshness", False))
+    monkeypatch.setattr(ui, "corrections", lambda: read("feedback_correction_history", "corrections", pd.DataFrame()))
+    settings_region = "feedback_usability_form" if page == "feedback" else "settings_form_content"
+    monkeypatch.setattr(storage, "settings", lambda: read(settings_region, "settings", dict(DEFAULTS)))
+    def frame(key, *a, **k):
+        regions = {"usability": "feedback_usability_results", "cleaned_stakeholder": "feedback_stakeholders"}
+        return read(regions[key], key, pd.DataFrame())
+    monkeypatch.setattr(storage, "read_frame", frame)
+    app = AppTest.from_string(f"from src.ui import {page}\n{page}()").run(timeout=30)
+    assert not app.exception and not app.error
+    assert events.index(("read", "settings")) < events.index(("render", settings_region))
+    if page == "feedback":
+        assert {("read", "corrections"), ("read", "usability"), ("read", "cleaned_stakeholder")}.issubset(events)
+
+
 def test_session_cache_reuses_derived_values_without_leaking_mutations():
     app = AppTest.from_string(
         """
@@ -26,6 +180,156 @@ st.session_state.synthetic_rows = len(value['rows'])
     assert not app.exception
     assert app.session_state["synthetic_loads"] == 1
     assert app.session_state["synthetic_rows"] == 1
+
+
+def test_visible_page_rerun_does_not_create_another_loading_region(workspace, monkeypatch):
+    from src import loading_ui
+    wireframe = Mock(wraps=loading_ui._wireframe)
+    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
+    app = AppTest.from_string("from src.ui import render\nrender('Home')").run(timeout=30)
+    assert not app.exception
+    first_calls = list(wireframe.call_args_list)
+    assert [call.args[0] for call in first_calls] == ["overview", "notice"]
+    assert app.session_state["_fow_loading_ready"]["overview_summary_content"]
+    before = [(item.label, item.value) for item in app.metric]
+    app.run(timeout=30)
+    assert not app.exception
+    assert wireframe.call_args_list == first_calls
+    assert [(item.label, item.value) for item in app.metric] == before
+
+
+def test_reports_cover_freshness_and_all_report_reads_before_replacing_wireframe(workspace, monkeypatch):
+    from contextlib import contextmanager
+    import streamlit as st
+    from src import ui
+    from test_result_views import result_tables
+    tables = result_tables()
+    phase = {"loading": False}
+    reads = []
+
+    @contextmanager
+    def region(key, kind, **kwargs):
+        assert key == "research_results_content" and kind == "reports"
+        phase["loading"] = True
+        def content():
+            phase["loading"] = False
+            return st.container()
+        try:
+            yield content
+        finally:
+            phase["loading"] = False
+
+    def loaded(name, value):
+        assert phase["loading"], name
+        reads.append(name)
+        return value
+
+    monkeypatch.setattr(ui, "loading_content", region)
+    monkeypatch.setattr(ui, "current_analysis", lambda: loaded("freshness", True))
+    monkeypatch.setattr(ui, "filtered_bundle", lambda: loaded("bundle", (tables, {})))
+    monkeypatch.setattr(ui, "job_profile_tables", lambda jobs: loaded("profile", {}))
+    monkeypatch.setattr(ui, "corrections", lambda: loaded("corrections", pd.DataFrame()))
+    monkeypatch.setattr(storage, "read_frame", lambda name: loaded(name, pd.DataFrame()))
+    def render_cards(*args):
+        assert not phase["loading"]
+        reads.append("render")
+    monkeypatch.setattr(ui, "report_deliverables", render_cards)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run(timeout=30)
+    assert not app.exception and not app.error
+    assert reads[:4] == ["freshness", "bundle", "profile", "corrections"]
+    assert "nlp_processed" in reads and "evaluation_lr_predictions" in reads and "quality_jobs" in reads
+    assert reads[-1] == "render"
+
+
+def test_missing_results_remain_unmaterialized_until_successful_retry(workspace, monkeypatch):
+    from src import ui, loading_ui
+    from test_result_views import result_tables
+    available = {"value": False}
+    wireframe = Mock(wraps=loading_ui._wireframe)
+    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
+    monkeypatch.setattr(ui, "current_analysis", lambda: available["value"])
+    monkeypatch.setattr(ui, "filtered_bundle", lambda: (result_tables(), {}))
+    monkeypatch.setattr(ui, "job_profile_tables", lambda jobs: {})
+    monkeypatch.setattr(ui, "corrections", lambda: pd.DataFrame())
+    monkeypatch.setattr(storage, "read_frame", lambda name: pd.DataFrame())
+    monkeypatch.setattr(ui, "report_deliverables", lambda *args: None)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run(timeout=30)
+    assert not app.exception
+    assert not app.session_state["_fow_loading_ready"]
+    available["value"] = True
+    app.run(timeout=30)
+    assert not app.exception
+    assert app.session_state["_fow_loading_ready"]["research_results_content"]
+    assert wireframe.call_count == 2
+    app.run(timeout=30)
+    assert wireframe.call_count == 2
+
+
+def test_review_source_and_mapping_reads_stay_inside_their_pending_content(workspace, jobs, taxonomy, monkeypatch):
+    from contextlib import contextmanager
+    import streamlit as st
+    from src import ui
+    from src.workflow import run_extraction
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    active, checked = set(), []
+
+    @contextmanager
+    def region(key, kind, **kwargs):
+        active.add(key)
+        def content():
+            active.discard(key)
+            return st.container()
+        try:
+            yield content
+        finally:
+            active.discard(key)
+
+    read_frame, contexts, extractions = storage.read_frame, ui._review_contexts, ui.current_extractions
+    def read(name, *args, **kwargs):
+        if name in {"labeled_competencies", "cleaned_psf_aai", "psf_mapping_reviews"}:
+            assert active, name
+            checked.append(name)
+        return read_frame(name, *args, **kwargs)
+    def evidence(rows):
+        assert "manual_review_table_content" in active
+        checked.append("evidence")
+        return contexts(rows)
+    def extracted(*args, **kwargs):
+        assert "manual_review_table_content" in active
+        checked.append("occurrences")
+        return extractions(*args, **kwargs)
+    monkeypatch.setattr(ui, "loading_content", region)
+    monkeypatch.setattr(storage, "read_frame", read)
+    monkeypatch.setattr(ui, "_review_contexts", evidence)
+    monkeypatch.setattr(ui, "current_extractions", extracted)
+    app = AppTest.from_string("from src.ui import render\nrender('Manual Labeling')").run(timeout=60)
+    assert not app.exception and not app.error
+    assert {"labeled_competencies", "cleaned_psf_aai", "psf_mapping_reviews", "evidence", "occurrences"}.issubset(checked)
+
+
+@pytest.mark.parametrize("page,kind,cards", [
+    ("Job Market Analysis", "market", 4),
+    ("Employer–PSF Alignment", "alignment", 3),
+    ("PSF Mapping", "mapping", None),
+    ("Unmapped / Emerging Skills", "unmapped", None),
+    ("Reports", "reports", None),
+])
+def test_initial_results_wireframe_matches_the_first_real_component(workspace, monkeypatch, page, kind, cards):
+    from src import ui, loading_ui
+    wireframe = Mock(wraps=loading_ui._wireframe)
+    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
+    monkeypatch.setattr(ui, "current_analysis", lambda: False)
+    app = AppTest.from_string(f"from src.ui import research_page\nresearch_page({page!r})").run(timeout=30)
+    assert not app.exception
+    assert wireframe.call_args.args == (kind,)
+    assert wireframe.call_args.kwargs["cards"] == cards
+    assert not app.session_state["_fow_loading_ready"]
+    if page == "Unmapped / Emerging Skills":
+        assert wireframe.call_args.kwargs["columns"] is None
+    if page == "Job Market Analysis":
+        assert any("Analysis Pipeline" in item.proto.body for item in app.get("html"))
 
 
 def test_review_queue_reuses_preparation_and_detects_source_updates(workspace, monkeypatch):

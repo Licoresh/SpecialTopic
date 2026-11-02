@@ -12,8 +12,8 @@ def test_500_ads_and_93622_phrase_rows_render_compact_aggregated_charts():
     skills = pd.DataFrame({
         "source_id": [f"JOB-{index % 500:03d}" for index in range(row_count)],
         "source_type": "jobs",
-        "original_phrase": [f"tool {index // 500:03d}" for index in range(row_count)],
-        "normalized_phrase": [f"tool {index // 500:03d}" for index in range(row_count)],
+        "original_phrase": [f"algorithm {index // 500:03d} analysis" for index in range(row_count)],
+        "normalized_phrase": [f"algorithm {index // 500:03d} analysis" for index in range(row_count)],
         "competency_category": "Technical / Digital",
         "skill_type": "Technical",
     })
@@ -32,3 +32,10 @@ def test_500_ads_and_93622_phrase_rows_render_compact_aggregated_charts():
     last_page, page_number, _ = _paginate_frame(views["chart_skill_occurrences"], page_count)
     assert page_count == 937 and len(first_page) == 100
     assert page_number == page_count and len(last_page) == 22
+
+    # Generic tool identifiers are unknown objects, not named skills.
+    skills["normalized_phrase"] = skills["original_phrase"] = [f"tool {index // 500:03d}" for index in range(row_count)]
+    withheld = skill_chart_tables(skills, jobs)
+    assert withheld["chart_skill_demand"].empty
+    assert len(withheld["chart_phrase_review"]) == row_count
+    assert withheld["chart_phrase_review"].review_reason.str.len().gt(0).all()

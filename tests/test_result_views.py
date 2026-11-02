@@ -1,4 +1,5 @@
 """Synthetic audience-focused result views; no live sources or research records."""
+from copy import deepcopy
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 from src import ui
@@ -38,7 +39,7 @@ def result_app(monkeypatch, tables, page="Job Market Analysis"):
     original = ui.chart
     def capture(figure):
         figures.append(figure)
-        original(figure)
+        original(deepcopy(figure))
     monkeypatch.setattr(ui, "chart", capture)
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
     monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {"settings": {"emerging_min_jobs": 2}}))
@@ -51,10 +52,111 @@ def figure_with_title(figures, title):
     return next(figure for figure in reversed(figures) if figure.layout.title.text == title)
 
 
+def html_content(app):
+    return "\n".join(item.proto.body for item in app.get("html"))
+
+
+def test_first_section_visits_load_once_and_revisits_reuse_prepared_data(monkeypatch):
+    from unittest.mock import Mock
+    from src import loading_ui
+    tables = result_tables()
+    wireframe = Mock(wraps=loading_ui._wireframe)
+    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
+    original_profile = ui.job_profile_tables
+    def prepare_profile(jobs):
+        assert wireframe.call_args.args == ("market_section",)
+        assert wireframe.call_args.kwargs["view"] in {"Roles and locations", "Qualifications"}
+        return original_profile(jobs)
+    profile = Mock(side_effect=prepare_profile)
+    geography = Mock(wraps=ui.location_tables)
+    monkeypatch.setattr(ui, "job_profile_tables", profile)
+    monkeypatch.setattr(ui, "location_tables", geography)
+    app, _ = result_app(monkeypatch, tables)
+    def transitions():
+        return [call.kwargs["view"] for call in wireframe.call_args_list if call.args == ("market_section",)]
+    assert transitions() == ["Skills"]
+    for section in ("Roles and locations", "Qualifications", "PSF-AAI demand"):
+        app.button_group(key="result_section").select(section).run(timeout=30)
+        assert not app.exception and not app.error
+        assert transitions()[-1] == section
+        assert app.session_state["_fow_loading_ready"]["job_market_view_load"]
+    assert transitions() == ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"]
+    before = list(transitions())
+    for section in ("Skills", "Qualifications", "Roles and locations", "PSF-AAI demand", "Skills"):
+        app.button_group(key="result_section").select(section).run(timeout=30)
+        assert not app.exception and not app.error
+        assert transitions() == before
+    profile.assert_called_once()
+    geography.assert_called_once()
+    app.run(timeout=30)
+    assert transitions() == before
+
+
+def test_keyed_market_fragment_can_rerun_without_reentering_parent_data_loads(monkeypatch):
+    from unittest.mock import Mock
+    hashed = Mock(side_effect=AssertionError("Explicit revisions must not rehash the snapshot"))
+    monkeypatch.setattr(ui, "frame_hash", hashed)
+    app = AppTest.from_string('''
+import streamlit as st
+from src.ui import _job_market_results
+from test_result_views import result_tables
+st.button('Synthetic fragment refresh', on_click=lambda: st.rerun('job_market_results'))
+st.session_state['synthetic_parent_loads'] = st.session_state.get('synthetic_parent_loads', 0) + 1
+_job_market_results(result_tables(), {}, revision="synthetic-revision-one")
+''').run(timeout=30)
+    assert not app.exception and app.session_state["synthetic_parent_loads"] == 1
+    next(item for item in app.button if item.label == "Synthetic fragment refresh").click().run(timeout=30)
+    assert not app.exception and app.session_state["synthetic_parent_loads"] == 1
+    hashed.assert_not_called()
+
+
+def test_section_filters_survive_switches_and_changed_inputs_invalidate_summaries(monkeypatch):
+    from unittest.mock import Mock
+    from src import loading_ui
+    tables = result_tables()
+    profile = Mock(wraps=ui.job_profile_tables)
+    geography = Mock(wraps=ui.location_tables)
+    wireframe = Mock(wraps=loading_ui._wireframe)
+    monkeypatch.setattr(ui, "job_profile_tables", profile)
+    monkeypatch.setattr(ui, "location_tables", geography)
+    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
+    app, _ = result_app(monkeypatch, tables)
+    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
+    app.selectbox(key="result_title_view").select("Specific titles (alphabetical)").run(timeout=30)
+    app.button_group(key="result_section").select("Skills").run(timeout=30)
+    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
+    assert app.selectbox(key="result_title_view").value == "Specific titles (alphabetical)"
+    assert profile.call_count == geography.call_count == 1
+    before = sum(call.args == ("market_section",) for call in wireframe.call_args_list)
+    # A same-sized replacement must refresh cached summaries and readiness.
+    tables["cleaned_jobs"].loc[0, "job_title"] = "Synthetic changed title"
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    assert profile.call_count == geography.call_count == 2
+    assert sum(call.args == ("market_section",) for call in wireframe.call_args_list) == before + 1
+    # A reviewed mapping change also invalidates visited sections.
+    tables["psf_mapping"].loc[0, "psf_competency"] = "Synthetic changed competency"
+    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
+    assert not app.exception and not app.error
+    assert app.session_state["_fow_market_loaded"]["sections"] == {"psf_aai"}
+
+
 def test_job_market_hides_audience_guidance_banner(monkeypatch):
     app, _ = result_app(monkeypatch, result_tables())
     assert not any("For the chancellor:" in item.value for item in app.markdown)
     assert not any("Counts describe the selected advertisements" in item.value for item in app.caption)
+
+
+def test_reference_metrics_render_selected_counts_without_extra_badges(monkeypatch):
+    app, _ = result_app(monkeypatch, result_tables())
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Job ads in sample"] == "4"
+    assert metrics["Distinct chart skills"] == "3"
+    assert metrics["Distinct phrases withheld"] == "1"
+    assert metrics["PSF-AAI reference roles"] == "—"
+    assert "fow-metric-badge" not in html_content(app)
+    assert not any("fow-metric-badge" in item.value for item in app.markdown)
+    assert app.button_group(key="result_section").options == ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"]
 
 
 def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
@@ -79,6 +181,47 @@ def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
     assert not any(fig.layout.title.text == "Top skills for engineer" for fig in figures)
     assert any(item.label == "c++" and item.value == "1" for item in app.metric)
     pd.testing.assert_frame_equal(tables["extracted_job_skills"], before)
+
+
+def test_job_market_insights_and_reference_role_card_use_selected_data(monkeypatch):
+    tables = result_tables()
+    tables["psf_framework_order"] = pd.DataFrame({
+        "competency_id": ["C1", "C2", "C3"],
+        "competency_name": ["Programming", "Data Analysis", "Statistics"],
+        "job_role": ["Analyst", "Data Engineer", "Analyst"],
+    })
+    app, _ = result_app(monkeypatch, tables)
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["PSF-AAI reference roles"] == "2"
+    skills_insight = html_content(app).casefold()
+    assert "key insight" in skills_insight
+    assert "sql has the highest displayed skill count" in skills_insight
+    assert "top displayed skills" in skills_insight
+
+    for section, insight, evidence in (
+        ("Roles and locations", "title insight", "data analyst"),
+        ("Qualifications", "education insight", "bachelor"),
+        ("PSF-AAI demand", "key insight", "programming"),
+    ):
+        app.button_group(key="result_section").select(section).run(timeout=30)
+        assert not app.exception and not app.error
+        content = html_content(app).casefold()
+        assert insight in content and evidence in content
+
+
+def test_timeline_education_and_family_insights_acknowledge_ties(monkeypatch):
+    tables = result_tables()
+    tables["cleaned_jobs"]["education_requirement"] = ["Bachelor's degree", "Master's degree"] * 2
+    tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-01-01", "2026-02-01"] * 2
+    app, _ = result_app(monkeypatch, tables)
+    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
+    assert not app.exception and not app.error
+    content = html_content(app)
+    assert "displayed skill–family pairs tie" in content
+    assert "2 displayed months tie" in content
+    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
+    assert not app.exception and not app.error
+    assert "2 classifiable levels share the highest count" in html_content(app)
 
 
 def test_experience_band_table_uses_readable_labels_and_hides_sort_key(monkeypatch):
@@ -112,13 +255,148 @@ def test_unmapped_chart_does_not_count_aligned_format_variant(monkeypatch):
     tables["emerging_skills"] = tables["unmapped_skills"].iloc[:0]
     app, figures = result_app(monkeypatch, tables, "Unmapped / Emerging Skills")
     assert not figures  # Mixed mapped group is not shown as wholly unmapped.
+    assert not app.dataframe
+    app.session_state["unmapped_evidence_details"] = True
+    app.run(timeout=30)
+    assert not app.exception
     assert any("•sql" in frame.value.astype(str).to_string() for frame in app.dataframe)
+
+
+def test_unmapped_summary_and_insights_follow_screened_counts_and_data_changes(monkeypatch):
+    tables = result_tables()
+    tables["alignment_results"] = pd.DataFrame({
+        "normalized_skill": ["SQL", "sql", "collaboration", "c++", "build"],
+        "status": ["NOT MAPPED"] * 5,
+    })
+    tables["unmapped_skills"] = tables["alignment_results"].assign(
+        employer_skill=tables["alignment_results"].normalized_skill, employer_demand_count=1)
+    tables["emerging_skills"] = tables["unmapped_skills"].iloc[:0].copy()
+    app, figures = result_app(monkeypatch, tables, "Unmapped / Emerging Skills")
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["Unmapped skill labels"] == "3"
+    assert metrics["Recurring labels for review"] == "1"
+    bars = figure_with_title(figures, "Unmapped skill evidence").data[0]
+    assert dict(zip(bars.y, bars.x)) == {"sql": 2, "c++": 1, "collaboration": 1}
+    content = html_content(app)
+    assert "Evidence Insight" in content and "Review Insight" in content
+    assert "sql has the highest displayed unmapped skill count" in content
+    assert "50.0% of 4 selected ads" in content
+    assert "build" not in bars.y
+    # Raw evidence survives screening; current charts update when mapping evidence changes.
+    assert not app.dataframe
+    app.session_state["unmapped_evidence_details"] = True
+    app.session_state["unmapped_recurring_details"] = True
+    app.run(timeout=30)
+    assert not app.exception and len(app.dataframe) == 2
+    assert any("build" in frame.value.astype(str).to_string() for frame in app.dataframe)
+    recurring = app.dataframe[1].value
+    assert set(recurring.normalized_skill.str.casefold()) == {"sql"}
+    app.session_state["unmapped_evidence_details"] = False
+    app.session_state["unmapped_recurring_details"] = False
+    app.run(timeout=30)
+    assert not app.exception and not app.dataframe
+    tables["alignment_results"].loc[tables["alignment_results"].normalized_skill.str.casefold().eq("sql"), "status"] = "ALIGNED"
+    figures.clear()
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    metrics = {item.label: item.value for item in app.metric}
+    assert metrics["Unmapped skill labels"] == "2" and metrics["Recurring labels for review"] == "0"
+    bars = figure_with_title(figures, "Unmapped skill evidence").data[0]
+    assert set(bars.y) == {"c++", "collaboration"}
+    assert "sql has the highest" not in html_content(app)
+
+
+def test_unmapped_insight_uses_alphabetical_visible_subset_and_ties(monkeypatch):
+    tables = result_tables()
+    tables["alignment_results"] = pd.DataFrame({
+        "normalized_skill": ["sql", "collaboration", "c++"], "status": ["NOT MAPPED"] * 3})
+    tables["unmapped_skills"] = tables["alignment_results"].assign(
+        employer_skill=tables["alignment_results"].normalized_skill, employer_demand_count=1)
+    tables["emerging_skills"] = pd.DataFrame()
+    monkeypatch.setattr(ui, "result_chart_options", lambda **kwargs: ("Alphabetical", 2))
+    app, figures = result_app(monkeypatch, tables, "Unmapped / Emerging Skills")
+    bars = figure_with_title(figures, "Unmapped skill evidence").data[0]
+    assert list(bars.y) == ["c++", "collaboration"]
+    content = html_content(app)
+    assert "2 unmapped skills tie for the highest displayed count at 1 ad each" in content
+    assert "sql has the highest" not in content
+
+
+def test_psf_tab_has_isolated_body_and_reuses_prepared_all_role_summaries(monkeypatch):
+    from unittest.mock import Mock
+    from src.analytics import psf_demand_tables
+    from src import loading_ui
+    tables = result_tables()
+    tables.update(psf_demand_tables(tables["psf_mapping"], tables["cleaned_jobs"], pd.DataFrame()))
+    builder = Mock(side_effect=AssertionError("All-role summaries are already available"))
+    monkeypatch.setattr(ui, "psf_demand_tables", builder)
+    wireframe = Mock(wraps=loading_ui._wireframe)
+    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
+    app, _ = result_app(monkeypatch, tables)
+    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
+    assert not app.exception and not app.error
+    content = html_content(app)
+    assert "st-key-job_market_section_psf_aai{display:flex!important}" in content
+    assert '[class*="st-key-job_market_section_"]{display:none!important}' in content
+    assert 'data-fow-psf-ready="true"' in content
+    assert sum(call.args[0] == "psf_charts" for call in wireframe.call_args_list) == 1
+    builder.assert_not_called()
+    app.run(timeout=30)
+    assert sum(call.args[0] == "psf_charts" for call in wireframe.call_args_list) == 1
+
+
+def test_psf_chart_summary_does_not_hash_or_copy_repeated_source_text(monkeypatch):
+    tables = result_tables()
+    tables["psf_mapping"]["original_text"] = ["Synthetic source evidence " * 1000] * 2
+    original = ui.frame_hash
+    columns = []
+    def check(frame):
+        columns.append(set(frame.columns))
+        assert "original_text" not in frame.columns
+        return original(frame)
+    monkeypatch.setattr(ui, "frame_hash", check)
+    app, _ = result_app(monkeypatch, tables)
+    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
+    assert not app.exception and not app.error
+    assert {"source_id", "psf_competency", "psf_job_role", "status"} in columns
+    assert any(item.label == "programming" and item.value == "1" for item in app.metric)
+    assert "original_text" in tables["psf_mapping"]
+
+
+def test_incomplete_psf_chart_group_never_gets_a_ready_marker_and_can_retry(monkeypatch, tmp_path):
+    from src import storage
+    monkeypatch.setattr(storage, "ROOT", tmp_path)
+    tables = result_tables()
+    tables["psf_mapping"] = pd.DataFrame({
+        "source_id": ["A", "B"], "psf_competency": ["SQL", "Python"],
+        "psf_job_role": ["analyst", "scientist"], "status": ["ALIGNED", "ALIGNED"],
+    })
+    monkeypatch.setattr(ui, "current_analysis", lambda: True)
+    monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {}))
+    original = ui.chart
+    fail = [True]
+    def draw(figure):
+        if figure.layout.title.text == "PSF-AAI competencies linked to employer demand" and fail[0]:
+            raise ValueError("Synthetic chart rendering interruption")
+        return original(figure)
+    monkeypatch.setattr(ui, "chart", draw)
+    app = AppTest.from_string("from src.ui import render\nrender('Job Market Analysis')").run(timeout=30)
+    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
+    assert not app.exception
+    assert any("Synthetic chart rendering interruption" in item.value for item in app.error)
+    assert 'data-fow-psf-ready="true"' not in html_content(app)
+    assert not app.session_state["_fow_loading_ready"].get("job_market_psf_charts")
+    fail[0] = False
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    assert 'data-fow-psf-ready="true"' in html_content(app)
+    assert app.session_state["_fow_loading_ready"]["job_market_psf_charts"]
 
 
 def test_specific_titles_stay_alphabetical_and_grouped_view_is_auditable(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
-    assert any("Select job ads" in item.value for item in app.markdown)
-    assert any("Describe results" in item.value for item in app.markdown)
+    assert "Select job ads" in html_content(app)
+    assert "Describe results" in html_content(app)
     app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     common = figure_with_title(figures, "Most common job titles")
     assert common.data[0].y[0] == "data analyst"
@@ -199,7 +477,7 @@ def test_selected_title_starts_with_top_ten_and_offers_full_searchable_table(mon
     tables = result_tables()
     skills = tables["extracted_job_skills"].copy()
     extra = pd.DataFrame([{"extraction_id": f"SYNTHETIC-EXTRA-{index}", "source_id": "A", "source_type": "jobs",
-                           "original_phrase": f"specialized skill {index}", "normalized_phrase": f"specialized skill {index}",
+                           "original_phrase": f"Synthetic technique {index} analysis", "normalized_phrase": f"synthetic technique {index} analysis",
                            "competency_category": "Technical / Digital", "human_label": "Technical / Digital"}
                           for index in range(11)])
     tables["extracted_job_skills"] = pd.concat([skills, extra], ignore_index=True)

@@ -318,20 +318,225 @@ def test_login_does_not_keep_token_after_schema_failure(monkeypatch):
     assert "supabase_access_token" not in app.session_state
 
 
-def test_skeleton_is_scoped_to_the_slow_data_loader():
+def test_data_only_loader_does_not_insert_an_unrelated_skeleton():
     app = AppTest.from_string(
         "from contextlib import nullcontext\n"
         "from unittest.mock import patch\n"
         "import streamlit as st\n"
         "from src.loading_ui import load_data_with_skeleton\n"
         "st.title('Page UI stays outside the loading region')\n"
-        "with patch('src.loading_ui.st.skeleton', return_value=nullcontext()) as skeleton:\n"
+        "with patch('streamlit.skeleton', return_value=nullcontext()) as skeleton:\n"
         "    value = load_data_with_skeleton(lambda: 'loaded data', height=180)\n"
         "    assert value == 'loaded data'\n"
-        "    assert skeleton.call_count == 1\n"
+        "    assert skeleton.call_count == 0\n"
         "st.write(value)\n"
     ).run()
     assert not app.exception
+
+
+def test_skeleton_load_uses_only_its_explicit_output_region():
+    from contextlib import nullcontext
+    from src.loading_ui import load_data_with_skeleton
+    region = Mock()
+    region.skeleton.return_value = nullcontext()
+    expected = pd.DataFrame({"source_id": ["SYNTHETIC-A"]})
+    assert load_data_with_skeleton(lambda: expected, region=region, height=180) is expected
+    region.skeleton.assert_called_once_with(height=180)
+
+
+def test_scoped_skeleton_clears_and_preserves_loader_errors():
+    from contextlib import contextmanager
+    from src.loading_ui import load_data_with_skeleton
+    entered = []
+
+    @contextmanager
+    def scoped_placeholder(**kwargs):
+        entered.append("loading")
+        try:
+            yield
+        finally:
+            entered.append("cleared")
+
+    region = Mock()
+    region.skeleton.side_effect = scoped_placeholder
+    loader = Mock(side_effect=ValueError("Synthetic source load failed"))
+    with pytest.raises(ValueError, match="Synthetic source load failed"):
+        load_data_with_skeleton(loader, region=region)
+    assert entered == ["loading", "cleared"]
+
+
+def test_structured_loading_replaces_exact_slot_and_preserves_it_on_rerun(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from src import loading_ui
+    state = {}
+    host, pending = Mock(), Mock()
+    host.empty.return_value = pending
+    pending.container.return_value = nullcontext()
+    host.container.return_value = nullcontext()
+    monkeypatch.setattr(loading_ui, "st", SimpleNamespace(session_state=state, container=Mock(return_value=host)))
+    with loading_ui.loading_content("synthetic-results", "results") as content:
+        assert pending.html.call_count == 1
+        assert not state["_fow_loading_ready"]
+        with content():
+            pass
+    assert state["_fow_loading_ready"] == {"synthetic-results": True}
+    pending.container.assert_called_once_with(key="synthetic-results_body")
+    with loading_ui.loading_content("synthetic-results", "results") as content:
+        with content():
+            pass
+    assert host.empty.call_count == 1
+    assert pending.html.call_count == 1
+    host.container.assert_called_once_with(key="synthetic-results_body")
+
+
+def test_structured_loading_error_or_missing_result_clears_pending_and_allows_retry(monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from src import loading_ui
+    state = {}
+    host, pending = Mock(), Mock()
+    host.empty.return_value = pending
+    pending.container.return_value = nullcontext()
+    monkeypatch.setattr(loading_ui, "st", SimpleNamespace(session_state=state, container=Mock(return_value=host)))
+    with pytest.raises(ValueError, match="Synthetic failed source"):
+        with loading_ui.loading_content("synthetic-results", "reports"):
+            raise ValueError("Synthetic failed source")
+    assert pending.empty.call_count == 1
+    assert not state["_fow_loading_ready"]
+    with loading_ui.loading_content("synthetic-results", "reports"):
+        pass  # A missing/stale extraction never materializes results.
+    assert pending.empty.call_count == 2
+    assert not state["_fow_loading_ready"]
+    with loading_ui.loading_content("synthetic-results", "reports") as content:
+        with content():
+            pass
+    assert state["_fow_loading_ready"] == {"synthetic-results": True}
+
+    with loading_ui.loading_content("synthetic-results", "reports"):
+        pass  # Previously visible results can become unavailable after cleanup.
+    assert not state["_fow_loading_ready"]
+    calls_before_retry = host.empty.call_count
+    with loading_ui.loading_content("synthetic-results", "reports") as content:
+        with content():
+            pass
+    assert host.empty.call_count == calls_before_retry + 1
+    assert state["_fow_loading_ready"] == {"synthetic-results": True}
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_deferred_loading_remains_until_the_output_finishes_and_clears_on_error(monkeypatch, failure):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from src import loading_ui
+    state = {}
+    host, pending = Mock(), Mock()
+    host.empty.return_value = pending
+    host.container.return_value = nullcontext()
+    monkeypatch.setattr(loading_ui, "st", SimpleNamespace(session_state=state, container=Mock(return_value=host)))
+    def render():
+        with loading_ui.loading_content("synthetic-section", "market_section", view="Skills", defer=True) as content:
+            pending.empty.assert_not_called()
+            with content():
+                pending.container.assert_not_called()
+                pending.empty.assert_not_called()
+                if failure:
+                    raise ValueError("Synthetic rendering failure")
+    if failure:
+        with pytest.raises(ValueError, match="Synthetic rendering failure"):
+            render()
+        assert not state["_fow_loading_ready"]
+    else:
+        render()
+        assert state["_fow_loading_ready"]["synthetic-section"]
+    pending.empty.assert_called_once()
+
+
+def test_structured_loading_keeps_existing_ready_state_during_streamlit_rerun(monkeypatch):
+    from types import SimpleNamespace
+    from streamlit.runtime.scriptrunner_utils.exceptions import RerunException
+    from streamlit.runtime.scriptrunner_utils.script_requests import RerunData
+    from src import loading_ui
+    state = {"_fow_loading_ready": {"synthetic-review": True}}
+    host = Mock()
+    monkeypatch.setattr(loading_ui, "st", SimpleNamespace(session_state=state, container=Mock(return_value=host)))
+    with pytest.raises(RerunException):
+        with loading_ui.loading_content("synthetic-review", "review"):
+            raise RerunException(RerunData())
+    assert state["_fow_loading_ready"] == {"synthetic-review": True}
+    host.empty.assert_not_called()
+
+
+def test_structured_wireframes_match_content_shapes_without_fake_research_values():
+    from src.loading_ui import _wireframe
+    assert _wireframe("metrics").count('class="fow-skeleton-card"') == 4
+    reports = _wireframe("reports")
+    assert reports.count('class="fow-skeleton-card"') == 5
+    assert reports.index('fow-skeleton-toolbar') < reports.index('fow-skeleton-heading') < reports.index('fow-skeleton-card')
+    review = _wireframe("review")
+    assert review.count('class="fow-skeleton-row"') == 11
+    assert 'aria-busy="true"' in review and 'aria-hidden="true"' in review
+    assert "93,622" not in review and "SQL" not in review
+    assert _wireframe("metrics", cards=3).count('class="fow-skeleton-card"') == 3
+    selector = _wireframe("selector")
+    assert 'fow-skeleton-control' in selector and 'fow-skeleton-chart' not in selector
+    assert _wireframe("table", columns=["source_id", "phrase"], rows=2).count('class="fow-skeleton-row"') == 3
+
+
+def test_unknown_source_shape_does_not_invent_a_table_or_chart():
+    from src.loading_ui import _wireframe
+    for markup in (_wireframe("table"), _wireframe("pending")):
+        assert "fow-skeleton-pending" in markup
+        assert "fow-skeleton-table" not in markup
+        assert "fow-skeleton-chart" not in markup
+    schema_only = _wireframe("table", columns=["source", "skill"])
+    assert schema_only.count('class="fow-skeleton-row"') == 6  # Neutral loading rows, never a reported record count.
+    actual_page = _wireframe("review", columns=["phrase", "category"], rows=3)
+    assert actual_page.count('class="fow-skeleton-row"') == 4
+
+
+def test_settings_wireframe_uses_the_same_control_schema_as_the_form():
+    from src.loading_ui import _wireframe
+    from src.ui import SETTINGS_SECTIONS
+    controls = [control for _, _, fields in SETTINGS_SECTIONS
+                for control in ["heading", *(field[2] for field in fields)]] + ["button"]
+    markup = _wireframe("form", controls=controls, field_columns=2)
+    assert markup.count('class="fow-skeleton-form-heading"') == len(SETTINGS_SECTIONS)
+    assert markup.count('fow-skeleton-field--slider') == 4
+    assert markup.count('fow-skeleton-field--number') == 5
+    assert markup.count('fow-skeleton-field--textarea') == 1
+    assert markup.count('fow-skeleton-field--text"') == 1
+    assert markup.count('fow-skeleton-field--button') == 1
+    assert "--fow-field-columns:2" in markup
+
+
+def test_loading_page_shapes_follow_visible_sections_and_controls():
+    from src.loading_ui import _wireframe
+    overview = _wireframe("overview", cards=4)
+    assert overview.count('class="fow-skeleton-card"') == 4
+    assert overview.count('class="fow-skeleton-workflow-card"') == 6
+    assert 'class="fow-skeleton-callout"' in overview
+    assert 'class="fow-skeleton-chart"' not in _wireframe("market", view=None)
+    assert _wireframe("market", view="Skills").count('class="fow-skeleton-chart"') == 1
+    assert _wireframe("mapping", view="selected").count('class="fow-skeleton-field"') > _wireframe("mapping").count('class="fow-skeleton-field"')
+    psf = _wireframe("psf_charts", columns=["role a", "role b"], rows=3)
+    assert psf.count('class="fow-skeleton-chart"') == 2
+    assert 'class="fow-skeleton-matrix"' in psf and 'class="fow-skeleton-table"' not in psf
+    assert 'data-view="usability"' in _wireframe("form", controls=["select", "slider", "textarea", "button"], view="usability")
+
+
+def test_loading_geometry_is_bounded_and_does_not_repeat_live_regions():
+    from src.loading_ui import _wireframe
+    table = _wireframe("table", columns=range(1_000_000), rows=1_000_000)
+    assert table.count('class="fow-skeleton-row"') == 11
+    assert len(table.encode()) < 8_000
+    assert _wireframe("metrics", cards=1_000_000).count('class="fow-skeleton-card"') == 8
+    assert _wireframe("table", columns=["source", "phrase"], rows=0).count('class="fow-skeleton-row"') == 1
+    for kind in ("overview", "market", "alignment", "mapping", "evaluation", "unmapped", "reports", "psf_charts", "readiness", "workspace_status"):
+        markup = _wireframe(kind, view="Skills", columns=range(12), rows=15)
+        assert markup.count('aria-busy="true"') == 1
+        assert len(markup.encode()) < 20_000
+        assert "<script" not in markup
 
 
 def test_logged_out_app_only_shows_login(monkeypatch):
@@ -340,6 +545,10 @@ def test_logged_out_app_only_shows_login(monkeypatch):
     assert not app.exception
     assert app.title[0].value == "Research team sign in"
     assert not app.sidebar.button
+    auth_chrome = next(item.proto.body for item in app.get("html") if "data-fow-auth-sidebar" in item.proto.body)
+    for element in ("stSidebar", "stSidebarCollapsed", "stSidebarCollapseButton", "stSidebarResizeHandle"):
+        assert f'[data-testid="{element}"]' in auth_chrome
+    assert "display: none !important" in auth_chrome
 
 
 @pytest.mark.parametrize("page_file", sorted((Path(__file__).resolve().parents[1] / "pages").glob("*.py")))
@@ -349,6 +558,78 @@ def test_logged_out_direct_page_entry_shows_login(monkeypatch, page_file):
     assert not app.exception, [item.message for item in app.exception]
     assert any(item.value == "Research team sign in" for item in app.title)
     assert not any(item.value in {"Job market", "Review and label phrases", "Train classifier"} for item in app.title)
+    assert any("data-fow-auth-sidebar" in item.proto.body for item in app.get("html"))
+
+
+@pytest.mark.parametrize("known_session", [False, True])
+def test_authorized_workspace_releases_sidebar_guard_without_hiding_valid_session(monkeypatch, known_session):
+    from src import auth_ui
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    monkeypatch.setattr(backend, "get_token", lambda: "synthetic-token")
+    monkeypatch.setattr(backend, "check_connection", lambda token: "reviewer")
+    guard = Mock(wraps=auth_ui._hide_workspace_sidebar)
+    monkeypatch.setattr(auth_ui, "_hide_workspace_sidebar", guard)
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from src.auth_ui import require_workspace_access\n"
+        "require_workspace_access()\n"
+        "st.sidebar.write('Authorized workspace')\n"
+    )
+    if known_session:
+        for key, value in {"supabase_access_token": "synthetic-token", "supabase_role": "reviewer",
+                           "supabase_expires_at": time.time() + 3600}.items():
+            app.session_state[key] = value
+    app.run()
+    assert not app.exception
+    assert app.sidebar.markdown[0].value == "Authorized workspace"
+    assert not any("data-fow-auth-sidebar" in item.proto.body for item in app.get("html"))
+    assert guard.call_count == (0 if known_session else 1)
+
+
+@pytest.mark.parametrize("stage", ["refresh", "membership"])
+def test_session_connection_errors_hide_workspace_sidebar(monkeypatch, stage):
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    def fail(*args):
+        raise backend.SupabaseError("Synthetic connection unavailable", status_code=503)
+    monkeypatch.setattr(backend, "get_token", fail if stage == "refresh" else lambda: "synthetic-token")
+    monkeypatch.setattr(backend, "check_connection", fail)
+    app = AppTest.from_string(
+        "from src.auth_ui import require_workspace_access\nrequire_workspace_access()"
+    )
+    for key, value in {"supabase_access_token": "synthetic-token", "supabase_role": "reviewer",
+                       "supabase_expires_at": time.time() + 3600}.items():
+        app.session_state[key] = value
+    app.run()
+    assert not app.exception
+    assert any("data-fow-auth-sidebar" in item.proto.body for item in app.get("html"))
+    assert app.title[0].value == "Workspace unavailable"
+    assert any("Synthetic connection unavailable" in item.proto.body for item in app.get("html"))
+    assert {item.label for item in app.button} == {
+        "Retry session connection" if stage == "refresh" else "Retry connection", "Return to sign in"}
+
+
+def test_sign_out_returns_to_login_with_sidebar_hidden(monkeypatch):
+    monkeypatch.setattr(backend, "configured", lambda: True)
+    monkeypatch.setattr(backend, "get_token", lambda: backend.st.session_state.get("supabase_access_token", ""))
+    monkeypatch.setattr(backend, "check_connection", lambda token: "reviewer")
+    app = AppTest.from_string(
+        "import streamlit as st\n"
+        "from src.auth_ui import require_workspace_access, render_account_menu\n"
+        "require_workspace_access()\n"
+        "st.sidebar.write('Authorized workspace')\n"
+        "render_account_menu()\n"
+    )
+    for key, value in {"supabase_access_token": "synthetic-token", "supabase_role": "reviewer",
+                       "supabase_expires_at": time.time() + 3600,
+                       "supabase_user_email": "synthetic@example.test"}.items():
+        app.session_state[key] = value
+    app.run()
+    assert not app.exception
+    app.button(key="sign_out").click().run()
+    assert not app.exception
+    assert app.title[0].value == "Research team sign in"
+    assert not app.sidebar.markdown
+    assert any("data-fow-auth-sidebar" in item.proto.body for item in app.get("html"))
 
 
 def test_expired_workspace_session_returns_to_sign_in(monkeypatch):

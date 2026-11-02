@@ -22,9 +22,13 @@ import streamlit as st
 from src.auth_ui import render_account_menu
 st.session_state["supabase_user_email"] = "synthetic@example.test"
 st.session_state["supabase_role"] = "admin"
-render_account_menu()
+with st.container(horizontal=True, key="workspace_toolbar"):
+    st.caption("Synthetic workspace")
+    render_account_menu()
 ''').run()
     assert not app.exception
+    trigger = app.get("popover")[0].proto.popover
+    assert trigger.label == "Account" and not trigger.disabled
     profile = app.get("html")[0].proto.body
     assert "synthetic@example.test" in profile and "Admin" in profile
     assert "Your account</h3>" in profile
@@ -67,6 +71,59 @@ def test_busy_login_disables_all_controls():
     assert not app.exception
     assert all(item.disabled for item in app.text_input)
     assert app.button[0].disabled
+
+
+@pytest.mark.parametrize("status,expected", [(503, "Connection issue"), (403, "Workspace access"), (404, "Workspace setup")])
+def test_unavailable_screen_keeps_error_escaped_and_offers_recovery(monkeypatch, status, expected):
+    clear_cache, sign_out = Mock(), Mock()
+    monkeypatch.setattr(backend, "clear_read_cache", clear_cache)
+    monkeypatch.setattr(backend, "sign_out", sign_out)
+    app = AppTest.from_string(
+        'from src.auth_ui import _workspace_unavailable\n'
+        'from src.supabase_store import SupabaseError\n'
+        f'_workspace_unavailable(SupabaseError("Synthetic <script>unsafe</script> interruption", status_code={status}))'
+    ).run()
+    assert not app.exception
+    content = " ".join(item.proto.body for item in app.get("html"))
+    assert expected in content and "&lt;script&gt;unsafe&lt;/script&gt;" in content
+    assert "<script>unsafe</script>" not in content
+    assert app.title[0].value == "Workspace unavailable"
+    assert len(app.get("image")) == 1
+    assert not app.sidebar.button
+    clear_cache.assert_not_called()
+    sign_out.assert_not_called()
+
+
+def test_unavailable_retry_and_signin_actions_do_not_approve_workspace_access(monkeypatch):
+    clear_cache, sign_out = Mock(), Mock()
+    monkeypatch.setattr(backend, "clear_read_cache", clear_cache)
+    monkeypatch.setattr(backend, "sign_out", sign_out)
+    # After either action reruns, replace the test screen to avoid repeating a click.
+    app = AppTest.from_string('''
+import streamlit as st
+from src.auth_ui import _workspace_unavailable
+from src.supabase_store import SupabaseError
+if st.session_state.get('_fow_recent_actions'):
+    st.info('Synthetic rerun reached; workspace remains unapproved')
+else:
+    _workspace_unavailable(SupabaseError('Synthetic interruption', status_code=503))
+''').run()
+    app.button[0].click().run()
+    assert not app.exception
+    clear_cache.assert_called_once()
+    sign_out.assert_not_called()
+    app = AppTest.from_string('''
+import streamlit as st
+from src.auth_ui import _workspace_unavailable
+from src.supabase_store import SupabaseError
+if st.session_state.get('_fow_recent_actions'):
+    st.info('Synthetic rerun reached; workspace remains unapproved')
+else:
+    _workspace_unavailable(SupabaseError('Synthetic interruption', status_code=503))
+''').run()
+    app.button[1].click().run()
+    assert not app.exception
+    sign_out.assert_called_once()
 
 
 def test_successful_login_still_requires_membership(monkeypatch):
@@ -117,7 +174,7 @@ def test_theme_primary_button_meets_text_contrast():
 
 
 def test_shared_visual_direction_is_present_in_theme_css_and_page_guide():
-    from src.design import CSS
+    from src.design import CSS, JOB_MARKET_CSS, SIDEBAR_CSS
     root = Path(__file__).resolve().parents[1]
     theme = tomllib.loads((root/".streamlit/config.toml").read_text())["theme"]
     direction = (root/"DESIGN_DIRECTION.md").read_text(encoding="utf-8")
@@ -126,11 +183,26 @@ def test_shared_visual_direction_is_present_in_theme_css_and_page_guide():
     assert theme["backgroundColor"] == "#FBF8F4"
     assert theme["orangeColor"] != theme["violetColor"]
     assert theme["orangeTextColor"] != theme["violetTextColor"]
-    assert "max-width: 1440px" in CSS
+    assert "width: 100%; max-width: none;" in CSS
     assert "--fow-control-height: 44px" in CSS
     assert "min-height: 185px" not in CSS
     assert "Sign in" in direction and "Review and label phrases" in direction
     assert "Methodology" in direction and "Settings" in direction
+    assert "generic research identity" in direction
+    assert ".st-key-job_market_heading" in JOB_MARKET_CSS
+    assert ".st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading" in JOB_MARKET_CSS
+    assert '[data-testid="stSidebarNavLink"][aria-current="page"]' in SIDEBAR_CSS
+    assert '[role="radiogroup"] > button[aria-checked="true"]' in JOB_MARKET_CSS
+    root = Path(__file__).resolve().parents[1]
+    assert "MSU-IIT" not in (root / "assets" / "job_market_brand.svg").read_text(encoding="utf-8")
+    entry = (root / "app.py").read_text(encoding="utf-8")
+    assert entry.index("apply_design()") < entry.index("require_workspace_access()") < entry.index("from src.ui import render")
+    assert "apply_sidebar_branding()" in entry
+    assert 'title="Job Market Analysis"' in (root / "app.py").read_text(encoding="utf-8")
+    assert "max-width: none !important" in JOB_MARKET_CSS
+    assert "@media" in JOB_MARKET_CSS
+    assert 'body:has(.st-key-workspace_toolbar) [data-stale="true"]' in CSS
+    assert '[data-testid="stSidebar"] [data-stale="true"]' in CSS
 
 
 def test_sequential_chart_palette_has_supported_number_of_steps():
@@ -139,16 +211,17 @@ def test_sequential_chart_palette_has_supported_number_of_steps():
     assert len(theme["chartSequentialColors"]) == 10
 
 
-def test_pipeline_uses_one_outer_surface_and_keeps_all_stages_readable():
-    from src.design import CSS
-    app = AppTest.from_string("from src.ui import analysis_workflow\nanalysis_workflow()").run()
+def test_pipeline_uses_independent_stage_cards_and_keeps_all_stages_readable():
+    app = AppTest.from_string("from src.ui import analysis_workflow\nanalysis_workflow()").run(timeout=30)
     assert not app.exception
-    visible = " ".join(item.value for item in app.markdown) + " " + " ".join(item.value for item in app.caption)
+    visible = " ".join(item.proto.body for item in app.get("html"))
+    assert 'aria-label="Analysis pipeline"' in visible
+    assert "<h2>Analysis Pipeline</h2>" in visible
+    assert visible.count("<li>") == 5
     for stage in ("Select job ads", "Clean and group", "Extract and review", "Compare PSF-AAI", "Describe results"):
-        assert stage in visible
-    assert "min-height: 112px" in CSS
-    assert "border-top: 3px solid var(--fow-accent)" not in CSS
-    assert "min-width: min(100%, 160px); flex: 1 1 160px;" in CSS
+        assert visible.count(stage) == 1
+    assert "fow-pipeline-number" not in visible
+    assert "Follow the steps" not in visible
 
 
 def test_main_content_preserves_native_toolbar_clearance_at_all_breakpoints():
@@ -202,10 +275,6 @@ def test_plotly_measurement_node_has_no_size_adding_decoration():
 def test_overview_metric_icons_use_shared_semantic_palette():
     from unittest.mock import patch
     from src.design import CSS, apply_design
-    assert ".st-key-overview_metrics [data-testid=\"stMetricIcon\"]" in CSS
-    assert "position: static !important" in CSS
-    assert "inset: auto !important" in CSS
-    assert "transform: none !important" in CSS
     assert ".st-key-overview_metrics [data-testid=\"stMetricLabel\"] { display: flex; align-items: center;" in CSS
     for selector in (
         ".st-key-overview_metric_1 [data-testid=\"stMetricIcon\"]",
@@ -232,6 +301,48 @@ def test_narrow_horizontal_workspaces_wrap_before_clipping_content():
         assert f".st-key-{key}" in CSS
     assert "flex-wrap: wrap" in CSS
     assert "width: auto !important; min-width: min(100%, 220px); flex: 1 1 220px;" in CSS
+
+
+def test_job_market_metrics_and_result_tabs_follow_reference_layout():
+    from src.design import JOB_MARKET_CSS
+    assert "align-items: flex-start" in JOB_MARKET_CSS
+    assert ".fow-metric-badge" not in JOB_MARKET_CSS
+    assert ".fow-key-insight" in JOB_MARKET_CSS
+    for icon in ("work", "person_pin_circle", "school", "layers"):
+        assert f'content: "{icon}"' in JOB_MARKET_CSS
+
+
+def test_pipeline_and_deliverables_keep_component_alignment_and_responsive_layout():
+    from src.design import JOB_MARKET_CSS, REPORTS_CSS
+    assert "container: pipeline / inline-size" in JOB_MARKET_CSS
+    assert ".fow-analysis-pipeline li > div { min-width: 0; }" in JOB_MARKET_CSS
+    for size in (950, 620, 380):
+        assert f"@container pipeline (max-width: {size}px)" in JOB_MARKET_CSS
+    assert ".st-key-reports_deliverables_grid" in REPORTS_CSS
+    assert "grid-auto-rows: 1fr" in REPORTS_CSS
+    assert "margin-top: auto; width: 100%" in REPORTS_CSS
+    assert ".st-key-report_deliverable_excel { border-color: var(--fow-accent)" in REPORTS_CSS
+    assert "min-height: 44px" in REPORTS_CSS
+    for size in (1200, 850, 550):
+        assert f"@media (max-width: {size}px)" in REPORTS_CSS
+
+
+def test_loading_shapes_are_scoped_responsive_and_respect_reduced_motion():
+    from src.design import LOADING_CSS, JOB_MARKET_CSS
+    for kind in ("metrics", "results", "review", "reports", "cards", "selector", "form", "document", "table"):
+        assert f".fow-loading--{kind}" in LOADING_CSS
+    for shape in ("line", "icon", "card", "chart", "table", "toolbar", "row", "grid", "insight", "heading", "field", "control", "document", "matrix", "cell"):
+        assert f".fow-skeleton-{shape}" in LOADING_CSS
+    assert ".fow-loading--reports > :is(.fow-skeleton-toolbar,.fow-skeleton-heading) { grid-column: 1 / -1; }" in LOADING_CSS
+    assert "grid-auto-flow: column" in LOADING_CSS
+    assert "repeat(var(--fow-skeleton-cards,4),minmax(0,1fr))" in LOADING_CSS
+    assert "grid-auto-columns: minmax(100px,1fr)" in LOADING_CSS
+    assert ".fow-skeleton-matrix > .fow-skeleton-row { grid-auto-columns: 38px;" in LOADING_CSS
+    assert "@media (prefers-reduced-motion: reduce)" in LOADING_CSS
+    assert "animation: none; opacity: 1" in LOADING_CSS
+    assert "position: fixed" not in LOADING_CSS and "backdrop-filter" not in LOADING_CSS
+    assert ".st-key-result_chart_note > * { grid-column: 2; min-width: 0; }" in JOB_MARKET_CSS
+    assert 'font: 18px/1 "Material Symbols Rounded"' in JOB_MARKET_CSS
 
 
 def test_result_hover_is_explicit_readable_wrapped_and_preserves_counts():
@@ -445,4 +556,280 @@ def test_distribution_order_is_deterministic_before_limiting_and_keeps_label_cas
     assert alphabetical.data[0].y.tolist() == ["alpha", "Beta", "Zebra"]
     assert alphabetical.layout.xaxis.tickformat == ",d"
     assert ranked.layout.yaxis.autorange == "reversed"
+    pd.testing.assert_frame_equal(frame, before)
+
+
+def test_preparation_content_and_sidebar_controls_share_workspace_geometry():
+    from src.design import WORKSPACE_CONTENT_CSS
+    assert '[class*="st-key-workspace_page_"]' in WORKSPACE_CONTENT_CSS
+    assert '.st-key-upload_file_panel' in WORKSPACE_CONTENT_CSS
+    assert '.st-key-training_options_panel' in WORKSPACE_CONTENT_CSS
+    assert '[data-testid="stExpandSidebarButton"]' in WORKSPACE_CONTENT_CSS
+    assert 'padding-left: 54px' in WORKSPACE_CONTENT_CSS
+    assert 'grid-template-columns: minmax(0,1fr) 44px' in WORKSPACE_CONTENT_CSS
+    assert '.st-key-job_market_psf_charts_body:not(:has([data-fow-psf-ready]))' in WORKSPACE_CONTENT_CSS
+    assert '[class*="st-key-workspace_page_"] h3 [data-testid="stIconMaterial"] { color: #8B1630;' in WORKSPACE_CONTENT_CSS
+
+
+def test_responsive_rules_win_the_cascade_and_focus_mode_keeps_viewport_positioning(monkeypatch):
+    from src import design
+    from src.design import RESPONSIVE_CSS
+    rendered = Mock()
+    monkeypatch.setattr(design.st, "html", rendered)
+    design.apply_design()
+    design.review_workspace_style(True)
+    markup = [call.args[0] for call in rendered.call_args_list]
+    assert markup[0].endswith(RESPONSIVE_CSS + "</style>")
+    assert "container: workspace / inline-size" in markup[0]
+    assert "visibility: hidden; container-type: normal" in markup[-1]
+    for size in (1100, 760, 480):
+        assert f"@container workspace (max-width: {size}px)" in RESPONSIVE_CSS
+    assert "overflow-x: auto" in RESPONSIVE_CSS
+    assert 'body { overflow' not in RESPONSIVE_CSS
+    assert 'font-size: 16px' in RESPONSIVE_CSS
+
+
+def test_reference_content_redesign_does_not_target_workspace_chrome():
+    from src.design import STUDY_CONTENT_CSS
+    for selector in ('[data-testid="stHeader"]', '[data-testid="stSidebar"]',
+                     '.st-key-workspace_toolbar', '.st-key-account_trigger'):
+        assert selector not in STUDY_CONTENT_CSS
+
+
+def test_html_hover_tracks_each_chart_without_copying_svg_or_scanning_hover_mutations():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for the tooltip migration runtime test")
+    script = r'''
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('src/chart_hover.js', 'utf8');
+let cleaned = 0, scans = 0, measures = 0;
+class Element {
+  constructor() {
+    this.nodeType = 1; this.namespaceURI = 'http://www.w3.org/1999/xhtml';
+    this.children = []; this.dataset = {}; this.style = {}; this.attributes = {};
+    this.isConnected = true; this.events = new Map();
+  }
+  setAttribute(key, value) {this.attributes[key] = value;}
+  appendChild(node) {this.children.push(node); node.parent = this;}
+  replaceChildren(...nodes) {this.children = nodes;}
+  remove() {this.isConnected = false;}
+  contains(node) {return node === this || this.children.some(child => child.contains?.(node));}
+  matches() {return this instanceof Plot;}
+  closest() {return this.chart || (this.plots ? this : null);}
+  querySelectorAll() {scans += 1; return this.plots || [];}
+  addEventListener(name, handler) {this.events.set(name, handler);}
+  removeEventListener(name, handler) {if (this.events.get(name) === handler) this.events.delete(name);}
+  getBoundingClientRect() {measures += 1; return {width: 220, height: 80};}
+  set innerHTML(value) {throw Error('Tooltip content must be plain text');}
+}
+class Plot extends Element {
+  constructor(lines) {super(); this.lines = lines; this.listeners = new Map();}
+  on(name, handler) {
+    if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+    this.listeners.get(name).add(handler);
+  }
+  removeListener(name, handler) {this.listeners.get(name)?.delete(handler);}
+  emit(name, event) {for (const handler of this.listeners.get(name) || []) handler(event);}
+  querySelectorAll(selector) {
+    assert(selector.includes('.hoverlayer:not([data-fow-retained-hover])'));
+    const text = {textContent: this.lines.join(''), querySelectorAll: () => this.lines.map(textContent => ({textContent}))};
+    return this.lines.length ? [{querySelector: name => name === 'text.nums' ? text : null}] : [];
+  }
+}
+const first = new Plot(['SQL', 'Job advertisements: 3', 'Share of selected ads: 75.0%']);
+const second = new Plot(['Python', 'Job advertisements: 1', 'Share of selected ads: 25.0%']);
+const body = new Element();
+const win = new Element();
+win.innerWidth = 1000; win.innerHeight = 800;
+const doc = new Element();
+doc.body = body;
+doc.createElement = () => new Element();
+const legacy = [{removed: false, remove() {this.removed = true;}},
+                {removed: false, remove() {this.removed = true;}}];
+doc.querySelectorAll = selector => selector.includes('.js-plotly-plot')
+  ? [first, second] : legacy.filter(node => !node.removed);
+const retiredHandler = () => {};
+const unrelatedHandler = () => {};
+first.on('plotly_hover', retiredHandler);
+first.on('plotly_hover', unrelatedHandler);
+win.__fowChartHoverCleanup = () => {
+  first.off?.('plotly_hover', retiredHandler);
+  cleaned += 1;
+};
+const observers = [];
+class Observer {
+  constructor(callback) {this.callback = callback; observers.push(this);}
+  observe() {}
+  disconnect() {this.disconnected = true;}
+}
+const context = {
+  window: win, document: doc, MutationObserver: Observer
+};
+vm.runInNewContext(source, context);
+vm.runInNewContext(source, context); // An ordinary app rerun stays harmless.
+assert.equal(cleaned, 1);
+assert(legacy.every(node => node.removed));
+assert.equal(body.children.length, 1);
+assert.equal(observers.length, 1);
+const tooltip = body.children[0];
+const shown = () => tooltip.children.map(row => row.textContent);
+assert.equal(tooltip.attributes.role, 'tooltip');
+assert(tooltip.hidden);
+first.emit('plotly_hover', {event: {clientX: 100, clientY: 200}});
+assert.deepEqual(shown(), first.lines);
+assert.equal(first.dataset.fowHtmlHover, 'true');
+assert.equal(tooltip.style.left, '114px');
+assert.equal(tooltip.style.top, '214px');
+assert.equal(measures, 1);
+first.events.get('pointermove')({clientX: 990, clientY: 790});
+assert.equal(tooltip.style.left, '768px');
+assert.equal(tooltip.style.top, '696px');
+assert.equal(measures, 1); // Pointer movement does not repeatedly measure layout.
+first.lines = ['Collaboration', 'Job advertisements: 2', 'Share of selected ads: 50.0%'];
+first.emit('plotly_hover', {event: {clientX: 120, clientY: 220}});
+assert.deepEqual(shown(), first.lines);
+second.emit('plotly_hover', {event: {clientX: 300, clientY: 400}});
+assert.deepEqual(shown(), second.lines);
+assert.equal(shown().filter(line => line.startsWith('Share of selected ads:')).length, 1);
+first.emit('plotly_unhover'); // A late event from another chart cannot close this one.
+assert(!tooltip.hidden);
+second.emit('plotly_unhover');
+assert(tooltip.hidden);
+second.lines = ['<img src=x onerror=alert(1)>', 'Count: 1'];
+second.emit('plotly_hover', {event: {clientX: 300, clientY: 400}});
+assert.equal(shown()[0], '<img src=x onerror=alert(1)>');
+doc.events.get('keydown')({key: 'Escape'});
+assert(tooltip.hidden);
+second.emit('plotly_hover', {event: {clientX: 300, clientY: 400}});
+win.events.get('scroll')();
+assert(tooltip.hidden);
+second.lines = [];
+second.emit('plotly_hover', {event: {clientX: 300, clientY: 400}});
+assert.equal(second.dataset.fowHtmlHover, undefined); // Native fallback stays available.
+const before = scans;
+observers[0].callback([{target: {namespaceURI: 'http://www.w3.org/2000/svg'}, addedNodes: [], removedNodes: []}]);
+assert.equal(scans, before);
+const late = new Plot(['Data analysis', 'Job advertisements: 4']);
+const chart = new Element(); chart.plots = [late];
+late.chart = chart;
+late.on = undefined; // Plotly's lazy-loaded graph API is not ready yet.
+observers[0].callback([{target: chart, addedNodes: [late], removedNodes: []}]);
+assert.equal(late.listeners.size, 0);
+late.on = Plot.prototype.on;
+observers[0].callback([{target: chart, addedNodes: [late], removedNodes: []}]);
+assert.equal(late.listeners.get('plotly_hover').size, 1);
+late.emit('plotly_hover', {event: {clientX: 0, clientY: 0}});
+assert.deepEqual(shown(), late.lines);
+late.on = undefined; late.removeListener = undefined; // Match Plotly.purge.
+observers[0].callback([{target: chart, addedNodes: [], removedNodes: []}]);
+assert.equal(late.listeners.get('plotly_hover').size, 0);
+assert(tooltip.hidden);
+late.on = function(...args) {return Plot.prototype.on.apply(this, args);};
+late.removeListener = Plot.prototype.removeListener;
+observers[0].callback([{target: chart, addedNodes: [], removedNodes: []}]);
+assert.equal(late.listeners.get('plotly_hover').size, 1);
+late.emit('plotly_hover', {event: {clientX: 0, clientY: 0}});
+assert.deepEqual(shown(), late.lines);
+late.on = undefined; late.removeListener = undefined;
+late.isConnected = false;
+observers[0].callback([{target: body, addedNodes: [], removedNodes: [late]}]);
+assert.equal(late.listeners.get('plotly_hover').size, 0);
+assert(tooltip.hidden);
+assert(first.listeners.get('plotly_hover').has(unrelatedHandler));
+assert(!first.listeners.get('plotly_hover').has(retiredHandler));
+win.__fowChartHoverCleanup();
+assert(observers[0].disconnected && !tooltip.isConnected);
+assert.equal(first.listeners.get('plotly_hover').size, 1); // Preserve unrelated listeners.
+assert.equal(second.listeners.get('plotly_hover').size, 0);
+assert.equal(first.events.size, 0);
+assert.equal(win.events.size, 0);
+assert.equal(doc.events.size, 0);
+assert.equal(first.off, undefined);
+assert(!source.includes('cloneNode') && !source.includes('requestAnimationFrame'));
+'''
+    result = subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_account_menu_uses_a_native_compact_anchor_and_no_detached_arrow():
+    from src.design import CSS, WORKSPACE_CONTENT_CSS
+    assert '.st-key-account_trigger { flex: 0 0 auto;' in WORKSPACE_CONTENT_CSS
+    assert 'min-height: 44px' in WORKSPACE_CONTENT_CSS
+    assert '[data-testid="stPopoverBody"]:has(.st-key-account_menu)' in CSS
+    assert '[aria-label="Account"]::before' not in CSS
+    assert 'width: min(320px, calc(100vw - 24px))' in CSS
+    assert '[data-fow-retained-hover]' in CSS
+    assert '.hoverlayer .hovertext { pointer-events: none !important; }' in CSS
+
+
+def test_html_hover_hides_svg_only_after_a_successful_replacement():
+    from src.design import CSS
+    assert '[data-fow-html-hover="true"] .hoverlayer { opacity: 0 !important; }' in CSS
+    assert '[data-fow-html-hover="true"] .hoverlayer * { pointer-events: none !important; }' in CSS
+    assert '.fow-chart-tooltip[hidden] { display: none; }' in CSS
+    tooltip = CSS.split('.fow-chart-tooltip {', 1)[1].split('}', 1)[0]
+    assert 'position: fixed' in tooltip and 'pointer-events: none' in tooltip
+    assert 'max-width: min(380px, calc(100vw - 24px))' in tooltip
+
+
+def test_design_bootstraps_the_hover_controller_with_the_current_release():
+    from src.config import VERSION
+    app = AppTest.from_string('from src.design import apply_design\napply_design()').run()
+    assert not app.exception
+    script = next(item.proto.body for item in app.get("html") if 'data-fow-hover-loader' in item.proto.body)
+    assert f'const version = "{VERSION}"' in script
+    assert '__FOW_APP_VERSION__' not in script
+
+
+def test_transparent_header_passes_workspace_clicks_but_keeps_native_controls():
+    from src.design import WORKSPACE_CONTENT_CSS
+    assert 'body:has(.st-key-workspace_toolbar) :is([data-testid="stHeader"], [data-testid="stToolbar"]) { pointer-events: none; }' in WORKSPACE_CONTENT_CSS
+    assert 'body:has(.st-key-workspace_toolbar) [data-testid="stHeader"] :is(button, a, [role="button"]) { pointer-events: auto; }' in WORKSPACE_CONTENT_CSS
+
+
+def test_chart_upgrade_replaces_old_widget_without_changing_its_values(monkeypatch):
+    import json
+    from src import visualization
+    app = AppTest.from_string('''
+import streamlit as st
+import pandas as pd
+from src.visualization import ranked_bar, style_chart
+data = pd.DataFrame({"skill": ["SQL", "Python"], "job_ads": [3, 1], "job_ads_pct": [75., 25.]})
+st.plotly_chart(style_chart(ranked_bar(data, "skill", "job_ads", "Synthetic upgrade")))
+''')
+    monkeypatch.setattr(visualization, "VERSION", "synthetic-before")
+    app.run()
+    before = app.get("plotly_chart")[0].proto
+    old_id, old_spec = before.id, json.loads(before.spec)
+    app.run()
+    assert app.get("plotly_chart")[0].proto.id == old_id
+    monkeypatch.setattr(visualization, "VERSION", "synthetic-after")
+    app.run()
+    assert not app.exception
+    after = app.get("plotly_chart")[0].proto
+    new_spec = json.loads(after.spec)
+    assert after.id != old_id
+    assert old_spec["layout"].pop("uirevision") == "fow-synthetic-before"
+    assert new_spec["layout"].pop("uirevision") == "fow-synthetic-after"
+    assert old_spec == new_spec
+
+
+def test_ranked_hover_has_one_share_for_each_bar_with_its_own_value():
+    from src.visualization import ranked_bar
+    frame = pd.DataFrame({"skill": ["SQL", "Python"], "job_ads": [3, 1], "job_ads_pct": [75., 25.]})
+    before = frame.copy(deep=True)
+    figure = ranked_bar(frame, "skill", "job_ads", "Synthetic demand")
+    trace = figure.data[0]
+    assert trace.hovertemplate.count("Share of selected ads:") == 1
+    assert trace.hovertemplate.count("Job advertisements:") == 1
+    assert trace.hovertemplate.endswith("<extra></extra>")
+    assert list(zip(trace.y, trace.x, trace.customdata[:, 1])) == [("SQL", 3, 75.), ("Python", 1, 25.)]
     pd.testing.assert_frame_equal(frame, before)

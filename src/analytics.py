@@ -2,6 +2,7 @@ import pandas as pd
 from .category_schema import requirement_type
 from .cleaning import normalize_text
 from .job_profile import experience_phrase_reason
+from .skill_extraction import GENERAL
 import re
 import unicodedata
 
@@ -57,7 +58,58 @@ _VAGUE_ONLY_WORDS = {
     "domain", "excellent", "experience", "expertise", "exposure", "familiarity", "good", "industry",
     "intermediate", "it", "knowledge", "proficiency", "proven", "related", "relevant", "skills", "software",
     "solid", "strong", "technical", "technologies", "technology", "understanding", "various",
+    "accept", "accepted", "acceptance", "action", "actions", "actionable", "activities", "activity",
+    "adjacent", "and", "or", "of", "to", "current", "existing", "new", "modern", "latest",
+    "enterprise", "improve", "improvement", "opportunities", "opportunity", "long", "successful",
+    "service", "services", "system", "systems", "tool", "tools", "tooling", "toolkit", "toolkits",
+    "usage", "use", "workflow", "workflows",
 }
+_MODIFIER_ONLY_PHRASE = re.compile(r"^ad[\s-]+hoc$", re.I)
+_DANGLING_ACCESS_PHRASE = re.compile(
+    r"^access\s+(?:to\s+)?(?:clean|accurate|complete|reliable|secure|timely|quality)$", re.I)
+_UNSPECIFIED_TECH_OBJECT = re.compile(
+    r"^(?:enterprise\s+)?(?:ai|artificial intelligence|data|analytics|digital|technical)\s+"
+    r"(?:tools?|systems?|services?|platforms?|workflows?)$", re.I)
+_OUTPUT_MODIFIED_PHRASE = re.compile(
+    r"^(?:actionable|successful)\s+(?:solutions?|solution designs?|outcomes?|results?)$", re.I)
+_NON_REQUIREMENT_WORDING = re.compile(
+    r"^(?:(?:free|paid|sponsored|complimentary)\s+(?:training|learning|development|courses?)|"
+    r"opportunit(?:y|ies)\s+(?:for|to|in)\b.*|long\s+and\s+successful\b.*)$", re.I)
+_CAPABILITY_HEADS = set("""analysis analytics design management integration engineering testing governance programming
+research development learning modelling modeling visualization visualisation mining processing validation
+optimization optimisation planning automation mapping forecasting prediction classification elicitation
+architecture security privacy compliance auditing negotiation training configuration deployment troubleshooting
+maintenance documentation reporting presentation communication collaboration accountability engagement resolution
+response reasoning storytelling balancing selection reduction cleaning assurance making implementation
+administration orchestration statistics inference debugging reconciliation extraction transformation
+literacy acumen intelligence diligence control redesign improvement thinking listening speaking innovation synthesis""".split())
+_NAMED_SKILL_TERMS = ({term for term, category in GENERAL.items()
+                       if requirement_type(category) != "Credential requirement"}
+                      | set(_CHART_PHRASE_ALIASES.values()) | set("""aws azure gcp sas scala rust julia go swift access
+stata spss qlik dbt airflow spark hadoop figma jira word mongodb mysql postgresql snowflake databricks
+tensorflow pytorch pandas numpy langchain llamaindex communication research learning programming
+forecasting troubleshooting resilience flexibility negotiation accountability finance accounting economics typescript pyspark xgboost
+mathematics algebra calculus probability marketing english tagalog filipino c etl agile""".split()) | {
+    "microsoft access", "microsoft word", "apache spark", "apache airflow", "apache hadoop", "qlik sense",
+    "amazon web services", "microsoft azure", "google cloud platform", "scikit-learn", "hugging face",
+    "attention to detail", "open to change", "research and development", "ownership and accountability",
+    "etl process", "quality standard", "quality standards", "cloud compute", "service level agreements",
+    "willingness to learn", "ability to communicate", "customer service", "statistical methods",
+})
+_UNRECOGNIZED_SKILL_REASON = "No recognized standalone skill or complete technical task; verify wording and source context"
+_SKILL_LEVEL_PREFIX = re.compile(r"^(?:advanced|basic|intermediate|expert|proficient|strong|good|excellent)\s+", re.I)
+_SKILL_REQUIREMENT_PREFIX = re.compile(
+    r"^(?:(?:(?:working|practical|hands-on)\s+)?(?:knowledge|understanding|experience|proficiency|"
+    r"expertise|familiarity|skills?)\s+(?:of|in|with)|participate\s+in|assist\s+(?:in|with))\s+", re.I)
+_CONCRETE_TECH_TASK = re.compile(
+    r"^(?:build|develop|create|maintain|enhance|configure|deploy|implement|design|operate|test|debug|"
+    r"optimize|optimise|validate|monitor|manage|troubleshoot|document)(?:\s+and\s+(?:build|develop|"
+    r"implement|design|deploy|maintain))?\s+(?:the\s+)?(?:"
+    r"(?:data\s+|etl\s+)?(?:dashboards?|pipelines?|warehouses?|databases?)|apis?|software|code|"
+    r"(?:data|ml|machine learning|statistical|predictive)\s+models?|cloud infrastructure|network devices)$", re.I)
+_BROKEN_CLAUSE = re.compile(r"\b(?:be|they|that|which)\b", re.I)
+_WEAK_FRAGMENT_START = re.compile(r"^(?:base|basis)(?:\s|$)", re.I)
+_TECHNICAL_COMPOUND_START = re.compile(r"^(?:as-is|to-be|end-to-end|out-of-sample|in-memory)\b", re.I)
 _UNCLEAR_LIST_TAIL = re.compile(r"\b(?:etc\.?|and more|among others|and others|and related(?:\s+(?:skills?|areas?|fields?))?)$", re.I)
 _SKILL_ACTIONS = {
     "ability", "skill", "skills", "experience", "knowledge", "proficiency",
@@ -65,6 +117,10 @@ _SKILL_ACTIONS = {
     "provide", "responsible", "requirement", "requirements", "responsibilities",
     "duties", "work", "working", "remote", "hybrid", "onsite", "apply",
     "preferred", "required",
+}
+_GENERIC_REQUIREMENT_WORDS = _VAGUE_ONLY_WORDS | _SKILL_ACTIONS | {
+    "data", "job", "jobs", "position", "positions", "employer", "employee", "employees",
+    "team", "teams", "other", "additional", "general", "routine", "assigned",
 }
 _MISSING_SKILL_PHRASES = {
     "none", "nan", "null", "not mentioned", "not mention", "not stated",
@@ -92,7 +148,7 @@ def _skill_phrase_reason(value):
     if _UNCLEAR_LIST_TAIL.search(placeholder):
         return "Unfinished list wording; verify the named skills before charting"
     words = set(re.findall(r"[a-z]+", placeholder))
-    if words and words <= _VAGUE_ONLY_WORDS:
+    if words and words <= _GENERIC_REQUIREMENT_WORDS:
         return "Vague wording without an identifiable competency; check source context"
     if _OCCUPATIONAL_LABEL.fullmatch(phrase):
         return "Job title or occupational wording; not a skill"
@@ -103,13 +159,13 @@ def _skill_phrase_reason(value):
     if phrase in _SKILL_ACTIONS:
         return "Standalone action or generic wording; specify the skill in context"
     from .pretrained_suggestions import is_incomplete_phrase
-    if is_incomplete_phrase(phrase):
+    if is_incomplete_phrase(phrase) and not _TECHNICAL_COMPOUND_START.match(phrase):
         return "Incomplete connector phrase; check the advertisement context"
     return ""
 
 
 def _chart_phrase_reason(value):
-    """Apply conservative graph-only exclusions to source wording already extracted."""
+    """Require identifiable competency wording; retain ambiguous evidence for review."""
     phrase = _CHART_BULLETS.sub("", normalize_text(value).translate(
         {0x200b: None, 0xfeff: None, 0x2060: None})).strip()
     if phrase in _CHART_ONLY_NON_SKILL_PHRASES:
@@ -118,7 +174,31 @@ def _chart_phrase_reason(value):
         return "Equal-employment legal boilerplate; not an employer competency"
     if _ADOPTION_OUTCOME_PHRASE.fullmatch(phrase):
         return "Success-metric wording; review before treating as a competency"
-    return _skill_phrase_reason(phrase)
+    if _MODIFIER_ONLY_PHRASE.fullmatch(phrase):
+        return "Modifier without a named activity; specify the skill in source context"
+    if _DANGLING_ACCESS_PHRASE.fullmatch(phrase):
+        return "Incomplete access wording; the object or competency is missing"
+    if _UNSPECIFIED_TECH_OBJECT.fullmatch(phrase):
+        return "Unspecified technology object; identify the tool or demonstrable capability in context"
+    if _OUTPUT_MODIFIED_PHRASE.fullmatch(phrase):
+        return "Ambiguous output-oriented wording; verify the employer competency in source context"
+    if _NON_REQUIREMENT_WORDING.fullmatch(phrase):
+        return "Benefit, opportunity or promotional wording; verify an actual skill requirement in source context"
+    reason = _skill_phrase_reason(phrase)
+    if reason:
+        return reason
+    candidate = _SKILL_REQUIREMENT_PREFIX.sub("", _SKILL_LEVEL_PREFIX.sub("", phrase))
+    candidate = chart_skill_key(_SKILL_LEVEL_PREFIX.sub("", candidate))
+    if candidate in _NAMED_SKILL_TERMS:
+        return ""
+    if _WEAK_FRAGMENT_START.match(phrase) or _BROKEN_CLAUSE.search(_TECHNICAL_COMPOUND_START.sub("", phrase)):
+        return "Incomplete clause or advertisement fragment; clarify the competency in source context"
+    words = re.findall(r"[a-z0-9+#.]+", candidate)
+    if len(words) > 1 and words[-1] in _CAPABILITY_HEADS:
+        return ""
+    if _CONCRETE_TECH_TASK.fullmatch(phrase):
+        return ""
+    return _UNRECOGNIZED_SKILL_REASON
 
 def filter_frame(frame, filters):
     mask = pd.Series(True, index=frame.index)
@@ -137,7 +217,7 @@ def accepted_skills(frame):
         return frame
     categories = frame.get("competency_category", pd.Series("", index=frame.index)).fillna("")
     phrases = frame.get("normalized_phrase", pd.Series("", index=frame.index)).fillna("")
-    phrase_reasons = {phrase: _skill_phrase_reason(phrase) for phrase in phrases.unique()}
+    phrase_reasons = {phrase: _chart_phrase_reason(chart_skill_key(phrase)) for phrase in phrases.unique()}
     return frame[frame.accepted.astype(str).str.casefold().eq("true") &
                  categories.astype(str).str.casefold().ne("irrelevant") &
                  categories.map(requirement_type).ne("Credential requirement") &
@@ -156,16 +236,17 @@ def demand_matrix(skills, jobs, group):
     return joined.groupby(["normalized_phrase", group]).source_id.nunique().unstack(fill_value=0)
 
 
+def chart_skill_key(value):
+    phrase = _CHART_BULLETS.sub("", normalize_text(value).translate({0x200b: None, 0xfeff: None, 0x2060: None})).strip()
+    # spaCy lemmatization can turn source "data" into "datum". In this
+    # 500-ad corpus no source description uses "datum"; restore its surface
+    # form only in chart labels, retaining original and normalized evidence.
+    phrase = re.sub(r"\bdatum\b", "data", phrase)
+    return _CHART_PHRASE_ALIASES.get(phrase, phrase)
+
+
 def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     """Create an auditable chart view without changing stored research evidence."""
-    def key(value):
-        phrase = _CHART_BULLETS.sub("", normalize_text(value).translate({0x200b: None, 0xfeff: None, 0x2060: None})).strip()
-        # spaCy lemmatization can turn source "data" into "datum". In this
-        # 500-ad corpus no source description uses "datum"; restore its surface
-        # form only in chart labels, retaining original and normalized evidence.
-        phrase = re.sub(r"\bdatum\b", "data", phrase)
-        return _CHART_PHRASE_ALIASES.get(phrase, phrase)
-
     ids = jobs.get("source_id", pd.Series(dtype=str)).dropna().astype(str)
     ids = ids[ids.str.strip().ne("")]
     view = skills.loc[skills.get("source_id", pd.Series(index=skills.index, dtype=str)).astype(str).isin(ids)].copy()
@@ -175,12 +256,12 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     original = view.get("normalized_phrase", pd.Series("", index=view.index)).fillna("")
     surface = view.get("original_phrase", pd.Series("", index=view.index)).fillna("")
     view["original_normalized_phrase"] = original
-    view["normalized_phrase"] = original.where(original.astype(str).str.strip().ne(""), surface).map(key)
+    view["normalized_phrase"] = original.where(original.astype(str).str.strip().ne(""), surface).map(chart_skill_key)
     view["skill_label"] = view.normalized_phrase
     reasons = {phrase: _chart_phrase_reason(phrase) for phrase in view.normalized_phrase.unique()}
     view["review_reason"] = view.normalized_phrase.map(reasons)
     categories = view.get("competency_category", pd.Series("", index=view.index)).fillna("")
-    needs_category_reason = view.review_reason.eq("")
+    needs_category_reason = view.review_reason.isin(["", _UNRECOGNIZED_SKILL_REASON])
     view.loc[needs_category_reason & categories.map(requirement_type).eq("Credential requirement"), "review_reason"] = "Credential requirement, not a skill"
     view.loc[needs_category_reason & categories.astype(str).str.casefold().eq("irrelevant"), "review_reason"] = "Researcher or classifier marked this phrase irrelevant"
     accepted = view.get("accepted", pd.Series(True, index=view.index)).astype(str).str.casefold().eq("true")
@@ -227,6 +308,15 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
                                                               ascending=[False, True], kind="stable").reset_index(drop=True)}
 
 
+def chart_mapping_rows(mapping):
+    """Screen employer phrases before aggregation without rewriting framework labels."""
+    if mapping.empty or "normalized_skill" not in mapping:
+        return mapping
+    phrases = mapping.normalized_skill.fillna("").map(chart_skill_key)
+    reasons = {phrase: _chart_phrase_reason(phrase) for phrase in phrases.unique()}
+    return mapping.loc[phrases.map(reasons).eq("")].copy()
+
+
 def psf_demand_tables(mapping, jobs, taxonomy, *, denominator=None):
     """Aggregate linked evidence; framework row order is presentation metadata only."""
     from .cleaning import normalize_text
@@ -234,7 +324,7 @@ def psf_demand_tables(mapping, jobs, taxonomy, *, denominator=None):
     reference["framework_order"] = range(len(reference))
     reference["psf_competency"] = reference.competency_name.map(normalize_text)
     columns = ["source_id", "psf_competency", "psf_job_role", "status"]
-    linked = mapping.reindex(columns=columns).fillna("")
+    linked = chart_mapping_rows(mapping).reindex(columns=columns).fillna("")
     linked = linked[linked.source_id.isin(jobs.get("source_id", [])) &
                     linked.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) & linked.psf_competency.ne("")].copy()
     linked["psf_competency"] = linked.psf_competency.map(normalize_text)
@@ -255,3 +345,18 @@ def psf_demand_tables(mapping, jobs, taxonomy, *, denominator=None):
     return {"psf_framework_order": reference, "psf_chart_demand": demand,
             "psf_role_family_demand": role_family,
             "psf_role_competency_demand": role_competency}
+
+
+def unmapped_chart_counts(occurrences, alignment, *, minimum_jobs=1):
+    """Count screened canonical labels; mapped variants suppress the group."""
+    columns = ["normalized_skill", "skill_label", "job_ads"]
+    if occurrences.empty or alignment.empty:
+        return pd.DataFrame(columns=columns)
+    mapped = alignment.loc[alignment.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]), "normalized_skill"].map(chart_skill_key)
+    unmapped = alignment.loc[alignment.status.eq("NOT MAPPED"), "normalized_skill"].map(chart_skill_key)
+    keys = set(unmapped) - set(mapped)
+    rows = occurrences.loc[occurrences.normalized_phrase.isin(keys)]
+    counts = rows.groupby(["normalized_phrase", "skill_label"]).source_id.nunique().rename("job_ads").reset_index()
+    counts = counts.rename(columns={"normalized_phrase": "normalized_skill"})
+    return counts.loc[counts.job_ads.ge(minimum_jobs), columns].sort_values(
+        ["job_ads", "skill_label"], ascending=[False, True], kind="stable").reset_index(drop=True)

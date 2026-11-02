@@ -91,6 +91,44 @@ def test_unreviewed_job_provenance_blocks_extraction(workspace, jobs):
         run_extraction()
 
 
+def test_fragment_screen_applies_to_results_and_exports_without_changing_evidence(workspace, jobs, taxonomy):
+    phrases = ["SQL", "long and successful", "accept usage", "activity", "tool and service"]
+    extracted = pd.DataFrame([
+        {"extraction_id": f"SYNTHETIC-SCREEN-{index}", "source_id": jobs.source_id.iloc[index % 3],
+         "source_type": "jobs", "original_phrase": phrase, "normalized_phrase": phrase.lower(),
+         "original_text": "SYNTHETIC SOURCE EVIDENCE", "accepted": True,
+         "human_label": "Technical / Digital", "competency_category": "Technical / Digital"}
+        for index, phrase in enumerate(phrases)])
+    original = extracted.copy(deep=True)
+
+    tables, meta = analysis_bundle(source_snapshot={
+        "jobs": jobs, "taxonomy": taxonomy, "extracted": extracted,
+    })
+
+    for name, column in (("extracted_job_skills", "normalized_phrase"),
+                         ("psf_mapping", "normalized_skill"),
+                         ("alignment_results", "normalized_skill"),
+                         ("employer_skill_demand", "normalized_skill"),
+                         ("chart_skill_demand", "normalized_phrase")):
+        assert tables[name][column].str.casefold().tolist() == ["sql"]
+    assert tables["unmapped_skills"].empty
+    assert tables["emerging_skills"].empty
+    assert tables["psf_competency_demand"].psf_competency.tolist() == ["SQL"]
+    assert tables["psf_chart_demand"].job_ads.tolist() == [1]
+    assert meta["chart_presentation"]["job_ad_denominator"] == 3
+    assert meta["chart_presentation"]["chartable_skill_ads"] == 1
+    assert meta["chart_presentation"]["ads_without_chartable_skill"] == 2
+    assert meta["chart_presentation"]["unclear_occurrences"] == 4
+    assert set(tables["chart_phrase_review"].extraction_id) == set(extracted.extraction_id.iloc[1:])
+    assert tables["chart_phrase_review"].human_label.eq("Technical / Digital").all()
+    pd.testing.assert_frame_equal(tables["all_candidates"], original)
+    pd.testing.assert_frame_equal(extracted, original)
+    book = load_workbook(BytesIO(export_excel(tables, meta)))
+    assert book["all_candidates"].max_row == len(phrases) + 1
+    assert book["chart_phrase_review"].max_row == 5
+    assert book["psf_mapping"].max_row == 2
+
+
 def test_research_exports_exclude_external_training_sources(workspace, jobs, taxonomy):
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)

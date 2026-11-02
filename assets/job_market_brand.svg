@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 270 66" fill="none" role="img" aria-labelledby="title">
+  <title id="title">Future of Work — Job Market Analytics</title>
+  <g stroke="#800F2C" stroke-linejoin="round" stroke-width="2.4">
+    <path d="m28 6 25 46H3Z"/>
+    <path d="m28 17 18 30H10Z" stroke-width="1.4"/>
+    <path d="M19 43v-7h5v7m4 0V30h5v13m4 0V23h5" stroke-linecap="round"/>
+    <path d="m17 32 10-8 7 3 7-10" stroke="#C99931" stroke-linecap="round"/>
+  </g>
+  <text x="63" y="29" fill="#800F2C" font-family="Arial, sans-serif" font-size="23" font-weight="700" letter-spacing="-.6">Future of Work</text>
+  <text x="63" y="47" fill="#202129" font-family="Arial, sans-serif" font-size="12.5">Job Market Analytics</text>
+</svg>
