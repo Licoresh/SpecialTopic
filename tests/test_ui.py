@@ -40,6 +40,17 @@ _competency_heatmap_view(cells, roles, competence, 15)
 '''
     app = AppTest.from_string(source).run(timeout=30)
     assert not app.exception and not app.error
+    assert not app.dataframe
+    app.session_state["result_role_competency_table"] = True
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    expander = next(item for item in app.expander if item.label == "View all role-by-competency counts")
+    assert len(expander.dataframe) == 1
+    assert len(expander.dataframe[0].value) == 4
+    assert expander.dataframe[0].value.columns.tolist() == ["PSF-AAI reference role", "PSF-AAI competency", "Job advertisements"]
+    app.session_state["result_role_competency_table"] = False
+    app.run(timeout=30)
+    assert not app.exception and not app.dataframe
     app.multiselect(key="result_competency_heatmap_competencies").set_value([]).run(timeout=30)
     assert not app.exception and not app.error
     assert any("Select at least one role and competency" in item.value for item in app.info)

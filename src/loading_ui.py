@@ -138,25 +138,31 @@ def _wireframe(kind, *, cards=None, columns=None, rows=None, controls=None, fiel
 
 
 @contextmanager
-def loading_content(key, kind, *, cards=None, columns=None, rows=None, controls=None, field_columns=1, view=None, defer=False):
+def loading_content(key, kind, *, cards=None, columns=None, rows=None, controls=None, field_columns=1, view=None, defer=False, transition=None):
     """Replace a first-load wireframe with content at the same stable slot.
 
     Load data before calling the yielded function; render inside its returned
     container. Reruns retain the existing container and its widget state.
     With defer=True, keep the pending slot until rendering finishes; the page
     styles its new body as hidden while that pending slot is present.
+    A transition token retains a cosmetic wireframe for a short CSS-only reveal.
+    Ready content skips the pending state and uses the shorter cached transition.
     """
     host = st.container(key=key)
     ready = st.session_state.setdefault("_fow_loading_ready", {})
     pending = None if ready.get(key) else host.empty()
-    if pending is not None:
+    slot = pending if pending is not None else host.empty() if defer and transition is not None else None
+    if slot is not None:
         options = {"cards": cards, "columns": columns, "rows": rows}
         if controls is not None:
             options.update(controls=controls, field_columns=field_columns)
         if view is not None:
             options["view"] = view
-        pending.html(_wireframe(kind, **options))
+        wireframe = _wireframe(kind, **options)
+        if pending is not None:
+            pending.html(wireframe)
     rendered = False
+    complete = False
 
     def content():
         nonlocal rendered
@@ -173,11 +179,17 @@ def loading_content(key, kind, *, cards=None, columns=None, rows=None, controls=
     else:
         if rendered:
             ready[key] = True
+            complete = True
         else:
             ready.pop(key, None)
     finally:
-        if pending is not None and (not rendered or defer):
-            pending.empty()
+        if slot is not None and (not rendered or defer):
+            if complete and defer and transition is not None:
+                cosmetic = wireframe.replace('role="status" aria-busy="true"', 'aria-hidden="true"')
+                with slot.container(key=f"{key}_transition_{int(transition)}"):
+                    st.html(f'<div class="fow-section-transition" data-fow-transition="{int(transition)}" data-fow-cached="{str(pending is None).lower()}" aria-hidden="true">{cosmetic}</div>')
+            else:
+                slot.empty()
 
 
 def load_data_with_skeleton(loader: Callable[[], T], *, height: int = 160, region=None) -> T:

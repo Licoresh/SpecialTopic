@@ -1,6 +1,7 @@
 """Synthetic audience-focused result views; no live sources or research records."""
 from copy import deepcopy
 import pandas as pd
+import pytest
 from streamlit.testing.v1 import AppTest
 from src import ui
 from src.analytics import skill_chart_tables
@@ -56,7 +57,7 @@ def html_content(app):
     return "\n".join(item.proto.body for item in app.get("html"))
 
 
-def test_first_section_visits_load_once_and_revisits_reuse_prepared_data(monkeypatch):
+def test_every_section_switch_transitions_while_revisits_reuse_prepared_data(monkeypatch):
     from unittest.mock import Mock
     from src import loading_ui
     tables = result_tables()
@@ -75,19 +76,30 @@ def test_first_section_visits_load_once_and_revisits_reuse_prepared_data(monkeyp
     def transitions():
         return [call.kwargs["view"] for call in wireframe.call_args_list if call.args == ("market_section",)]
     assert transitions() == ["Skills"]
+    assert 'data-fow-cached="false"' in html_content(app)
     for section in ("Roles and locations", "Qualifications", "PSF-AAI demand"):
         app.button_group(key="result_section").select(section).run(timeout=30)
         assert not app.exception and not app.error
         assert transitions()[-1] == section
         assert app.session_state["_fow_loading_ready"]["job_market_view_load"]
+        assert 'data-fow-cached="false"' in html_content(app)
     assert transitions() == ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"]
     before = list(transitions())
-    for section in ("Skills", "Qualifications", "Roles and locations", "PSF-AAI demand", "Skills"):
+    revisits = ["Skills", "Qualifications", "Roles and locations", "PSF-AAI demand", "Skills"]
+    for section in revisits:
         app.button_group(key="result_section").select(section).run(timeout=30)
         assert not app.exception and not app.error
+        before.append(section)
         assert transitions() == before
+        assert 'class="fow-section-transition"' in html_content(app)
+        assert 'data-fow-cached="true"' in html_content(app)
     profile.assert_called_once()
     geography.assert_called_once()
+    sequence = app.session_state["_fow_market_transition"]
+    app.selectbox(key="result_chart_order").set_value("Alphabetical").run(timeout=30)
+    assert transitions() == before
+    assert app.session_state["_fow_market_transition"] == sequence
+    assert 'class="fow-section-transition"' not in html_content(app)
     app.run(timeout=30)
     assert transitions() == before
 
@@ -134,6 +146,7 @@ def test_section_filters_survive_switches_and_changed_inputs_invalidate_summarie
     assert not app.exception and not app.error
     assert profile.call_count == geography.call_count == 2
     assert sum(call.args == ("market_section",) for call in wireframe.call_args_list) == before + 1
+    assert 'data-fow-cached="true"' not in html_content(app)
     # A reviewed mapping change also invalidates visited sections.
     tables["psf_mapping"].loc[0, "psf_competency"] = "Synthetic changed competency"
     app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
@@ -200,7 +213,7 @@ def test_job_market_insights_and_reference_role_card_use_selected_data(monkeypat
 
     for section, insight, evidence in (
         ("Roles and locations", "title insight", "data analyst"),
-        ("Qualifications", "education insight", "bachelor"),
+        ("Qualifications", "education insight", "stated"),
         ("PSF-AAI demand", "key insight", "programming"),
     ):
         app.button_group(key="result_section").select(section).run(timeout=30)
@@ -209,11 +222,11 @@ def test_job_market_insights_and_reference_role_card_use_selected_data(monkeypat
         assert insight in content and evidence in content
 
 
-def test_timeline_education_and_family_insights_acknowledge_ties(monkeypatch):
+def test_timeline_and_family_insights_acknowledge_ties_while_education_uses_coverage(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["education_requirement"] = ["Bachelor's degree", "Master's degree"] * 2
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-01-01", "2026-02-01"] * 2
-    app, _ = result_app(monkeypatch, tables)
+    app, figures = result_app(monkeypatch, tables)
     app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     assert not app.exception and not app.error
     content = html_content(app)
@@ -221,7 +234,42 @@ def test_timeline_education_and_family_insights_acknowledge_ties(monkeypatch):
     assert "2 displayed months tie" in content
     app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert not app.exception and not app.error
-    assert "2 classifiable levels share the highest count" in html_content(app)
+    coverage = figure_with_title(figures, "Education requirement coverage").data[0]
+    assert dict(zip(coverage.y, coverage.x)) == {"stated": 4, "not stated": 0}
+    assert "2 classifiable levels share the highest count" not in html_content(app)
+
+
+@pytest.mark.parametrize("requirements,expected", [
+    (["Bachelor's degree", "", "not specified", ""], {"stated": 1, "not stated": 3}),
+    (["", "", "", ""], {"stated": 0, "not stated": 4}),
+    (["Bachelor's degree preferred", "Bachelor's or master's degree", "Diploma in computing", "not specified"],
+     {"stated": 3, "not stated": 1}),
+])
+def test_education_coverage_chart_counts_presence_without_inventing_qualification_levels(monkeypatch, requirements, expected):
+    tables = result_tables()
+    tables["cleaned_jobs"]["education_requirement"] = requirements
+    original = tables["cleaned_jobs"].copy(deep=True)
+    app, figures = result_app(monkeypatch, tables)
+    figures.clear()
+    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
+    assert not app.exception and not app.error
+    assert len(figures) == 1
+    trace = figure_with_title(figures, "Education requirement coverage").data[0]
+    assert dict(zip(trace.y, trace.x)) == expected
+    assert sum(trace.x) == 4
+    assert {label: float(custom[1]) for label, custom in zip(trace.y, trace.customdata)} == {
+        label: count * 25. for label, count in expected.items()}
+    assert not any(item.label == "bachelor's degree" for item in app.metric)
+    assert "Field Coverage" not in html_content(app)
+    evidence = next(item for item in app.expander if item.label == "Education standardization evidence")
+    assert not evidence.proto.expanded
+    assert not evidence.dataframe
+    app.session_state["result_education_evidence"] = True
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    evidence = next(item for item in app.expander if item.label == "Education standardization evidence")
+    assert any("parse_status" in item.value.columns for item in evidence.dataframe)
+    pd.testing.assert_frame_equal(tables["cleaned_jobs"], original)
 
 
 def test_experience_band_table_uses_readable_labels_and_hides_sort_key(monkeypatch):
@@ -238,7 +286,7 @@ def test_alphabetical_chart_order_and_linked_psf_counts(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
     app.selectbox(key="result_chart_order").set_value("Alphabetical").run(timeout=30)
     assert not app.exception and not app.error
-    labels = figure_with_title(figures, "Employer-requested skills").data[0].y.tolist()
+    labels = list(figure_with_title(figures, "Employer-requested skills").data[0].y)
     assert labels == sorted(labels, key=str.casefold)
     app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
     assert not any(fig.layout.title.text == "PSF-AAI competencies linked to employer demand" for fig in figures)
@@ -358,7 +406,7 @@ def test_psf_chart_summary_does_not_hash_or_copy_repeated_source_text(monkeypatc
     app, _ = result_app(monkeypatch, tables)
     app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
     assert not app.exception and not app.error
-    assert {"source_id", "psf_competency", "psf_job_role", "status"} in columns
+    assert all("original_text" not in fields for fields in columns)
     assert any(item.label == "programming" and item.value == "1" for item in app.metric)
     assert "original_text" in tables["psf_mapping"]
 
@@ -405,9 +453,12 @@ def test_specific_titles_stay_alphabetical_and_grouped_view_is_auditable(monkeyp
     assert dict(zip(grouped.data[0].y, grouped.data[0].x))["analytics"] == 2
     app.selectbox(key="result_chart_order").set_value("Highest demand").run(timeout=30)
     app.selectbox(key="result_title_view").set_value("Specific titles (alphabetical)").run(timeout=30)
-    titles = figure_with_title(figures, "Specific job titles (alphabetical)").data[0].y.tolist()
+    titles = list(figure_with_title(figures, "Specific job titles (alphabetical)").data[0].y)
     assert titles == ["data analyst", "designer", "engineer"]
     assert app.selectbox(key="result_specific_title").options == ["All", *titles]
+    app.session_state["result_title_family_evidence"] = True
+    app.run(timeout=30)
+    assert not app.exception and not app.error
     assert any("grouping_basis" in frame.value.columns for frame in app.dataframe)
 
 
@@ -421,11 +472,14 @@ def test_common_title_chart_uses_canonical_role_but_specific_view_keeps_title(mo
     app, figures = result_app(monkeypatch, tables)
     app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     common = figure_with_title(figures, "Most common job titles")
-    labels = common.data[0].y.tolist()
+    labels = list(common.data[0].y)
     assert "business analyst" in labels
     assert common.data[0].x[labels.index("business analyst")] == 1
     app.selectbox(key="result_title_view").set_value("Specific titles (alphabetical)").run(timeout=30)
     assert "junior business analyst - banking branch" in app.selectbox(key="result_specific_title").options
+    app.session_state["result_title_normalization"] = True
+    app.run(timeout=30)
+    assert not app.exception and not app.error
     evidence = next(frame.value for frame in app.dataframe if "common_job_title" in frame.value.columns)
     assert evidence.loc[evidence.source_id.eq("E"), "original_job_title"].iloc[0] == "Junior Business Analyst - Banking Branch"
 
@@ -436,7 +490,7 @@ def test_family_title_filters_reset_and_geographical_denominators(monkeypatch):
     app.selectbox(key="result_family").select("analytics").run(timeout=30)
     assert app.selectbox(key="result_specific_title").options == ["All", "data analyst"]
     focused = figure_with_title(figures, "Top skills for analytics")
-    assert focused.data[0].x.tolist() == [2, 1]
+    assert list(focused.data[0].x) == [2, 1]
     assert focused.data[0].customdata[0][1] == 100
     assert any("Small group" in item.value for item in app.caption)
     app.selectbox(key="result_region").select("national capital region").run(timeout=30)
@@ -490,6 +544,19 @@ def test_selected_title_starts_with_top_ten_and_offers_full_searchable_table(mon
     assert len(figure.data[0].y) == 10
     assert any("Selected group: data analyst · 2 advertisements" in item.value for item in app.caption)
     assert any(item.label == "View all skills for this selection" for item in app.expander)
+    note = "The searchable table includes every chartable skill"
+    assert not any(note in item.value for item in app.caption)
+    app.session_state["result_all_title_skills"] = True
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    expander = next(item for item in app.expander if item.label == "View all skills for this selection")
+    assert any(note in item.value for item in expander.caption)
+    nested = next(item.value for item in expander.dataframe if "job_ads_pct" in item.value)
+    assert len(nested) > 10
+    app.session_state["result_all_title_skills"] = False
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    assert not any(note in item.value for item in app.caption)
 
 
 def test_location_charts_separate_region_and_city_levels_and_warn_against_rates(monkeypatch):
@@ -513,7 +580,7 @@ def test_experience_summary_uses_only_exact_single_value_requirements(monkeypatc
     app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert any("median 3 years (observed range 2–4)" in item.value and "2 of 4 selected ads" in item.value for item in app.caption)
     assert any("Ranges and open-ended wording are excluded" in item.value for item in app.caption)
-    assert any("Not specified describes the advertisement text" in item.value for item in app.caption)
+    assert any("Not stated describes missing information" in item.value for item in app.caption)
 
 def test_psf_role_filter_limits_multi_role_links_and_heatmap(monkeypatch):
     tables = result_tables()

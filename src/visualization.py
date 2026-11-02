@@ -3,15 +3,23 @@ import plotly.express as px
 import plotly.graph_objects as go
 from .analytics import counts
 from .config import VERSION
+from .utils import digest
 import streamlit as st
 from textwrap import wrap
 from html import escape
 from math import ceil
 
+# Keep zero cells pale while making small positive shares visible.
+HEATMAP_COLORSCALE = [(0, "#FBF8F4"), (.002, "#EBD1A0"), (.2, "#E2BC72"),
+                     (.4, "#D6A33D"), (.6, "#A8751C"), (.8, "#78182B"), (1, "#4D1020")]
+
 
 def style_chart(fig):
     """Apply shared chart presentation without changing traces or calculations."""
     is_heatmap = any(trace.type == "heatmap" for trace in fig.data)
+    revision = f"fow-{VERSION}"
+    if is_heatmap:
+        revision += "-" + digest([(list(trace.x), list(trace.y)) for trace in fig.data if trace.type == "heatmap"])[:16]
     margin = dict(l=20, r=20, t=65, b=35)
     if is_heatmap:
         ticktext = fig.layout.xaxis.ticktext or ()
@@ -29,7 +37,7 @@ def style_chart(fig):
                       title=dict(font=dict(size=17), x=.02, xanchor="left"),
                       legend=dict(orientation="h", y=-.2, x=0),
                       hovermode="closest",
-                      uirevision=f"fow-{VERSION}",
+                      uirevision=revision,
                       colorway=st.get_option("theme.chartCategoricalColors"),
                       hoverlabel=dict(bgcolor="#4D1020", bordercolor="#4D1020",
                                       font=dict(color="#FFFFFF", size=13), align="left", namelength=-1))
@@ -65,11 +73,11 @@ def bar(frame, x, y, title, color=None):
     return fig
 
 def distribution(frame, field, title, limit=20, *, order="Highest demand"):
-    if order not in ("Highest demand", "Alphabetical"):
-        raise ValueError("Choose Highest demand or Alphabetical chart order.")
+    if order not in ("Highest demand", "Lowest demand", "Alphabetical"):
+        raise ValueError("Choose Highest demand, Lowest demand or Alphabetical chart order.")
     data = counts(frame, field)
     data["_sort_label"] = data[field].astype(str).str.casefold()
-    by, ascending = (["count", "_sort_label"], [False, True]) if order == "Highest demand" else (["_sort_label"], [True])
+    by, ascending = (["count", "_sort_label"], [order == "Lowest demand", True]) if order != "Alphabetical" else (["_sort_label"], [True])
     data = data.sort_values(by, ascending=ascending, kind="stable").head(limit)
     # Horizontal bars keep category and competency names readable on narrow screens.
     data["_hover_label"] = data[field].map(_hover_text)
@@ -91,8 +99,8 @@ def distribution(frame, field, title, limit=20, *, order="Highest demand"):
 
 def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
     """Display already-aggregated advertisement counts without changing their units."""
-    if order not in ("Highest demand", "Alphabetical", "Framework order"):
-        raise ValueError("Choose Highest demand or Alphabetical chart order.")
+    if order not in ("Highest demand", "Lowest demand", "Alphabetical", "Framework order"):
+        raise ValueError("Choose Highest demand, Lowest demand or Alphabetical chart order.")
     if not isinstance(limit, int) or limit < 1:
         raise ValueError("Chart limit must be a positive whole number.")
     data = frame.copy()
@@ -101,7 +109,7 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
         raise ValueError("Advertisement counts must be nonnegative whole numbers.")
     data[value] = numbers.astype(int)
     data["_sort_label"] = data[label].astype(str).str.casefold()
-    by, ascending = ([value, "_sort_label"], [False, True]) if order == "Highest demand" else (["_sort_label"], [True])
+    by, ascending = ([value, "_sort_label"], [order == "Lowest demand", True]) if order in ("Highest demand", "Lowest demand") else (["_sort_label"], [True])
     if order == "Framework order":
         by, ascending = ["framework_order", "_sort_label"], [True, True]
     data = data.sort_values(by, ascending=ascending, kind="stable").head(limit)
@@ -115,7 +123,8 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
     fig = px.bar(data, x=value, y=label, orientation="h", custom_data=custom,
                  title=title, labels={value: "Job advertisements", label: label.replace("_", " ").capitalize()},
                  color_discrete_sequence=st.get_option("theme.chartCategoricalColors"))
-    colors = [st.get_option("theme.primaryColor") if order == "Highest demand" and count == data[value].max() else "#96857A" for count in data[value]]
+    emphasis = data[value].min() if order == "Lowest demand" else data[value].max()
+    colors = [st.get_option("theme.primaryColor") if order in ("Highest demand", "Lowest demand") and count == emphasis else "#96857A" for count in data[value]]
     fig.update_traces(marker_color=colors, texttemplate="%{x:,d}", textposition="outside",
                       textfont=dict(color="#24303D"), cliponaxis=False,
                       hovertemplate=hover + "<extra></extra>")
@@ -170,14 +179,15 @@ def heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denomi
     x_label = str(x_categories.name or "Category").replace("_", " ").capitalize()
     y_label = str(y_categories.name or "Category").replace("_", " ").capitalize()
     color_label = share_label if shares is not None else count_label
-    fig = px.imshow(plot_matrix, aspect="auto", title=title, color_continuous_scale=st.get_option("theme.chartSequentialColors"),
+    fig = px.imshow(plot_matrix, aspect="auto", title=title, color_continuous_scale=HEATMAP_COLORSCALE,
                     labels={"x": x_label, "y": y_label, "color": color_label})
     if shares is not None:
         fig.update_coloraxes(cmin=0, cmax=100,
                             colorbar=dict(title=color_label, tickmode="linear", tick0=0, dtick=20,
                                           tickformat=".0f", ticksuffix="%"))
     else:
-        fig.update_coloraxes(colorbar=count_axis(matrix.to_numpy().max()))
+        maximum = matrix.to_numpy().max()
+        fig.update_coloraxes(cmin=0, cmax=max(1, maximum), colorbar=count_axis(maximum))
     x_ticktext = (["<br>".join(escape(part) for part in wrap(str(value), 18)) for value in x_categories]
                   if transpose else [_hover_text(value) for value in x_categories])
     y_ticktext = [_hover_text(value) for value in y_categories]

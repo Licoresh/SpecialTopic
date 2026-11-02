@@ -556,15 +556,28 @@ def test_distribution_order_is_deterministic_before_limiting_and_keeps_label_cas
 
 
 def test_preparation_content_and_sidebar_controls_share_workspace_geometry():
-    from src.design import WORKSPACE_CONTENT_CSS
+    from src.design import WORKSPACE_CONTENT_CSS, JOB_MARKET_CSS
     assert '[class*="st-key-workspace_page_"]' in WORKSPACE_CONTENT_CSS
     assert '.st-key-upload_file_panel' in WORKSPACE_CONTENT_CSS
     assert '.st-key-training_options_panel' in WORKSPACE_CONTENT_CSS
     assert '[data-testid="stExpandSidebarButton"]' in WORKSPACE_CONTENT_CSS
     assert 'padding-left: 54px' in WORKSPACE_CONTENT_CSS
     assert 'grid-template-columns: minmax(0,1fr) 44px' in WORKSPACE_CONTENT_CSS
-    assert '.st-key-job_market_psf_charts_body:not(:has([data-fow-psf-ready]))' in WORKSPACE_CONTENT_CSS
+    assert 'data-fow-psf-ready' not in WORKSPACE_CONTENT_CSS
+    assert '.st-key-job_market_psf_charts:has(.fow-loading) .st-key-job_market_psf_charts_body' in JOB_MARKET_CSS
     assert '[class*="st-key-workspace_page_"] h3 [data-testid="stIconMaterial"] { color: #8B1630;' in WORKSPACE_CONTENT_CSS
+
+
+def test_content_card_insets_cover_captions_and_blocks_without_double_padding_readiness():
+    from src.design import STUDY_CONTENT_CSS
+    children = '[class*="st-key-content_panel_"] > :is([data-testid="stLayoutWrapper"],[data-testid="stElementContainer"])'
+    assert children + ':not(:first-child) { margin-inline: 1rem; width: calc(100% - 2rem)' in STUDY_CONTENT_CSS
+    assert children + ':not(:first-child) { margin-inline: .8rem; width: calc(100% - 1.6rem)' in STUDY_CONTENT_CSS
+    assert children + ':last-child { margin-bottom: 1rem; }' in STUDY_CONTENT_CSS
+    readiness = '.st-key-workspace_page_readiness ' + children + ':nth-child(n) { margin: 0; width: 100% !important; }'
+    assert STUDY_CONTENT_CSS.count(readiness) == 2
+    assert '[class*="st-key-content_panel_"] { padding: 1.2rem 1.35rem !important;' in STUDY_CONTENT_CSS
+    assert '[class*="st-key-content_panel_"] { padding: 1rem !important;' in STUDY_CONTENT_CSS
 
 
 def test_responsive_rules_win_the_cascade_and_focus_mode_keeps_viewport_positioning(monkeypatch):
@@ -829,3 +842,14 @@ def test_ranked_hover_has_one_share_for_each_bar_with_its_own_value():
     assert trace.hovertemplate.endswith("<extra></extra>")
     assert list(zip(trace.y, trace.x, trace.customdata[:, 1])) == [("SQL", 3, 75.), ("Python", 1, 25.)]
     pd.testing.assert_frame_equal(frame, before)
+
+def test_market_section_transition_is_short_nonblocking_and_respects_reduced_motion():
+    from src.design import JOB_MARKET_CSS
+    assert 'fow-section-cover 180ms ease-out both' in JOB_MARKET_CSS
+    assert 'fow-section-reveal 180ms steps(1,end) both' in JOB_MARKET_CSS
+    assert '.fow-section-transition[data-fow-cached="true"]' in JOB_MARKET_CSS
+    assert 'animation-duration: 100ms;' in JOB_MARKET_CSS
+    assert 'fow-loading[role="status"]' in JOB_MARKET_CSS
+    assert 'pointer-events: none; overflow: clip;' in JOB_MARKET_CSS
+    assert '@media (prefers-reduced-motion: reduce)' in JOB_MARKET_CSS
+    assert '.fow-section-transition { animation: none; visibility: hidden; }' in JOB_MARKET_CSS

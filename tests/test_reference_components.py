@@ -226,6 +226,69 @@ chart(heatmap(matrix, "Synthetic wide matrix"))
     assert not app.exception and app.get("plotly_chart")[0].proto.id == first_id
 
 
+def test_psf_heatmap_filter_clear_and_restore_keeps_real_values_and_palette():
+    import json
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string('''
+import pandas as pd
+import streamlit as st
+from src.ui import _competency_heatmap_view
+st.session_state['_fow_current_page'] = 'Job Market Analysis'
+cells = pd.DataFrame({'psf_job_role': ['analyst', 'analyst', 'engineer', 'engineer'],
+                      'psf_competency': ['python', 'sql', 'python', 'sql'], 'job_ads': [1, 2, 2, 1]})
+roles = pd.DataFrame({'psf_job_role': ['analyst', 'engineer'], 'job_ads': [20, 25]})
+competence = pd.DataFrame({'psf_competency': ['python', 'sql'], 'job_ads': [3, 3]})
+_competency_heatmap_view(cells, roles, competence, 15)
+''').run(timeout=30)
+
+    def specification():
+        assert not app.exception and not app.error
+        assert len(app.get('plotly_chart')) == 1
+        chart = app.get('plotly_chart')[0].proto
+        assert chart.theme == ''  # Use the figure's explicit palette on every rerun.
+        spec = json.loads(chart.spec)
+        assert spec['layout']['coloraxis']['cmin'] == 0
+        assert spec['layout']['coloraxis']['cmax'] == 100
+        return spec
+
+    initial = specification()
+    for roles in (['analyst'], ['engineer'], ['analyst', 'engineer']):
+        app.multiselect(key='result_competency_heatmap_roles').set_value(roles).run(timeout=30)
+        spec = specification()
+        assert spec['data'][0]['x'] == roles
+        assert spec['layout']['coloraxis']['colorscale'] == initial['layout']['coloraxis']['colorscale']
+        if len(roles) == 1:
+            assert spec['layout']['uirevision'] != initial['layout']['uirevision']
+        for row in spec['data'][0]['customdata']:
+            for _, role, count, share, denominator in row:
+                assert denominator == {'analyst': 20, 'engineer': 25}[role]
+                assert share == count / denominator * 100
+    app.multiselect(key='result_competency_heatmap_competencies').set_value([]).run(timeout=30)
+    assert not app.exception and not app.get('plotly_chart')
+    assert any('Select at least one role and competency' in item.value for item in app.info)
+    app.multiselect(key='result_competency_heatmap_competencies').set_value(['sql']).run(timeout=30)
+    assert specification()['data'][0]['y'] == ['sql']
+    app.multiselect(key='result_competency_heatmap_roles').set_value(['analyst']).run(timeout=30)
+    assert not app.exception and not app.get('plotly_chart')
+    app.multiselect(key='result_competency_heatmap_roles').set_value(['analyst', 'engineer']).run(timeout=30)
+    assert specification()['data'][0]['customdata'][0][0] == ['sql', 'analyst', 2, 10.0, 20]
+
+
+def test_heatmap_small_positive_shares_are_visible_without_rescaling_percentages():
+    from plotly.colors import sample_colorscale
+    from src.visualization import heatmap
+    counts = pd.DataFrame([[0, 1, 25]], index=['synthetic role'], columns=['zero', 'rare', 'common'])
+    before = counts.copy(deep=True)
+    shares = counts / 500 * 100
+    figure = heatmap(counts, 'Synthetic small shares', share_matrix=shares)
+    assert figure.data[0].z.tolist() == [[0., .2, 5.]]
+    assert figure.layout.coloraxis.cmin == 0 and figure.layout.coloraxis.cmax == 100
+    colors = sample_colorscale([list(stop) for stop in figure.layout.coloraxis.colorscale], [0, .002, .05], colortype='tuple')
+    assert sum(abs(a - b) for a, b in zip(colors[0], colors[1])) > .4
+    assert colors[0] != colors[1] != colors[2]
+    pd.testing.assert_frame_equal(counts, before)
+
+
 def test_reference_role_distribution_counts_roles_not_overlapping_ad_links(monkeypatch):
     roles = pd.DataFrame({"psf_job_role": ["First role", "Second role", "Third role"],
                           "job_ads": [19, 19, 18]})

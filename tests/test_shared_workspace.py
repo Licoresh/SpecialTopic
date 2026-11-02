@@ -833,3 +833,41 @@ else:
     assert not app.button
     assert not app.caption
     assert app.session_state['supabase_role'] == 'reviewer'
+
+@pytest.mark.parametrize('failure', [False, True])
+@pytest.mark.parametrize('cached', [False, True])
+def test_section_transition_is_cosmetic_and_never_retained_after_failure(monkeypatch, failure, cached):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from src import loading_ui
+    state = {'_fow_loading_ready': {'synthetic-section': True}} if cached else {}
+    host, pending, html = Mock(), Mock(), Mock()
+    host.empty.return_value = pending
+    host.container.return_value = nullcontext()
+    pending.container.return_value = nullcontext()
+    monkeypatch.setattr(loading_ui, 'st', SimpleNamespace(session_state=state, container=Mock(return_value=host), html=html))
+    def render():
+        with loading_ui.loading_content('synthetic-section', 'market_section', view='Skills', defer=True, transition=7) as content:
+            with content():
+                if failure:
+                    raise ValueError('Synthetic transition failure')
+    if failure:
+        with pytest.raises(ValueError, match='Synthetic transition failure'):
+            render()
+        html.assert_not_called()
+        pending.empty.assert_called_once()
+        assert not state['_fow_loading_ready']
+    else:
+        render()
+        pending.container.assert_called_once_with(key='synthetic-section_transition_7')
+        cosmetic = html.call_args.args[0]
+        assert 'data-fow-transition="7"' in cosmetic
+        assert f'data-fow-cached="{str(cached).lower()}"' in cosmetic
+        assert 'aria-hidden="true"' in cosmetic
+        assert 'role="status"' not in cosmetic and 'aria-busy="true"' not in cosmetic
+        pending.empty.assert_not_called()
+        assert state['_fow_loading_ready']['synthetic-section']
+    if cached:
+        pending.html.assert_not_called()
+    else:
+        pending.html.assert_called_once()

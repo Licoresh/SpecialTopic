@@ -478,8 +478,22 @@ body:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_
 .st-key-job_market_section_psf_aai, .st-key-job_market_psf_charts, .st-key-job_market_psf_charts_body { min-width: 0; width: 100%; }
 .st-key-job_market_section_psf_aai [data-testid="stColumn"] { min-width: 0; }
 .st-key-job_market_section_psf_aai [data-testid="stPlotlyChart"] { max-width: 100%; }
-.st-key-job_market_view_load:has(.fow-loading) .st-key-job_market_view_load_body,
+.st-key-job_market_view_load:has(.fow-loading[role="status"]) .st-key-job_market_view_load_body,
 .st-key-job_market_psf_charts:has(.fow-loading) .st-key-job_market_psf_charts_body { visibility: hidden; height: 0; overflow: hidden; }
+.st-key-job_market_view_load { position: relative; }
+.st-key-job_market_view_load [data-testid="stLayoutWrapper"]:has(> [class*="st-key-job_market_view_load_transition_"]) { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: clip; }
+[class*="st-key-job_market_view_load_transition_"] { width: 100%; pointer-events: none; }
+.fow-section-transition { background: #FBF8F6; pointer-events: none; animation: fow-section-cover 180ms ease-out both; }
+.fow-section-transition .fow-loading::after { animation: none; opacity: 0; }
+.st-key-job_market_view_load:has(.fow-section-transition) [class*="st-key-job_market_section_"] { animation: fow-section-reveal 180ms steps(1,end) both; }
+.fow-section-transition[data-fow-cached="true"],
+.st-key-job_market_view_load:has(.fow-section-transition[data-fow-cached="true"]) [class*="st-key-job_market_section_"] { animation-duration: 100ms; }
+@keyframes fow-section-cover { 0%, 80% { opacity: 1; visibility: visible; } 100% { opacity: 0; visibility: hidden; } }
+@keyframes fow-section-reveal { from { opacity: 0; visibility: hidden; } to { opacity: 1; visibility: visible; } }
+@media (prefers-reduced-motion: reduce) {
+ .fow-section-transition { animation: none; visibility: hidden; }
+ .st-key-job_market_view_load:has(.fow-section-transition) [class*="st-key-job_market_section_"] { animation: none; }
+}
 body:has(.st-key-job_market_heading) [data-testid="stHeading"] h3 { display: flex; align-items: center; column-gap: .6rem; line-height: 1.35; padding-block: .2rem .45rem; }
 body:has(.st-key-job_market_heading) [data-testid="stHeadingIconWrapper"] { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 30px; margin: 0; overflow: visible; }
 body:has(.st-key-job_market_heading) [data-testid="stHeadingIcon"] { width: 28px; height: 28px; font-size: 25px; line-height: 28px; }
@@ -775,7 +789,6 @@ UNMAPPED_CSS += """
 
 
 WORKSPACE_CONTENT_CSS = """
-.st-key-job_market_psf_charts_body:not(:has([data-fow-psf-ready])) { visibility: hidden; }
 [data-testid="stSidebarHeader"] { display: grid; grid-template-columns: minmax(0,1fr) 44px; }
 [data-testid="stSidebarHeader"] > :first-child { min-width: 0; }
 
@@ -871,8 +884,8 @@ body:has(.st-key-workspace_toolbar) [data-testid="stHeader"] :is(button, a, [rol
 STUDY_CONTENT_CSS = """
 /* Content only: retain the shared header, account control and navigation. */
 [class*="st-key-content_panel_"] { min-width: 0; padding: 0 !important; gap: .85rem; border: 1px solid var(--fow-border); border-radius: 12px; background: #FFFCFA; box-shadow: var(--fow-shadow); }
-[class*="st-key-content_panel_"] > [data-testid="stLayoutWrapper"]:not(:first-child) { margin-inline: 1rem; width: calc(100% - 2rem) !important; min-width: 0; }
-[class*="st-key-content_panel_"] > [data-testid="stLayoutWrapper"]:last-child { margin-bottom: 1rem; }
+[class*="st-key-content_panel_"] > :is([data-testid="stLayoutWrapper"],[data-testid="stElementContainer"]):not(:first-child) { margin-inline: 1rem; width: calc(100% - 2rem) !important; min-width: 0; }
+[class*="st-key-content_panel_"] > :is([data-testid="stLayoutWrapper"],[data-testid="stElementContainer"]):last-child { margin-bottom: 1rem; }
 .fow-content-section-heading { display: flex; align-items: center; gap: .65rem; min-height: 48px; padding: .8rem 1rem .25rem; background: transparent; color: #171923; }
 .fow-content-section-heading > .material-symbols-rounded { flex: none; color: #86142D; font-size: 25px; line-height: 1; }
 .fow-content-section-heading > h3 { display: block !important; margin: 0 !important; padding: 0 !important; color: #171923 !important; font-size: 1.05rem !important; line-height: 1.35; letter-spacing: -.02em; }
@@ -906,12 +919,12 @@ STUDY_CONTENT_CSS = """
 .fow-readiness-findings p { margin: .3rem 0 0; color: #34303B; font-size: .84rem; line-height: 1.5; }
 .st-key-content_panel_readiness_actions li { padding-left: .2rem; margin-block: .5rem; font-size: .86rem; line-height: 1.5; }
 .st-key-workspace_page_readiness [class*="st-key-content_panel_"] { padding: 1.2rem 1.35rem !important; gap: 1rem; }
-.st-key-workspace_page_readiness [class*="st-key-content_panel_"] > [data-testid="stLayoutWrapper"]:nth-child(n) { margin: 0; width: 100% !important; }
+.st-key-workspace_page_readiness [class*="st-key-content_panel_"] > :is([data-testid="stLayoutWrapper"],[data-testid="stElementContainer"]):nth-child(n) { margin: 0; width: 100% !important; }
 .st-key-workspace_page_readiness .fow-content-section-heading { min-height: 32px; padding: 0 0 .35rem; }
 .st-key-workspace_page_readiness .fow-readiness-findings { gap: .8rem; }
 @media (max-width: 760px) {
  .st-key-workspace_page_readiness [class*="st-key-content_panel_"] { padding: 1rem !important; }
- .st-key-workspace_page_readiness [class*="st-key-content_panel_"] > [data-testid="stLayoutWrapper"]:nth-child(n) { margin: 0; width: 100% !important; }
+ .st-key-workspace_page_readiness [class*="st-key-content_panel_"] > :is([data-testid="stLayoutWrapper"],[data-testid="stElementContainer"]):nth-child(n) { margin: 0; width: 100% !important; }
  .st-key-workspace_page_readiness .fow-content-section-heading { padding: 0 0 .35rem; }
 }
 .fow-content-note { box-sizing: border-box; min-width: 0; padding: 1rem; border: 1px solid #EAD7DC; border-radius: 11px; background: #FBF1F2; }
@@ -965,7 +978,7 @@ STUDY_CONTENT_CSS = """
  .st-key-home_next { padding-left: 1rem !important; }
  .st-key-home_next::before { display: none; }
  .fow-content-section-heading { padding: .65rem .8rem; }
- [class*="st-key-content_panel_"] > [data-testid="stLayoutWrapper"]:not(:first-child) { margin-inline: .8rem; width: calc(100% - 1.6rem) !important; }
+ [class*="st-key-content_panel_"] > :is([data-testid="stLayoutWrapper"],[data-testid="stElementContainer"]):not(:first-child) { margin-inline: .8rem; width: calc(100% - 1.6rem) !important; }
 }
 @media (max-width: 760px) {
  :is(.st-key-settings_fields_aligned_threshold,.st-key-settings_fields_stopwords,.st-key-settings_fields_likert_min) { grid-template-columns: minmax(0,1fr); }
