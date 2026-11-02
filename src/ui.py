@@ -2388,8 +2388,9 @@ def _job_market_content(tables, meta, revision=None):
                 st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
                 all_locations_table = st.expander("View all regional or city counts", key="result_all_location_counts", on_change="rerun")
                 if all_locations_table.open:
-                    display(location_counts.rename(columns={count_field: "Region" if selected_region == "All" else "City or municipality",
-                                                            "job_ads": "Job advertisements", "job_ads_pct": "Share of comparison group (%)"}))
+                    with all_locations_table:
+                        display(location_counts.rename(columns={count_field: "Region" if selected_region == "All" else "City or municipality",
+                                                                "job_ads": "Job advertisements", "job_ads_pct": "Share of comparison group (%)"}))
                 with st.expander("Location standardization evidence", key="result_location_standardization"):
                     display(focused_locations)
                 trend_jobs = jobs[jobs.source_id.isin(location_ids)]

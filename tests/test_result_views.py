@@ -614,3 +614,24 @@ def test_missing_and_experience_phrases_are_reported_below_skill_charts(monkeypa
     assert any("Missing / not-mentioned placeholders: 1 ads" in value for value in captions)
     assert any("Experience/year wording: 1 ads" in value and "excluded from skills and PSF-AAI demand" in value for value in captions)
     assert any("No chartable skill evidence, regardless of PSF status: 1 of 4 ads" in value for value in captions)
+
+def test_location_counts_render_inside_their_expander_only_when_open(monkeypatch):
+    tables = result_tables()
+    app, _ = result_app(monkeypatch, tables)
+    app.button_group(key='result_section').select('Roles and locations').run(timeout=30)
+    def regional_tables(elements):
+        return [item for item in elements if 'Share of comparison group (%)' in item.value]
+    assert not app.exception
+    assert not regional_tables(app.dataframe)
+    app.session_state['result_all_location_counts'] = True
+    app.run(timeout=30)
+    assert not app.exception
+    expander = next(item for item in app.expander if item.label == 'View all regional or city counts')
+    nested = regional_tables(expander.dataframe)
+    assert len(nested) == 1
+    assert nested[0].value['Job advertisements'].sum() == 4
+    assert len(regional_tables(app.dataframe)) == 1
+    app.session_state['result_all_location_counts'] = False
+    app.run(timeout=30)
+    assert not app.exception
+    assert not regional_tables(app.dataframe)
