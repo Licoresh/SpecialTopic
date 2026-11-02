@@ -82,6 +82,7 @@ def login_page():
                     (hint for term, hint in messages.items() if term in message),
                     "Could not sign in. Check your email and password, then retry. If this continues, ask the project owner to check workspace access.")
                 finish_action_run()
+                view.empty()
                 st.rerun()
             else:
                 st.session_state.update({
@@ -92,7 +93,10 @@ def login_page():
                     "supabase_role": role,
                 })
                 finish_action_run()
-                st.rerun()
+    # Remove the entire auth tree before the workspace starts its next render.
+    # Otherwise Streamlit retains stale form elements until that render finishes.
+    view.empty()
+    st.rerun()
 
 
 def _workspace_unavailable(error, *, retry_label="Retry connection"):

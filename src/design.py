@@ -272,6 +272,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 :is(.st-key-login_panel, .st-key-login_panel_busy) h1 { font-size: clamp(1.65rem, 4vw, 2.1rem); }
 :is(.st-key-login_status, .st-key-login_status_busy) { min-height: 76px; }
 :is(.st-key-login_panel, .st-key-login_panel_busy) [data-testid="stForm"] { padding: 0; border: 0; }
+/* Native input wrappers draw the focus border around both the email icon and text. */
+:is(.st-key-login_panel, .st-key-login_panel_busy) [data-testid="stTextInput"] input:focus-visible {
+  outline: none; outline-offset: 0;
+}
 .st-key-workflow_0, .st-key-workflow_3 { gap: 1rem; }
 .st-key-workflow_0 > [data-testid="stLayoutWrapper"], .st-key-workflow_3 > [data-testid="stLayoutWrapper"] { flex: 1 1 280px; }
 .st-key-settings_form { width: 100%; max-width: none; }

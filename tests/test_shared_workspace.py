@@ -807,3 +807,26 @@ def test_reviewers_cannot_restore_shared_evidence(shared, monkeypatch):
     with pytest.raises(backend.SupabaseError, match="admin"):
         backend.restore_candidate_evidence({"jobs:synthetic:7": "Evidence"}, "token")
     request.assert_not_called()
+
+def test_successful_login_replaces_form_with_workspace(monkeypatch):
+    monkeypatch.setattr(backend, 'sign_in', lambda *args: {
+        'access_token': 'synthetic-token', 'refresh_token': 'synthetic-refresh',
+        'user': {'email': 'synthetic@example.test'}})
+    monkeypatch.setattr(backend, 'check_connection', lambda *args: 'reviewer')
+    app = AppTest.from_string("""
+import streamlit as st
+from src.auth_ui import login_page
+if st.session_state.get('supabase_access_token'):
+    st.title('Overview')
+else:
+    login_page()
+""").run()
+    app.text_input[0].set_value('synthetic@example.test')
+    app.text_input[1].set_value('synthetic-test-password')
+    app.button[0].click().run()
+    assert not app.exception
+    assert [heading.value for heading in app.title] == ['Overview']
+    assert not app.text_input
+    assert not app.button
+    assert not app.caption
+    assert app.session_state['supabase_role'] == 'reviewer'
