@@ -173,11 +173,10 @@ def test_theme_primary_button_meets_text_contrast():
     assert (luminance(theme["backgroundColor"])+.05)/(luminance(theme["textColor"])+.05) >= 4.5
 
 
-def test_shared_visual_direction_is_present_in_theme_css_and_page_guide():
+def test_shared_visual_direction_is_present_in_theme_css():
     from src.design import CSS, JOB_MARKET_CSS, SIDEBAR_CSS
     root = Path(__file__).resolve().parents[1]
     theme = tomllib.loads((root/".streamlit/config.toml").read_text())["theme"]
-    direction = (root/"DESIGN_DIRECTION.md").read_text(encoding="utf-8")
     assert theme["primaryColor"] == "#78182B"
     assert theme["chartCategoricalColors"][:2] == ["#78182B", "#D6A33D"]
     assert theme["backgroundColor"] == "#FBF8F4"
@@ -186,9 +185,6 @@ def test_shared_visual_direction_is_present_in_theme_css_and_page_guide():
     assert "width: 100%; max-width: none;" in CSS
     assert "--fow-control-height: 44px" in CSS
     assert "min-height: 185px" not in CSS
-    assert "Sign in" in direction and "Review and label phrases" in direction
-    assert "Methodology" in direction and "Settings" in direction
-    assert "generic research identity" in direction
     assert ".st-key-job_market_heading" in JOB_MARKET_CSS
     assert ".st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading" in JOB_MARKET_CSS
     assert '[data-testid="stSidebarNavLink"][aria-current="page"]' in SIDEBAR_CSS

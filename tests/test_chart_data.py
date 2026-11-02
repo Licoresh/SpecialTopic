@@ -298,7 +298,7 @@ def test_vague_and_unfinished_wording_is_withheld_from_every_skill_chart():
     views = skill_chart_tables(skills, pd.DataFrame({"source_id": ["A", "B"],
                                                       "job_family": ["analytics", "analytics"]}))
 
-    expected = {"sql", "python", "advanced sql", "communication"}
+    expected = {"sql", "python", "communication"}
     assert set(views["chart_skill_demand"].employer_skill) == expected
     assert set(views["chart_skill_family_demand"].skill_label) == expected
     audit = views["chart_phrase_review"].set_index("original_phrase").review_reason
@@ -329,7 +329,7 @@ def test_status_filtered_skill_charts_keep_only_allowed_original_phrase_variants
 def test_empty_tables_keep_exportable_schema():
     tables = skill_chart_tables(pd.DataFrame(), pd.DataFrame())
     assert set(tables) == {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review",
-                           "chart_skill_family_demand", "chart_family_ad_counts"}
+                           "chart_skill_family_demand", "chart_family_ad_counts", "chart_skill_variants"}
     assert all(frame.empty for frame in tables.values())
     assert {"normalized_phrase", "employer_skill", "employer_demand_count", "employer_demand_pct"} <= set(tables["chart_skill_demand"])
     assert "review_reason" in tables["chart_phrase_review"]
@@ -460,12 +460,12 @@ def test_ambiguous_solution_design_wording_remains_available_for_review():
     ("research", "research"), ("leadership", "leadership"), ("learning", "learning"),
     ("ability to learn", "learning and application"),
     ("learn and apply", "learning and application"),
-    ("build dashboards", "build dashboards"),
-    ("maintain data pipelines", "maintain data pipelines"),
-    ("design APIs", "design apis"),
+    ("build dashboards", "dashboard development"),
+    ("maintain data pipelines", "data pipeline maintenance"),
+    ("design APIs", "api design"),
     ("configure network devices", "configure network devices"),
-    ("deploy ML models", "deploy ml models"),
-    ("perform statistical analysis", "perform statistical analysis"),
+    ("deploy ML models", "ml model deployment"),
+    ("perform statistical analysis", "statistical analysis"),
     ("ensure regulatory compliance", "ensure regulatory compliance"),
     ("attention to detail", "attention to detail"), ("resilience", "resilience"),
     ("emotional intelligence", "emotional intelligence"), ("financial acumen", "financial acumen"),
@@ -479,13 +479,13 @@ def test_ambiguous_solution_design_wording_remains_available_for_review():
     ("active listening", "active listening"), ("public speaking", "public speaking"),
     ("creative thinking", "creative thinking"), ("customer service", "customer service"),
     ("TypeScript", "typescript"), ("PySpark", "pyspark"), ("XGBoost", "xgboost"),
-    ("knowledge of SQL", "knowledge of sql"), ("proficiency in Python", "proficiency in python"),
+    ("knowledge of SQL", "sql"), ("proficiency in Python", "python"),
     ("ability to communicate", "ability to communicate"), ("statistical methods", "statistical methods"),
     ("participate in model development", "participate in model development"),
-    ("strong knowledge of SQL", "strong knowledge of sql"),
-    ("proficiency in Microsoft Excel", "proficiency in microsoft excel"),
-    ("experience with Microsoft Power BI", "experience with microsoft power bi"),
-    ("knowledge of advanced SQL", "knowledge of advanced sql"),
+    ("strong knowledge of SQL", "sql"),
+    ("proficiency in Microsoft Excel", "excel"),
+    ("experience with Microsoft Power BI", "power bi"),
+    ("knowledge of advanced SQL", "sql"),
 ])
 def test_specific_skills_survive_conservative_fragment_screen(phrase, label):
     skills = rows([("A", phrase, "Technical / Digital")])

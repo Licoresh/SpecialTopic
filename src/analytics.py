@@ -52,6 +52,7 @@ _CHART_PHRASE_ALIASES = {
     "scrum": "agile scrum", "scrum methodology": "agile scrum",
     "scrum methodologies": "agile scrum", "scrum method": "agile scrum",
     "scrum methods": "agile scrum",
+    "train and development": "training and development",
 }
 _VAGUE_ONLY_WORDS = {
     "ability", "advanced", "basic", "background", "business", "computer", "different", "digital",
@@ -110,6 +111,35 @@ _CONCRETE_TECH_TASK = re.compile(
 _BROKEN_CLAUSE = re.compile(r"\b(?:be|they|that|which)\b", re.I)
 _WEAK_FRAGMENT_START = re.compile(r"^(?:base|basis)(?:\s|$)", re.I)
 _TECHNICAL_COMPOUND_START = re.compile(r"^(?:as-is|to-be|end-to-end|out-of-sample|in-memory)\b", re.I)
+# Bounded word forms, not a stemmer: analysis/analytics and related domains stay distinct.
+_SKILL_HEAD_FORMS = {
+    "compute": "computing", "computations": "computation",
+    "visualise": "visualization", "visualize": "visualization", "visualisation": "visualization",
+    "visualisations": "visualization", "visualizations": "visualization",
+    "modelling": "modeling", "modelings": "modeling", "modellings": "modeling",
+    "analyse": "analysis", "analyze": "analysis", "analyses": "analysis",
+    "optimise": "optimization", "optimize": "optimization", "optimisation": "optimization",
+    "optimisations": "optimization", "optimizations": "optimization",
+    "standards": "standards", "standard": "standards", "agreement": "agreements",
+}
+_SKILL_LABEL_PREFIX = re.compile(
+    r"^(?:(?:advanced|basic|intermediate|expert|proficient|strong|good|excellent|solid)\s+|"
+    r"(?:(?:working|practical|hands-on)\s+)?(?:knowledge|understanding|experience|proficiency|"
+    r"expertise|familiarity|skills?)\s+(?:of|in|with)\s+)", re.I)
+_SKILL_LABEL_SUFFIX = re.compile(r"\s+skills?$", re.I)
+_SKILL_TASK = re.compile(
+    r"^(build|building|built|develop|developing|create|creating|design|designing|maintain|maintaining|"
+    r"enhance|enhancing|improve|improving|test|testing|deploy|deploying|configure|configuring)\s+"
+    r"(?:(?:a|an|the)\s+)?((?:(?:data|etl|interactive|ml|machine learning|statistical|predictive)\s+)?"
+    r"(?:dashboards?|pipelines?|databases?|apis?|models?))$", re.I)
+_TASK_CAPABILITIES = {
+    "build": "development", "building": "development", "built": "development",
+    "develop": "development", "developing": "development", "create": "development", "creating": "development",
+    "design": "design", "designing": "design", "maintain": "maintenance", "maintaining": "maintenance",
+    "enhance": "improvement", "enhancing": "improvement", "improve": "improvement", "improving": "improvement",
+    "test": "testing", "testing": "testing", "deploy": "deployment", "deploying": "deployment",
+    "configure": "configuration", "configuring": "configuration",
+}
 _UNCLEAR_LIST_TAIL = re.compile(r"\b(?:etc\.?|and more|among others|and others|and related(?:\s+(?:skills?|areas?|fields?))?)$", re.I)
 _SKILL_ACTIONS = {
     "ability", "skill", "skills", "experience", "knowledge", "proficiency",
@@ -237,12 +267,59 @@ def demand_matrix(skills, jobs, group):
 
 
 def chart_skill_key(value):
+    """Group clear wording variants without changing evidence or framework identities."""
     phrase = _CHART_BULLETS.sub("", normalize_text(value).translate({0x200b: None, 0xfeff: None, 0x2060: None})).strip()
-    # spaCy lemmatization can turn source "data" into "datum". In this
-    # 500-ad corpus no source description uses "datum"; restore its surface
-    # form only in chart labels, retaining original and normalized evidence.
     phrase = re.sub(r"\bdatum\b", "data", phrase)
-    return _CHART_PHRASE_ALIASES.get(phrase, phrase)
+    while True:
+        previous = phrase
+        phrase = _skill_word_form(phrase)
+        # Strip only neutral decorations with an identifiable skill core.
+        core = phrase
+        while True:
+            stripped = _skill_word_form(_SKILL_LABEL_SUFFIX.sub("", _SKILL_LABEL_PREFIX.sub("", core)))
+            if stripped == core:
+                break
+            core = stripped
+        if _identifiable_skill_core(core):
+            phrase = core
+        task = _SKILL_TASK.fullmatch(phrase)
+        if task:
+            action, subject = task.groups()
+            phrase = re.sub(r"s$", "", subject) + " " + _TASK_CAPABILITIES[action]
+        else:
+            core = re.sub(r"^(?:conduct|conducting|perform|performing)\s+", "", phrase)
+            if core != phrase and _identifiable_skill_core(core):
+                phrase = core
+        phrase = _CHART_PHRASE_ALIASES.get(phrase, phrase)
+        if phrase == previous:
+            return phrase
+
+
+def _skill_word_form(phrase):
+    phrase = _CHART_PHRASE_ALIASES.get(phrase, phrase)
+    words = phrase.split()
+    if len(words) > 1:
+        words[-1] = _SKILL_HEAD_FORMS.get(words[-1], words[-1])
+        phrase = " ".join(words)
+    phrase = re.sub(r"\brequirement(?= (?:elicitation|gathering|analysis|mapping|management)\b)", "requirements", phrase)
+    phrase = re.sub(r"\b(dashboards|pipelines|databases|apis|models)(?= (?:development|design|maintenance|improvement|testing|deployment|configuration)\b)",
+                    lambda match: match[1][:-1], phrase)
+    # Only recognize hyphenated compounds when the spaced name is already known.
+    spaced = re.sub(r"(?<=[a-z])[-‐‑](?=[a-z])", " ", phrase)
+    parts = spaced.split()
+    if len(parts) > 1:
+        parts[-1] = _SKILL_HEAD_FORMS.get(parts[-1], parts[-1])
+        spaced = " ".join(parts)
+    if spaced in _NAMED_SKILL_TERMS:
+        phrase = spaced
+    return phrase
+
+
+def _identifiable_skill_core(phrase):
+    words = phrase.split()
+    return (phrase in _NAMED_SKILL_TERMS or
+            len(words) > 1 and words[-1] in _CAPABILITY_HEADS or
+            bool(_SKILL_TASK.fullmatch(phrase)))
 
 
 def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
@@ -256,7 +333,9 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     original = view.get("normalized_phrase", pd.Series("", index=view.index)).fillna("")
     surface = view.get("original_phrase", pd.Series("", index=view.index)).fillna("")
     view["original_normalized_phrase"] = original
-    view["normalized_phrase"] = original.where(original.astype(str).str.strip().ne(""), surface).map(chart_skill_key)
+    phrases = original.where(original.astype(str).str.strip().ne(""), surface)
+    keys = {phrase: chart_skill_key(phrase) for phrase in phrases.unique()}
+    view["normalized_phrase"] = phrases.map(keys)
     view["skill_label"] = view.normalized_phrase
     reasons = {phrase: _chart_phrase_reason(phrase) for phrase in view.normalized_phrase.unique()}
     view["review_reason"] = view.normalized_phrase.map(reasons)
@@ -270,6 +349,15 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     eligible = view.loc[accepted & reason.eq("")].copy()
     if allowed_phrases is not None:
         eligible = eligible[eligible.original_normalized_phrase.isin(allowed_phrases)]
+    types = eligible.get("skill_type", pd.Series("", index=eligible.index)).replace("", pd.NA)
+    eligible["category_conflict"] = types.groupby([eligible.source_id, eligible.skill_label]).transform("nunique").gt(1)
+    variant_columns = ["original_phrase", "original_normalized_phrase", "skill_label", "competency_category", "skill_type", "category_conflict"]
+    variants = (eligible.reindex(columns=["source_id", *variant_columns]).fillna("")
+                .groupby(variant_columns, dropna=False).source_id.nunique().rename("job_ads").reset_index())
+    variants["grouping_basis"] = variants.original_normalized_phrase.eq(variants.skill_label).map(
+        {True: "Same skill wording", False: "Documented skill wording normalization"})
+    if "skill_type" in eligible:
+        eligible.loc[eligible.category_conflict, "skill_type"] = "Other / Unclassified"
     eligible = eligible.drop_duplicates(["source_id", "normalized_phrase"]).copy()
     demand = (eligible.groupby(["normalized_phrase", "skill_label"]).source_id.nunique()
               .rename("employer_demand_count").reset_index()
@@ -301,6 +389,7 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     else:
         family_demand = pd.DataFrame(columns=["job_family", "skill_label", "job_ads", "family_ads", "job_ads_pct"])
     return {"chart_skill_occurrences": eligible,
+            "chart_skill_variants": variants,
             "chart_skill_demand": demand,
             "chart_phrase_review": review,
             "chart_skill_family_demand": family_demand,
@@ -312,7 +401,8 @@ def chart_mapping_rows(mapping):
     """Screen employer phrases before aggregation without rewriting framework labels."""
     if mapping.empty or "normalized_skill" not in mapping:
         return mapping
-    phrases = mapping.normalized_skill.fillna("").map(chart_skill_key)
+    original = mapping.normalized_skill.fillna("")
+    phrases = original.map({phrase: chart_skill_key(phrase) for phrase in original.unique()})
     reasons = {phrase: _chart_phrase_reason(phrase) for phrase in phrases.unique()}
     return mapping.loc[phrases.map(reasons).eq("")].copy()
 

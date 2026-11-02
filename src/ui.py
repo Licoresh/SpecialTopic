@@ -2160,7 +2160,7 @@ def _job_market_content(tables, meta, revision=None):
                 no_chartable_ads = int(chart_summary.get("ads_without_chartable_skill", max(0, denominator - skills.source_id.nunique()))) if denominator else 0
                 st.caption(f"Missing / not-mentioned placeholders: {not_reported_ads:,} ads. No chartable skill evidence, regardless of PSF status: {no_chartable_ads:,} of {denominator:,} ads.")
                 st.caption(f"Experience/year wording: {experience_phrase_ads:,} ads; excluded from skills and PSF-AAI demand. Irrelevant labels: {irrelevant_ads:,} ads; excluded.")
-                st.caption(f"One advertisement counts once per skill, including case and list-format variants. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
+                st.caption(f"One advertisement counts once per grouped skill, including equivalent wording. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
                 st.caption("Unmapped but skill-like phrases remain in employer demand; their PSF-AAI correspondence is reviewed separately.")
                 for kind, title in (("Technical", "Technical skills"), ("Soft / Enabling", "Enabling and interpersonal skills")):
                     rows = skills[skills.get("skill_type", pd.Series("", index=skills.index)).eq(kind)]
@@ -2172,6 +2172,8 @@ def _job_market_content(tables, meta, revision=None):
                 if not skills.empty:
                     categories = skills.copy()
                     categories["category_group"] = categories.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
+                    if "category_conflict" in categories:
+                        categories.loc[categories.category_conflict.eq(True), "category_group"] = "category needs review"
                     counts = categories.groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
                     featured_result_chart("category_group", "job_ads", "Most common broad area", denominator,
                                           lambda: plot(counts, "category_group", "job_ads", "Broad competency areas"),
@@ -2186,6 +2188,11 @@ def _job_market_content(tables, meta, revision=None):
                     display(unclear)
                 with st.expander("Skill-demand table"):
                     display(demand)
+                variants = st.expander("Skill wording groups and original phrases", key="job_market_wording_groups", on_change="rerun")
+                if variants.open:
+                    with variants:
+                        st.caption("Equivalent wording shares one chart label. Each advertisement counts once per label; variant counts must not be added. Original wording and saved labels remain unchanged.")
+                        display(views.get("chart_skill_variants", pd.DataFrame()))
 
             if section == "Roles and locations":
                 profile = (tables if "education_level_counts" in tables else _session_cached_value(

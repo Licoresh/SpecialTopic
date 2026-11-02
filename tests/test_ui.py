@@ -110,8 +110,20 @@ def test_upload_page_can_select_psf_reference(ui_workspace):
     assert selector.options == ["Job advertisements (500-study dataset)", "TESDA PSF-AAI reference"]
     selector.set_value("TESDA PSF-AAI reference").run(timeout=60)
     assert app.title[0].value == "Upload PSF-AAI reference"
-    assert any(item.label == "Load prepared Range of Application draft" for item in app.button)
     assert not app.exception and not app.error
+
+
+def test_prepared_psf_draft_action_depends_on_local_file(ui_workspace, monkeypatch):
+    monkeypatch.setattr(ui, "__file__", str(ui_workspace / "src/ui.py"))
+    app = page_app("Job Data Upload")
+    next(item for item in app.selectbox if item.label == "Dataset to upload").set_value("TESDA PSF-AAI reference").run(timeout=60)
+    assert not app.exception and not app.error
+    assert not any(item.label == "Load prepared Range of Application draft" for item in app.button)
+    draft = ui_workspace / "data/processed/psf_aai_range_review_draft.csv"
+    draft.write_text("competency_name,range_of_application\nSYNTHETIC,Python\n", encoding="utf-8")
+    app.run(timeout=60)
+    assert not app.exception and not app.error
+    assert any(item.label == "Load prepared Range of Application draft" for item in app.button)
 
 
 def test_upload_page_removes_only_misfiled_psf_copy(ui_workspace):

@@ -13,3 +13,9 @@ train
 models
 outputs
 tests
+
+# Local-only notes and reference artwork are not deployment inputs.
+**/*.md
+!README.md
+!METHODOLOGY.md
+DESIGN_REFERENCE_*
