@@ -2,6 +2,8 @@ from .category_schema import category_path, category_parent
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from html import escape
 from textwrap import wrap
 import json
@@ -50,6 +52,24 @@ from .design import review_workspace_style, workspace_breadcrumb, content_sectio
 from . import background_tasks
 
 MANUAL_REVIEW_COLUMNS = ["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"]
+_CHART_DOWNLOAD_TARGET = ContextVar("chart_download_target", default=None)
+
+
+@contextmanager
+def chart_download_target(target):
+    token = _CHART_DOWNLOAD_TARGET.set(target)
+    try:
+        yield
+    finally:
+        _CHART_DOWNLOAD_TARGET.reset(token)
+
+
+def card_download_slot():
+    target = _CHART_DOWNLOAD_TARGET.get()
+    if target is None:
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            target = st.container(width="content")
+    return target
 
 
 
@@ -343,6 +363,37 @@ def evidence_tables(title, tables, *, key, order=None, label=None, value=None, n
                         key=f"{key}_page_{index}")
 
 
+@st.fragment
+def outside_experience_evidence(evidence, jobs):
+    count = evidence.source_id.nunique()
+    if not st.toggle(f"Show the {count:,} {'ad' if count == 1 else 'ads'} outside these bands",
+                     key="result_unbanded_experience"):
+        return
+    reasons = {
+        "Parsed minimum": "Minimum only; no upper limit is stated.",
+        "Parsed maximum": "Maximum only; no minimum is stated.",
+        "Parsed range": "The range does not fit entirely inside one displayed band.",
+        "Parsed stated years": "The stated duration is outside the configured bands.",
+        "Needs review": "Wording needs review; one unambiguous numerical duration could not be established.",
+    }
+    shown = evidence.drop_duplicates("source_id").copy()
+    employers = jobs.drop_duplicates("source_id").set_index("source_id").get("company", pd.Series(dtype=str))
+    shown["Employer"] = shown.source_id.map(employers).fillna("").replace("", "Not stated")
+    shown["Why outside the bands"] = shown.parse_status.map(reasons).fillna("Available wording does not establish one numerical band.")
+    shown = shown.rename(columns={"source_id": "Source ad ID", "job_title": "Job title",
+                                   "original_requirement": "Original experience wording", "url": "Source URL"})
+    shown = shown[["Job title", "Employer", "Original experience wording", "Why outside the bands", "Source ad ID", "Source URL"]]
+    st.dataframe(shown, hide_index=True, width="stretch", column_config={
+        "Original experience wording": st.column_config.TextColumn(width="large"),
+        "Why outside the bands": st.column_config.TextColumn(width="large"),
+        "Source URL": st.column_config.LinkColumn(display_text="Open original ad")},
+        alt=f"{count} job advertisements with experience wording outside the numerical bands")
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        st.download_button("Download these ads (CSV)", data=lambda: export_csv(shown),
+                           file_name="experience-outside-bands.csv", mime="text/csv",
+                           on_click="ignore", key="unbanded_experience_download", icon=":material/download:")
+
+
 def _paginate_frame(frame, page, page_size=100):
     total_pages = max(1, (len(frame) + page_size - 1) // page_size)
     page = min(max(int(page), 1), total_pages)
@@ -394,7 +445,14 @@ def chart(fig, *, key=None, title=None, show_heading=True, downloads=True):
                    "modeBarButtonsToRemove": ["select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d"],
                    "toImageButtonOptions": {"format": "png", "filename": chart_filename(title), "scale": 2}}
     visible_heading = result_page and heading and show_heading
-    if downloads:
+    target = _CHART_DOWNLOAD_TARGET.get()
+    if downloads and target is not None:
+        if visible_heading:
+            icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
+            st.subheader(title, icon=f":material/{icon}:")
+        with target:
+            chart_downloads(fig, title, key=export_key)
+    elif downloads:
         with st.container(horizontal=True, horizontal_alignment="distribute" if visible_heading else "right",
                           vertical_alignment="center"):
             if visible_heading:
@@ -2060,10 +2118,11 @@ def result_insight(title, summary, rows, list_title="Top 3"):
 
 def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Key Insight", list_title="Top 3"):
     """Use the reference's single chart-and-insight card without changing data."""
-    embedded = key in {"titles", "family_heatmap", "selected_title"}
+    embedded = key in {"titles", "family_heatmap", "selected_title", "title_timeline"}
     with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
+        download_slot = card_download_slot()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
-        with chart_column:
+        with chart_column, chart_download_target(download_slot):
             render_chart()
         with insight_column:
             result_insight(insight_title, summary, rows, list_title)
@@ -2104,8 +2163,9 @@ def featured_result_chart(label, value, heading, total, render_chart, *, key):
     """Derive the companion insight from the exact visible chart rows."""
     embedded = key in {"titles", "selected_title", "unmapped_evidence", "unmapped_recurring"}
     with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
+        download_slot = card_download_slot()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
-        with chart_column:
+        with chart_column, chart_download_target(download_slot):
             figure = render_chart()
         data = _plotted_counts(figure, label, value)
         data = data.sort_values([value, label], ascending=[False, True], kind="stable")
@@ -2552,7 +2612,9 @@ def _job_market_content(tables, meta, revision=None):
                 "_fow_title_timeline_data", revision, lambda: job_title_timeline(jobs),
                 ttl=None, max_entries=1, clone=lambda value: value)
             with st.container(border=True, key="job_market_posting_timeline"):
-                st.subheader("Job-title posting timeline", icon=":material/timeline:")
+                with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+                    st.subheader("Job-title posting timeline", icon=":material/timeline:")
+                    timeline_download_slot = st.container(width="content")
                 totals = monthly.groupby("job_title").job_ads.sum().sort_values(ascending=False)
                 title_options = sorted(date_evidence.loc[date_evidence.job_title.ne(""), "job_title"].unique())
                 default_titles = totals.head(5).index.tolist() or title_options[:5]
@@ -2595,14 +2657,20 @@ def _job_market_content(tables, meta, revision=None):
                                    (f" and {len(leaders) - 3} other months." if len(leaders) > 3 else "."))
                         top_titles = selected.groupby("job_title").job_ads.sum().sort_values(ascending=False)
                         timeline_figure = job_title_trend(selected)
-                        featured_visual_chart(
-                            lambda: chart(timeline_figure, key="job_title_posting_timeline", show_heading=False),
-                            summary, list(top_titles.head(3).items()), key="title_timeline",
-                            insight_title="Timeline Insight", list_title="Dated ads by selected title")
+                        with chart_download_target(timeline_download_slot):
+                            featured_visual_chart(
+                                lambda: chart(timeline_figure, key="job_title_posting_timeline", show_heading=False),
+                                summary, list(top_titles.head(3).items()), key="title_timeline",
+                                insight_title="Timeline Insight", list_title="Dated ads by selected title")
                         st.caption("Play reveals the recorded monthly points from the beginning; Pause stops playback. The slider selects a date checkpoint. The final frame shows the complete selected period.")
                         if timeline_figure.layout.meta.get("fow_playback_sampled"):
                             st.caption(f"Playback uses {len(timeline_figure.frames):,} steps for this long interval. All monthly values remain in the final lines, table and downloads.")
                     else:
+                        with timeline_download_slot:
+                            st.download_button("Download timeline data (CSV)", data=lambda: export_csv(selected),
+                                               file_name="job-title-posting-timeline.csv", mime="text/csv",
+                                               on_click="ignore", key="result_timeline_table_download", icon=":material/download:",
+                                               help="All monthly values for the selected job titles.")
                         if len(months) == 1:
                             st.info("Only one posting month is available; the table shows counts without implying a time trend.")
                         timeline_table(selected, chosen)
@@ -2744,9 +2812,7 @@ def _job_market_content(tables, meta, revision=None):
                 result_insight("Experience Insight", summary, top_bands, "Displayed bands")
             st.caption("Bands use explicit experience fields or clear duration wording in the advertisement. Spanning, open-ended and conflicting requirements remain in source-linked evidence for review; text-derived wording is not promoted into the explicit source field.")
             if unbanded_count:
-                evidence_tables(f"Experience requirements outside numerical bands ({unbanded_count:,} ads)",
-                                {"Source wording and parsing status": unbanded_evidence},
-                                key="result_unbanded_experience")
+                outside_experience_evidence(unbanded_evidence, jobs)
             years = profile["experience_analysis_year_counts"]
             if years.empty:
                 st.info("No unambiguous numerical experience requirement was found in the source fields or clear advertisement wording. Missing years are not treated as zero experience.")

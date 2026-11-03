@@ -118,6 +118,9 @@ def test_job_market_hides_audience_guidance_banner(monkeypatch):
 
 def test_reference_metrics_render_selected_counts_without_extra_badges(monkeypatch):
     app, _ = result_app(monkeypatch, result_tables())
+    card = app.get_by_key("job_market_featured_skills")
+    assert len(card.children[0].get("popover")) == 1  # Full card header, above both columns.
+    assert not card.children[1].get("popover")
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Job ads in sample"] == "4"
     assert metrics["Distinct chart skills"] == "3"
@@ -616,6 +619,8 @@ def test_single_posting_month_uses_title_table_without_a_time_trend(monkeypatch)
     assert not any(fig.layout.title.text == "Posting months represented in the dataset" for fig in figures)
     assert not any(fig.layout.title.text == "Job-title posting timeline" for fig in figures)
     assert mounted.call_args.args[0].job_ads.sum() == 4
+    timeline_card = app.get_by_key("job_market_posting_timeline")
+    assert len(timeline_card.children[0].get("download_button")) == 1
     assert any("Only one posting month is available" in item.value for item in app.info)
 
 
@@ -656,13 +661,16 @@ def test_title_timeline_line_table_and_filters_use_only_their_own_scope(monkeypa
 def test_experience_coverage_explains_identified_and_banded_difference(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["experience_requirement"] = ["4 years", "at least 5 years", "2-3 years", "Relevant experience"]
+    tables["cleaned_jobs"]["company"] = ["Employer A", "Employer B", "Employer C", "Employer D"]
     app, _ = result_app(monkeypatch, tables)
     assert any("4 ads with identified experience = 1 in numerical bands + 3 outside numerical bands" in item.value for item in app.caption)
     app.session_state["result_unbanded_experience"] = True
     app.run(timeout=30)
-    evidence = next(item.value for item in app.dataframe if "band_status" in item.value)
-    assert evidence.source_id.nunique() == 3
-    assert set(evidence.source_id) == {"B", "C", "D"}
+    evidence = next(item.value for item in app.dataframe if "Why outside the bands" in item.value)
+    assert evidence["Source ad ID"].nunique() == 3
+    assert set(evidence["Source ad ID"]) == {"B", "C", "D"}
+    assert set(evidence.Employer) == {"Employer B", "Employer C", "Employer D"}
+    assert evidence.loc[evidence["Source ad ID"].eq("B"), "Original experience wording"].iloc[0] == "at least 5 years"
 
 
 

@@ -7,17 +7,6 @@ export function rowsAt(data, index) {
   }));
 }
 
-export function csvAt(data, index) {
-  const quote = value => '"' + String(value).replaceAll('"', '""') + '"';
-  const rows = [["Job title", "Posting month", "Job advertisements"]];
-  for (const series of data.series) {
-    // Labels remain literal text in spreadsheet programs.
-    const title = /^[=+@\-\t\r]/.test(series.title) ? "'" + series.title : series.title;
-    for (let i = 0; i <= index; i++) rows.push([title, data.months[i], series.counts === null ? "" : series.counts[i]]);
-  }
-  return "\uFEFF" + rows.map(row => row.map(quote).join(",")).join("\r\n");
-}
-
 export function createPlayback(length, render, schedule = setInterval, cancel = clearInterval) {
   let index = length - 1, timer;
   const pause = () => { cancel(timer); timer = undefined; render(index, false); };
@@ -40,7 +29,6 @@ export default function ({data, parentElement}) {
   const play = root.querySelector("#play"), pause = root.querySelector("#pause");
   const slider = root.querySelector("#position"), month = root.querySelector("#month");
   const period = root.querySelector("#period"), body = root.querySelector("tbody");
-  const download = root.querySelector("#download");
   let index = data.months.length - 1;
   slider.max = String(index);
   const maximum = Math.max(1, ...data.series.flatMap(series => series.counts || []));
@@ -83,11 +71,6 @@ export default function ({data, parentElement}) {
   play.onclick = playback.play;
   pause.onclick = playback.pause;
   slider.oninput = () => playback.seek(Number(slider.value));
-  download.onclick = () => {
-    const url = URL.createObjectURL(new Blob([csvAt(data, index)], {type: "text/csv;charset=utf-8"}));
-    const link = document.createElement("a"); link.href = url; link.download = "job-title-posting-timeline.csv"; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
   const visibility = () => { if (document.hidden) playback.pause(); };
   document.addEventListener("visibilitychange", visibility);
   draw();
