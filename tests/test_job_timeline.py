@@ -41,7 +41,8 @@ def test_title_trend_playback_restarts_and_slides_without_interpolating_counts()
     assert all(step.args[1]["transition"]["duration"] == 0 for step in fig.layout.sliders[0].steps)
     styled = style_chart(fig)
     assert styled.layout.legend.y > 1
-    assert styled.layout.margin.b >= 150 and styled.layout.height == 490
+    assert styled.layout.margin.b >= 230 and styled.layout.height == 570
+    assert styled.layout.updatemenus[0].y > styled.layout.sliders[0].y
 
 
 def test_title_trend_empty_and_invalid_counts_are_explicit():
@@ -61,7 +62,9 @@ def test_title_trend_bounds_cumulative_playback_cost_and_keeps_complete_final_se
     assert fig.layout.meta["fow_playback_sampled"] is True
     assert fig.layout.meta["fow_timeline_months"] == 600
     assert fig.layout.meta["fow_playback_steps"] == len(fig.frames)
-    assert [step.args[0][0] for step in fig.layout.sliders[0].steps] == [frame.name for frame in fig.frames]
+    assert len(fig.layout.sliders[0].steps) <= 6
+    assert fig.layout.sliders[0].steps[0].args[0][0] == fig.frames[0].name
+    assert fig.layout.sliders[0].steps[-1].args[0][0] == fig.frames[-1].name
     for initial, final in zip(fig.data, fig.frames[-1].data):
         assert len(initial.x) == len(final.x) == 600
         assert list(initial.y) == list(final.y)

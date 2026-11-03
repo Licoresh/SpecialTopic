@@ -30,6 +30,7 @@ from .workflow import run_extraction, analysis_bundle, input_signature, current_
 from .analytics import skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import job_profile_tables, job_title_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
+from .timeline_table import timeline_table
 from .geography import location_tables
 from .alignment import STATUSES, ALIGNMENT_COLUMNS
 from .skill_extraction import EXTRACTION_COLUMNS
@@ -414,7 +415,8 @@ def chart(fig, *, key=None, title=None, show_heading=True, downloads=True):
             st.plotly_chart(fig, width="stretch", theme=None, key=f"{key}_plot_{VERSION}",
                             config=plot_config, alt=title)
     else:
-        plot_options = {"key": f"{plotly_key}_{VERSION}"} if plotly_key else {}
+        timeline = isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline")
+        plot_options = {"key": f"{plotly_key}_{VERSION}" + (f"_{key}" if timeline else "")} if plotly_key else {}
         st.plotly_chart(fig, width="stretch", config=plot_config,
                         alt=title, **plot_options)
 
@@ -2568,10 +2570,13 @@ def _job_market_content(tables, meta, revision=None):
                     grid = pd.MultiIndex.from_product([months, sorted(selected.job_title.unique())], names=["month", "job_title"])
                     selected = selected.set_index(["month", "job_title"]).reindex(grid, fill_value=0).reset_index()
                 selected_evidence = date_evidence.loc[date_evidence.job_title.isin(chosen)]
+                undated_titles = sorted(set(chosen) - set(selected.job_title.unique()))
                 dated = int(selected_evidence.loc[selected_evidence.date_status.eq("Dated"), "source_id"].nunique())
                 missing = int(selected_evidence.loc[selected_evidence.date_status.ne("Dated"), "source_id"].nunique())
                 st.caption(f"{dated:,} dated ads for the chosen titles; {missing:,} ads with missing or invalid posting dates are excluded. "
                            "Monthly counts describe the collected dataset. Zero means no dated ad was recorded in that month, not zero jobs in the market.")
+                if undated_titles:
+                    st.caption("Selected titles without usable posting dates: " + ", ".join(undated_titles) + ".")
                 if not chosen:
                     st.info("Choose at least one job title to explore its posting dates.")
                 elif selected.empty:
@@ -2594,30 +2599,13 @@ def _job_market_content(tables, meta, revision=None):
                             lambda: chart(timeline_figure, key="job_title_posting_timeline", show_heading=False),
                             summary, list(top_titles.head(3).items()), key="title_timeline",
                             insight_title="Timeline Insight", list_title="Dated ads by selected title")
-                        st.caption("Play reveals the recorded monthly points from the beginning; Pause stops playback. The slider chooses a month. The final frame shows the complete selected period.")
+                        st.caption("Play reveals the recorded monthly points from the beginning; Pause stops playback. The slider selects a date checkpoint. The final frame shows the complete selected period.")
                         if timeline_figure.layout.meta.get("fow_playback_sampled"):
                             st.caption(f"Playback uses {len(timeline_figure.frames):,} steps for this long interval. All monthly values remain in the final lines, table and downloads.")
                     else:
                         if len(months) == 1:
                             st.info("Only one posting month is available; the table shows counts without implying a time trend.")
-                        if st.session_state.get("result_timeline_table_month", months[-1]) not in months:
-                            st.session_state["result_timeline_table_month"] = months[-1]
-                        endpoint = st.select_slider("Through posting month", options=months, value=months[-1],
-                                                    key="result_timeline_table_month") if len(months) > 1 else months[0]
-                        shown = selected.loc[selected.month.le(endpoint)]
-                        pivot = shown.pivot(index="job_title", columns="month", values="job_ads").fillna(0).astype(int)
-                        summary = pd.DataFrame({"Job title": pivot.index, "Ads in month": pivot[endpoint].values,
-                                                "Dated ads through month": pivot.sum(axis=1).values,
-                                                "Monthly counts": pivot.values.tolist()})
-                        st.caption(f"Monthly counts from {months[0]} through {endpoint}.")
-                        st.dataframe(summary, hide_index=True, width="stretch", column_config={
-                            "Monthly counts": st.column_config.LineChartColumn("Monthly counts", y_min=0),
-                            "Ads in month": st.column_config.NumberColumn(format="%d"),
-                            "Dated ads through month": st.column_config.NumberColumn(format="%d")},
-                            alt=f"Selected job-title posting counts through {endpoint}")
-                        st.download_button("Download timeline data (CSV)", data=lambda: export_csv(shown),
-                                           file_name="job-title-posting-timeline.csv", mime="text/csv",
-                                           on_click="ignore", key="result_timeline_table_download", icon=":material/download:")
+                        timeline_table(selected, chosen)
                 evidence_tables("Timeline source dates and title grouping", {"": selected_evidence},
                                 key="result_timeline_source_evidence")
 
@@ -2639,10 +2627,17 @@ def _job_market_content(tables, meta, revision=None):
         experience_observed = int(experience_evidence.loc[
             experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"
         ].nunique())
+        band_evidence = profile["experience_band_evidence"]
+        banded_ids = set(band_evidence.loc[band_evidence.band_status.eq("Banded"), "source_id"])
+        observed_ids = set(experience_evidence.loc[
+            experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"])
+        unbanded_evidence = band_evidence.loc[band_evidence.source_id.isin(observed_ids - banded_ids)]
+        banded_count, unbanded_count = len(banded_ids), len(observed_ids - banded_ids)
         with st.container(border=True, key="job_market_qualification_summary"):
             st.subheader("What qualifications are stated?", icon=":material/school:")
             st.write(f"Education: stated in {education_stated:,} of {denominator:,} ads.")
-            st.write(f"Experience: identified in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text.")
+            st.write(f"Experience: identified in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text. "
+                     f"{banded_count:,} fit numerical bands; {unbanded_count:,} remain outside those bands.")
         education = profile["education_level_counts"]
         missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
         stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
@@ -2708,6 +2703,8 @@ def _job_market_content(tables, meta, revision=None):
                 "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")
         with st.container(border=True, key="job_market_experience"):
             st.subheader("Experience requirements", icon=":material/work:")
+            st.caption(f"{experience_observed:,} ads with identified experience = {banded_count:,} in numerical bands + "
+                       f"{unbanded_count:,} outside numerical bands. No experience requirement identified: {denominator - experience_observed:,} ads.")
             exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
             exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
             if len(exact_years) >= 2:
@@ -2746,6 +2743,10 @@ def _job_market_content(tables, meta, revision=None):
                     ).loc[:, ["experience_band", "job_ads"]].itertuples(index=False, name=None))
                 result_insight("Experience Insight", summary, top_bands, "Displayed bands")
             st.caption("Bands use explicit experience fields or clear duration wording in the advertisement. Spanning, open-ended and conflicting requirements remain in source-linked evidence for review; text-derived wording is not promoted into the explicit source field.")
+            if unbanded_count:
+                evidence_tables(f"Experience requirements outside numerical bands ({unbanded_count:,} ads)",
+                                {"Source wording and parsing status": unbanded_evidence},
+                                key="result_unbanded_experience")
             years = profile["experience_analysis_year_counts"]
             if years.empty:
                 st.info("No unambiguous numerical experience requirement was found in the source fields or clear advertisement wording. Missing years are not treated as zero experience.")

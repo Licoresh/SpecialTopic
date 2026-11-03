@@ -13,7 +13,7 @@ from datetime import timedelta
 # Keep zero cells pale while making small positive shares visible.
 HEATMAP_COLORSCALE = [(0, "#FBF8F4"), (.002, "#EBD1A0"), (.2, "#E2BC72"),
                      (.4, "#D6A33D"), (.6, "#A8751C"), (.8, "#78182B"), (1, "#4D1020")]
-_TIMELINE_LAYOUT = dict(height=490, margin=dict(l=45, r=20, t=75, b=150),
+_TIMELINE_LAYOUT = dict(height=570, margin=dict(l=45, r=20, t=75, b=230),
                         legend=dict(orientation="h", y=1.16, x=0, xanchor="left", yanchor="bottom"))
 
 
@@ -93,6 +93,9 @@ def job_title_trend(monthly, title="Job-title posting timeline"):
         go.Scatter(x=x[:index + 1], y=matrix[name].iloc[:index + 1].tolist()) for name in matrix.columns
     ]) for index, month in zip(frame_indexes, playback_months)]
     immediate = dict(mode="immediate", frame=dict(duration=0, redraw=False), transition=dict(duration=0))
+    slider_indexes = sorted({round(index * (len(playback_months) - 1) / min(5, max(1, len(playback_months) - 1)))
+                             for index in range(min(6, len(playback_months)))})
+    slider_months = [playback_months[index] for index in slider_indexes]
     fig.update_layout(
         xaxis=dict(title="Posting month", type="date", range=[
             (months[0].to_timestamp().to_pydatetime() - timedelta(days=5)).strftime("%Y-%m-%d"),
@@ -100,11 +103,11 @@ def job_title_trend(monthly, title="Job-title posting timeline"):
             dtick=f"M{max(1, ceil(len(months) / 8))}", tickformat="%b %Y"),
         yaxis=dict(title="Job advertisements", range=[0, max(1, counts.max() * 1.15)],
                    **count_axis(counts.max())),
-        sliders=[dict(active=len(playback_months) - 1, x=0, len=1, y=-.15, xanchor="left", yanchor="top",
+        sliders=[dict(active=len(slider_months) - 1, x=0, len=1, y=-.55, xanchor="left", yanchor="top",
                       currentvalue=dict(prefix="Through: ", xanchor="left"), font=dict(size=10),
                       pad=dict(t=15, b=0), steps=[dict(label=month, method="animate", args=[[month], immediate])
-                                               for month in playback_months])],
-        updatemenus=[dict(type="buttons", direction="left", x=0, y=-.38, xanchor="left", yanchor="top",
+                                               for month in slider_months])],
+        updatemenus=[dict(type="buttons", direction="left", x=0, y=-.28, xanchor="left", yanchor="top",
                           pad=dict(t=0, r=10), showactive=False, font=dict(size=12), buttons=[
                               dict(label="▶ Play", method="animate", args=[playback_months, dict(
                                   mode="immediate", fromcurrent=False, frame=dict(duration=650, redraw=False),

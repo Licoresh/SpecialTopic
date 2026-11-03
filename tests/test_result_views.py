@@ -37,6 +37,8 @@ def result_tables():
 
 
 def result_app(monkeypatch, tables, page="Job Market Analysis"):
+    from src.timeline_table import _component
+    _component.clear()  # Each AppTest owns a fresh component registry.
     figures = []
     original = ui.chart
     def capture(figure, **kwargs):
@@ -605,17 +607,22 @@ def test_single_category_uses_headline_metric_with_scope(monkeypatch):
 
 
 def test_single_posting_month_uses_title_table_without_a_time_trend(monkeypatch):
+    from unittest.mock import Mock
+    mounted = Mock(wraps=ui.timeline_table)
+    monkeypatch.setattr(ui, "timeline_table", mounted)
     tables = result_tables()
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-02-01", "2026-02-04", "2026-02-11", "2026-02-18"]
     app, figures = result_app(monkeypatch, tables)
     assert not any(fig.layout.title.text == "Posting months represented in the dataset" for fig in figures)
     assert not any(fig.layout.title.text == "Job-title posting timeline" for fig in figures)
-    summary = next(item.value for item in app.dataframe if "Monthly counts" in item.value)
-    assert summary["Dated ads through month"].sum() == 4
+    assert mounted.call_args.args[0].job_ads.sum() == 4
     assert any("Only one posting month is available" in item.value for item in app.info)
 
 
 def test_title_timeline_line_table_and_filters_use_only_their_own_scope(monkeypatch):
+    from unittest.mock import Mock
+    mounted = Mock(wraps=ui.timeline_table)
+    monkeypatch.setattr(ui, "timeline_table", mounted)
     tables = result_tables()
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-03-01", "2026-01-04", "2026-03-14", "2026-02-12"]
     app, figures = result_app(monkeypatch, tables)
@@ -629,6 +636,8 @@ def test_title_timeline_line_table_and_filters_use_only_their_own_scope(monkeypa
     assert len(rendered["frames"]) == 3
     assert rendered["layout"]["updatemenus"][0]["buttons"][0]["method"] == "animate"
     before = figure.to_json()
+    timeline_id = next(item.proto.id for item in app.get("plotly_chart")
+                       if json.loads(item.proto.spec).get("layout", {}).get("meta", {}).get("fow_title_timeline"))
     app.selectbox(key="result_region").select("national capital region").run(timeout=30)
     assert figure_with_title(figures, "Job-title posting timeline").to_json() == before
     assert app.selectbox(key="result_family").value == "All"
@@ -636,13 +645,24 @@ def test_title_timeline_line_table_and_filters_use_only_their_own_scope(monkeypa
     assert app.selectbox(key="result_region").value == "national capital region"
     selected = figure_with_title(figures, "Job-title posting timeline")
     assert [trace.name for trace in selected.data] == ["data analyst"]
+    assert next(item.proto.id for item in app.get("plotly_chart")
+                if json.loads(item.proto.spec).get("layout", {}).get("meta", {}).get("fow_title_timeline")) != timeline_id
     app.segmented_control(key="result_timeline_view").set_value("Table").run(timeout=30)
-    app.select_slider(key="result_timeline_table_month").set_value("2026-02").run(timeout=30)
     assert not app.exception and not app.error
-    summary = next(item.value for item in app.dataframe if "Monthly counts" in item.value)
-    row = summary.iloc[0]
-    assert row["Job title"] == "data analyst" and row["Ads in month"] == 0
-    assert row["Dated ads through month"] == 1 and list(row["Monthly counts"]) == [1, 0]
+    assert mounted.call_args.args[0].job_ads.tolist() == [1, 0, 1]
+    assert mounted.call_args.args[1] == ["data analyst"]
+
+
+def test_experience_coverage_explains_identified_and_banded_difference(monkeypatch):
+    tables = result_tables()
+    tables["cleaned_jobs"]["experience_requirement"] = ["4 years", "at least 5 years", "2-3 years", "Relevant experience"]
+    app, _ = result_app(monkeypatch, tables)
+    assert any("4 ads with identified experience = 1 in numerical bands + 3 outside numerical bands" in item.value for item in app.caption)
+    app.session_state["result_unbanded_experience"] = True
+    app.run(timeout=30)
+    evidence = next(item.value for item in app.dataframe if "band_status" in item.value)
+    assert evidence.source_id.nunique() == 3
+    assert set(evidence.source_id) == {"B", "C", "D"}
 
 
 
