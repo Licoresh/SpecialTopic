@@ -20,8 +20,13 @@ _NUMBER_WORDS = {
     "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
     "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
-_NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?)"
-_YEARS = re.compile(rf"(?<![\w.])(?P<low>{_NUMBER_TOKEN})\s*(?:(?:[-–—]|\bto\b)\s*(?P<high>{_NUMBER_TOKEN}))?\s*(?P<plus>\+)?\s*(?:years?|yrs?)\b", re.I)
+_NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)"
+_YEARS = re.compile(
+    rf"(?<![\w.])(?:between\s+(?P<between_low>{_NUMBER_TOKEN})\s+and\s+(?P<between_high>{_NUMBER_TOKEN})"
+    rf"|(?P<low>{_NUMBER_TOKEN})(?:\s*(?:[-–—]|\bto\b)\s*(?P<high>{_NUMBER_TOKEN}))?)"
+    r"\s*(?P<plus>\+)?\s*(?:years?|yrs?)\b", re.I,
+)
+_DURATION_SEPARATOR = re.compile(r"[,;]|\bincluding\b", re.I)
 _OTHER_UNITS = re.compile(r"\b(?:months?|mos?|weeks?|days?)\b", re.I)
 _NO_EXPERIENCE = re.compile(r"\bno\s+(?:(?:prior|previous|work|professional)\s+)*experience\s+(?:is\s+)?(?:required|necessary|needed)\b", re.I)
 _EDUCATION_DURATION_AFTER = re.compile(
@@ -33,6 +38,8 @@ _EDUCATION_DURATION_BEFORE = re.compile(
 _EXPERIENCE_CONTEXT = re.compile(r"\b(?:experience|experienced|employment|work\s+history|worked|working|career|tenure|professional\s+background)\b", re.I)
 _ROLE_DURATION_CONTEXT = re.compile(r"\b(?:years?|yrs?)\s+(?:of\s+(?:this\s+)?(?:job|role|position|profession|industry|field)|as\s+(?:an?\s+)?|in\s+(?:the\s+)?(?:(?:same|similar|related|relevant|previous)\s+)?(?:job|role|position|field|industry))\b", re.I)
 _QUALIFICATION_CONTEXT = re.compile(r"\b(?:relevant|professional|related|prior|proven|minimum|at\s+least|must\s+have|required|requirement)\b", re.I)
+_EMPLOYER_HISTORY_BEFORE = re.compile(r"\b(?:we|our company|the company|the firm|the organization)\s+(?:have|has|bring|brings|boast|boasts)\s*$", re.I)
+_EMPLOYER_HISTORY_AFTER = re.compile(r"^\s+of\s+experience\s*,\s+(?:we|our)\b", re.I)
 _TEXT_REQUIREMENT_FIELDS = ("qualifications", "job_description", "required_skills", "preferred_skills")
 _TITLE_ROLE_RULES = {
     "data analyst": r"\bdata(?:\s+analytics)?\s+analysts?\b",
@@ -323,21 +330,37 @@ def _experience_years(value):
         return "", None, None, "Needs review"
     lower = bool(match["plus"] or re.match(r"\s*\+", text[match.end():])
                  or re.search(r"\b(?:at least|minimum(?: of)?|min\.?)\s*$", text[:match.start()], re.I)
-                 or re.search(r"\b(?:or more|or above|and above)\b", text[match.end():], re.I))
+                 or re.match(r"\s*(?:or more|or above|and above)\b", text[match.end():], re.I))
     upper = bool(re.search(r"\b(?:up to|at most|maximum(?: of)?|max\.?)\s*$", text[:match.start()], re.I))
-    if re.search(r"\bor\b", re.sub(r"\bor (?:more|above)\b", "", remainder, flags=re.I), re.I) or (lower and upper):
+    # Alternatives before the duration ("two or four years") are ambiguous;
+    # alternatives between experience areas after it do not change the duration.
+    if re.search(rf"\b(?:{_NUMBER_TOKEN}\s+or|between)\s*$", text[:match.start()], re.I) or (lower and upper):
         return "", None, None, "Needs review"
-    low = _year_number(match["low"])
-    high = _year_number(match["high"]) if match["high"] else None
+    low = _year_number(match["low"] or match["between_low"])
+    high_token = match["high"] or match["between_high"]
+    high = _year_number(high_token) if high_token else None
     if high is not None:
         if high < low or lower or upper:
             return "", None, None, "Needs review"
         return f"{low:g}–{high:g} years", low, high, "Parsed range"
+    years = f"{low:g} {'year' if low == 1 else 'years'}"
     if lower:
-        return f"at least {low:g} years", low, None, "Parsed minimum"
+        return f"at least {years}", low, None, "Parsed minimum"
     if upper:
-        return f"up to {low:g} years", None, low, "Parsed maximum"
-    return f"{low:g} years stated", low, low, "Parsed stated years"
+        return f"up to {years}", None, low, "Parsed maximum"
+    return f"{years} stated", low, low, "Parsed stated years"
+
+
+def _duration_clauses(text, matches):
+    """Keep nearby qualifiers while separating explicitly delimited durations."""
+    starts, ends = [0], []
+    for current, following in zip(matches, matches[1:]):
+        gap = text[current.end():following.start()]
+        separator = _DURATION_SEPARATOR.search(gap)
+        # Without a delimiter both matches stay together for review.
+        ends.append(current.end() + separator.start() if separator else len(text))
+        starts.append(current.end() + separator.end() if separator else 0)
+    return [clean_text(text[start:end]) for start, end in zip(starts, [*ends, len(text)])]
 
 
 def _year_number(value):
@@ -371,6 +394,12 @@ def _experience_tables(jobs):
         original = job.get("experience_requirement", "")
         original = "" if original is None or pd.isna(original) else str(original)
         label, minimum, maximum, status = _experience_years(original)
+        if status == "Needs review":
+            text = clean_text(original)
+            matches = list(_YEARS.finditer(text))
+            if len(matches) > 1 and not _NO_EXPERIENCE.search(text):
+                durations = [_experience_years(clause) for clause in _duration_clauses(text, matches)]
+                label = "; ".join(dict.fromkeys(value for value, _, _, state in durations if state.startswith("Parsed")))
         rows.append({"source_id": job.get("source_id", ""), "job_title": job.get("job_title", ""),
                      "original_requirement": original, "requirement": label,
                      "min_years": minimum, "max_years": maximum, "parse_status": status,
@@ -411,10 +440,14 @@ def _experience_text_candidates(job):
             clause = clean_text(clause)
             if not clause:
                 continue
-            for match in _YEARS.finditer(clause):
+            matches = list(_YEARS.finditer(clause))
+            for match, duration_clause in zip(matches, _duration_clauses(clause, matches)):
                 left = clause[max(0, match.start() - 90):match.start()]
                 right = clause[match.end():min(len(clause), match.end() + 90)]
                 local_context = f"{left} {match.group()} {right}"
+                if (_EMPLOYER_HISTORY_BEFORE.search(left) or _EMPLOYER_HISTORY_AFTER.search(right)
+                        or re.match(r"\s+old\b", right, re.I)):
+                    continue
                 # Exclude durations that describe years of schooling, degrees or courses,
                 # without discarding a nearby experience clause in the same sentence.
                 if (_EDUCATION_DURATION_AFTER.search(f"{match.group()} {right}")
@@ -431,6 +464,7 @@ def _experience_text_candidates(job):
                     "job_title": clean_text(job.get("job_title", "")),
                     "candidate_phrase": phrase,
                     "original_requirement": clean_text(clause),
+                    "duration_clause": duration_clause,
                     "source_field": field,
                     "evidence": clean_text(clause),
                     "url": clean_text(job.get("url", "")),
@@ -453,7 +487,7 @@ def _experience_text_tables(jobs):
         candidates = _experience_text_candidates(job)
         parsed = []
         for candidate in candidates:
-            label, minimum, maximum, status = _experience_years(candidate["original_requirement"])
+            label, minimum, maximum, status = _experience_years(candidate["duration_clause"])
             candidate_rows.append({**candidate, "requirement": label, "min_years": minimum,
                                    "max_years": maximum, "parse_status": status,
                                    "evidence_status": "Text evidence; researcher should verify context"})
@@ -469,7 +503,8 @@ def _experience_text_tables(jobs):
             source_fields = "; ".join(dict.fromkeys(item[4]["source_field"] for item in parsed))
             original = " | ".join(dict.fromkeys(item[4]["original_requirement"] for item in parsed))
         else:
-            label, minimum, maximum, status = "", None, None, "Needs review"
+            label = "; ".join(dict.fromkeys(item[0] for item in parsed if item[3].startswith("Parsed")))
+            minimum, maximum, status = None, None, "Needs review"
             source_fields = "; ".join(dict.fromkeys(item[4]["source_field"] for item in parsed))
             original = " | ".join(dict.fromkeys(item[4]["original_requirement"] for item in parsed))
         analysis_rows.append({
@@ -479,7 +514,7 @@ def _experience_text_tables(jobs):
             "source_field": source_fields, "url": clean_text(job.get("url", "")),
             "evidence": original, "evidence_origin": "text fallback",
         })
-    candidate_columns = ["source_id", "job_title", "candidate_phrase", "original_requirement", "requirement",
+    candidate_columns = ["source_id", "job_title", "candidate_phrase", "original_requirement", "duration_clause", "requirement",
                          "min_years", "max_years", "parse_status", "source_field", "evidence", "url", "evidence_status"]
     analysis_columns = ["source_id", "job_title", "original_requirement", "requirement", "min_years", "max_years",
                         "parse_status", "source_field", "url", "evidence", "evidence_origin"]
@@ -571,7 +606,10 @@ def job_profile_tables(jobs):
     text_year_counts = _counts(text_parsed, "requirement", "job_ads")
     analysis_year_counts = _counts(analysis_parsed, "requirement", "job_ads")
     denominator = job_ads.source_id.nunique() if "source_id" in job_ads else len(job_ads)
-    for counts in (text_year_counts, analysis_year_counts):
+    duration_mentions = analysis_year_evidence[["source_id", "requirement"]].copy()
+    duration_mentions["requirement"] = duration_mentions.requirement.str.split("; ")
+    duration_counts = _counts(duration_mentions.explode("requirement"), "requirement", "job_ads")
+    for counts in (text_year_counts, analysis_year_counts, duration_counts):
         counts["job_ads_pct"] = (100 * pd.to_numeric(counts.job_ads) / denominator).round(1) if denominator else 0.0
     education_levels, education_level_evidence = _education_tables(job_ads)
     experience_bands, experience_band_evidence = _experience_bands(analysis_year_evidence, len(job_ads))
@@ -590,6 +628,7 @@ def job_profile_tables(jobs):
               "experience_text_year_counts": text_year_counts,
               "experience_text_year_evidence": text_year_evidence,
               "experience_analysis_year_counts": analysis_year_counts,
+              "experience_duration_counts": duration_counts,
               "experience_analysis_year_evidence": analysis_year_evidence,
               "requirement_field_coverage": coverage,
               "education_level_counts": education_levels,

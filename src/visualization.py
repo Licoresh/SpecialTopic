@@ -219,8 +219,8 @@ def education_bar(frame):
     return fig
 
 
-def experience_bar(frame):
-    """Show only experience bands supported by unambiguous source evidence."""
+def experience_bar(frame, *, title=None):
+    """Show experience groups supported by parsed source evidence."""
     data = frame.sort_values("band_order", kind="stable")
     fig = px.bar(data, x="job_ads", y="experience_band", orientation="h", custom_data=["job_ads_pct"],
                  labels={"experience_band": "Experience requirement", "job_ads": "Job advertisements"})
@@ -232,7 +232,7 @@ def experience_bar(frame):
     fig.update_yaxes(categoryorder="array", categoryarray=data.experience_band.tolist(), autorange="reversed",
                      title=None, showgrid=False)
     fig.update_layout(height=max(300, 145 + 42 * len(data)), showlegend=False,
-                      margin=dict(l=20, r=45, t=65, b=35))
+                      title=title, margin=dict(l=20, r=45, t=65, b=35))
     return fig
 
 

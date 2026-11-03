@@ -22,7 +22,10 @@ def _component(version):
     button{min-height:44px;padding:0 16px;border:1px solid var(--st-border-color);border-radius:8px;background:var(--st-background-color);color:var(--st-text-color);font:inherit;cursor:pointer}
     #play{background:var(--st-primary-color);border-color:var(--st-primary-color);color:white}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid var(--st-primary-color);outline-offset:3px}
     output{font-weight:600;font-variant-numeric:tabular-nums;padding:8px}label,p{font-size:.85rem}input{display:block;width:100%;min-height:36px;accent-color:var(--st-primary-color);margin:4px 0}p{margin:8px 0 16px}
-    .table-scroll{overflow-x:auto;border:1px solid var(--st-border-color);border-radius:10px}table{width:100%;border-collapse:collapse;font-size:.875rem}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--st-border-color)}th{background:var(--st-secondary-background-color);font-weight:600}tr:last-child td{border-bottom:0}td:nth-child(2),td:nth-child(3){font-variant-numeric:tabular-nums;text-align:right}svg{display:block;width:100%;min-width:140px;height:38px;overflow:visible;color:var(--st-primary-color)}
+    .table-scroll{overflow-x:auto;border:1px solid var(--st-border-color);border-radius:10px}table{width:100%;border-collapse:collapse;font-size:.875rem}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--st-border-color)}th{background:var(--st-secondary-background-color);font-weight:600}tr:last-child td{border-bottom:0}
+    th:nth-child(2),th:nth-child(3),th:nth-child(4),td:nth-child(2),td:nth-child(3),td:nth-child(4){text-align:center}
+    td:nth-child(2),td:nth-child(3){font-variant-numeric:tabular-nums}
+    svg{display:block;width:100%;min-width:140px;height:38px;overflow:visible;color:var(--st-primary-color)}
     @media(max-width:540px){.toolbar{align-items:stretch}.playback{width:100%}th,td{padding:10px;font-size:.8rem}}
     """,
         js=Path(__file__).with_name("timeline_table.js").read_text(encoding="utf-8"),

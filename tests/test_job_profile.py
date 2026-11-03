@@ -104,7 +104,7 @@ def test_experience_years_only_from_explicit_field_and_preserves_originals():
 
 
 def test_ambiguous_experience_clauses_remain_for_review():
-    values = ["2 years and 6 months", "3 years SQL and 2 years Python", "2 or 4 years", "between 2 and 4 years",
+    values = ["2 years and 6 months", "3 years SQL and 2 years Python", "2 or 4 years",
               "More than 5 years", "5–2 years", "Fresh graduates welcome", "No experience required; 2 years preferred"]
     jobs = pd.DataFrame({"source_id": [str(index) for index in range(len(values))], "experience_requirement": values})
     tables = job_profile_tables(jobs)
@@ -163,6 +163,66 @@ def test_conflicting_text_experience_durations_stay_out_of_bands():
     assert tables["experience_band_counts"].empty
     assert len(tables["experience_band_evidence"]) == 1
     assert tables["experience_band_evidence"].iloc[0].band_status == "Needs review"
+
+
+def test_written_ranges_and_separate_numeric_clauses_keep_their_meaning():
+    wording = [
+        "Two to five years of experience in business analysis, process improvement, or digital transformation.",
+        "8+ years data industry experience, 3+ years data team management;",
+        "5+ years of hands-on experience designing Smartsheet solutions. "
+        "3+ years of experience with premium applications.",
+        "We have 15 years of experience delivering customer support. "
+        "With 75 years of experience, our focus is community work.",
+    ]
+    jobs = pd.DataFrame({"source_id": ["SYNTHETIC-RANGE", "SYNTHETIC-LEADER", "SYNTHETIC-TOOLS", "SYNTHETIC-EMPLOYER"],
+                         "job_description": wording})
+    original = jobs.copy(deep=True)
+    tables = job_profile_tables(jobs)
+    candidates = tables["experience_text_year_evidence"]
+    assert candidates.parse_status.tolist() == ["Parsed range"] + ["Parsed minimum"] * 4
+    assert candidates.min_years.tolist() == [2, 8, 3, 5, 3]
+    assert candidates.iloc[0].max_years == 5
+    assert candidates.iloc[1:].max_years.isna().all()
+    assert candidates.iloc[1].duration_clause == "8+ years data industry experience"
+    assert candidates.iloc[2].duration_clause == "3+ years data team management;"
+    combined = tables["experience_analysis_year_evidence"].set_index("source_id")
+    assert combined.loc["SYNTHETIC-RANGE", "requirement"] == "2–5 years"
+    assert combined.loc["SYNTHETIC-RANGE", "original_requirement"] == wording[0]
+    assert combined.loc["SYNTHETIC-LEADER", "requirement"] == "at least 8 years; at least 3 years"
+    assert combined.loc["SYNTHETIC-TOOLS", "requirement"] == "at least 5 years; at least 3 years"
+    assert combined.loc["SYNTHETIC-LEADER", "parse_status"] == "Needs review"
+    assert pd.isna(combined.loc["SYNTHETIC-LEADER", "min_years"])
+    assert tables["experience_band_counts"].empty  # No range or minimum is forced into 3–5.
+    assert tables["experience_duration_counts"].set_index("requirement").job_ads.to_dict() == {
+        "2–5 years": 1, "at least 3 years": 2, "at least 5 years": 1, "at least 8 years": 1,
+    }
+    pd.testing.assert_frame_equal(jobs, original)
+
+
+def test_written_duration_alternatives_are_not_mistaken_for_area_alternatives():
+    jobs = pd.DataFrame({"source_id": ["SYNTHETIC-ALT"],
+                         "experience_requirement": ["two or four years of experience"]})
+    row = job_profile_tables(jobs)["experience_year_evidence"].iloc[0]
+    assert row.parse_status == "Needs review"
+    assert pd.isna(row.min_years) and pd.isna(row.max_years)
+
+
+def test_explicit_experience_supports_written_ranges_and_separate_minimums():
+    jobs = pd.DataFrame({
+        "source_id": ["A", "B", "C", "D"],
+        "experience_requirement": ["Between two and four years", "one-two years", "twenty-one years",
+                                   "8+ years industry experience including 3+ years leading a team"],
+        "job_description": ["10 years of experience required"] * 4,
+    })
+    tables = job_profile_tables(jobs)
+    evidence = tables["experience_year_evidence"].set_index("source_id")
+    assert evidence.loc["A", "min_years"] == 2 and evidence.loc["A", "max_years"] == 4
+    assert evidence.loc["B", "requirement"] == "1–2 years"
+    assert evidence.loc["C", "requirement"] == "21 years stated"
+    assert evidence.loc["D", "requirement"] == "at least 8 years; at least 3 years"
+    assert set(tables["experience_duration_counts"].requirement) == {
+        "2–4 years", "1–2 years", "21 years stated", "at least 8 years", "at least 3 years",
+    }
 
 
 def test_empty_profile_retains_export_schemas():

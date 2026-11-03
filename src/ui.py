@@ -165,7 +165,7 @@ cached_label_validation = st.cache_data(show_spinner=False, ttl=60, max_entries=
 
 # Bump only when the calculated result tables or their research meaning change.
 # UI, style, and performance releases must not invalidate the expensive bundle.
-RESULTS_BUNDLE_VERSION = 1
+RESULTS_BUNDLE_VERSION = 2
 
 
 def _clone_analysis_bundle(value):
@@ -380,9 +380,16 @@ def outside_experience_evidence(evidence, jobs):
     employers = jobs.drop_duplicates("source_id").set_index("source_id").get("company", pd.Series(dtype=str))
     shown["Employer"] = shown.source_id.map(employers).fillna("").replace("", "Not stated")
     shown["Why outside the bands"] = shown.parse_status.map(reasons).fillna("Available wording does not establish one numerical band.")
+    separate_durations = shown.parse_status.eq("Needs review") & shown.requirement.fillna("").ne("")
+    shown.loc[separate_durations, "Why outside the bands"] = "Separate duration clauses were converted; review their contexts before assigning one band."
+    shown["Converted duration"] = shown.requirement.fillna("").replace("", "Not resolved")
+    shown["Minimum years"] = pd.to_numeric(shown.min_years, errors="coerce")
+    shown["Maximum years"] = pd.to_numeric(shown.max_years, errors="coerce")
     shown = shown.rename(columns={"source_id": "Source ad ID", "job_title": "Job title",
                                    "original_requirement": "Original experience wording", "url": "Source URL"})
-    shown = shown[["Job title", "Employer", "Original experience wording", "Why outside the bands", "Source ad ID", "Source URL"]]
+    shown = shown[["Job title", "Employer", "Converted duration", "Minimum years", "Maximum years",
+                   "Original experience wording", "Why outside the bands", "Source ad ID", "Source URL"]]
+    st.caption("Written numbers are converted to years. A blank minimum or maximum is unknown. Separate durations retain their individual contexts in the parsing evidence below.")
     st.dataframe(shown, hide_index=True, width="stretch", column_config={
         "Original experience wording": st.column_config.TextColumn(width="large"),
         "Why outside the bands": st.column_config.TextColumn(width="large"),
@@ -562,7 +569,8 @@ def filtered_bundle():
     analysis_cache = st.session_state.get("_fow_analysis_cache", {})
     source_cache = st.session_state.get("_fow_source_cache", {})
     if (previous_key and previous_key != bundle_key and previous_key in analysis_cache
-            and source_key in source_cache):
+            and source_key in source_cache
+            and "experience_duration_counts" in analysis_cache[previous_key][1][0]):
         analysis_cache.setdefault(bundle_key, analysis_cache[previous_key])
     result = _session_cached_value(
         "_fow_analysis_cache", bundle_key,
@@ -2332,7 +2340,7 @@ def _job_market_content(tables, meta, revision=None):
 
     def market_profile():
         return (tables if "job_title_source_evidence" in tables else _session_cached_value(
-            "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
+            "_fow_market_profile_cache", (revision, RESULTS_BUNDLE_VERSION), lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
 
     def market_geography():
         return (tables if "location_evidence" in tables else _session_cached_value(
@@ -2780,51 +2788,44 @@ def _job_market_content(tables, meta, revision=None):
                 st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")
             elif len(exact_years) == 1:
                 st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
-            experience_bands = profile["experience_band_counts"]
+            durations = profile["experience_duration_counts"]
+            shown = durations.head(15)
             experience_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
             with experience_column:
-                if len(experience_bands) > 1:
-                    chart(experience_bar(experience_bands), title="Experience requirements by band")
-                elif len(experience_bands) == 1:
-                    band = experience_bands.iloc[0]
+                if len(shown) > 1:
+                    chart(experience_bar(shown.rename(columns={"requirement": "experience_band"})
+                                         .assign(band_order=range(len(shown))), title="Stated experience durations"))
+                elif len(shown) == 1:
+                    duration = shown.iloc[0]
                     st.html('<style>.st-key-job_market_experience [data-testid="stMetricValue"]{color:var(--fow-accent)!important}</style>')
-                    st.metric(str(band.experience_band), f"{int(band.job_ads):,}",
-                              help="Distinct selected job advertisements with a clear experience requirement in this band.")
+                    st.metric(str(duration.requirement), f"{int(duration.job_ads):,}",
+                              help="Distinct selected job advertisements that mention this duration.")
                 else:
-                    st.html('<div class="fow-experience-empty"><span class="material-symbols-rounded" aria-hidden="true">assignment</span>'
-                            '<h4>No numerical requirement falls unambiguously within a single experience band.</h4></div>')
+                    st.info("No clear experience duration was found in this selection.")
             with insight_column:
-                if experience_bands.empty:
-                    summary, top_bands = ("No selected advertisement falls within a displayed experience band. Review the source-linked evidence for open-ended, spanning, or ambiguous wording.", [])
-                else:
-                    highest = int(experience_bands.job_ads.max())
-                    leaders = experience_bands.loc[experience_bands.job_ads.eq(highest), "experience_band"].astype(str).tolist()
-                    if len(leaders) > 1:
-                        summary = f"{', '.join(leaders)} share the highest displayed count, with {highest:,} ads each."
-                    else:
-                        leader = experience_bands.loc[experience_bands.experience_band.eq(leaders[0])].iloc[0]
-                        share = 100 * int(leader.job_ads) / denominator if denominator else 0.0
-                        summary = (f"{leaders[0]} is the most represented displayed band, appearing in "
-                                   f"{int(leader.job_ads):,} of {denominator:,} selected ads ({share:.1f}%).")
-                    top_bands = list(experience_bands.sort_values(
-                        ["job_ads", "band_order"], ascending=[False, True], kind="stable"
-                    ).loc[:, ["experience_band", "job_ads"]].itertuples(index=False, name=None))
-                result_insight("Experience Insight", summary, top_bands, "Displayed bands")
-            st.caption("Bands use explicit experience fields or clear duration wording in the advertisement. Spanning, open-ended and conflicting requirements remain in source-linked evidence for review; text-derived wording is not promoted into the explicit source field.")
+                summary = "No experience durations could be compared in this selection."
+                top_durations = list(shown.head(3)[["requirement", "job_ads"]].itertuples(index=False, name=None))
+                if top_durations:
+                    label, highest = top_durations[0]
+                    ties = int(shown.job_ads.eq(highest).sum())
+                    summary = (f"{ties:,} displayed durations share the highest count ({highest:,} ads each)."
+                               if ties > 1 else f"{label.capitalize()} is the most frequent duration shown "
+                               f"({highest:,} of {denominator:,} selected ads).")
+                result_insight("Experience Insight", summary, top_durations, "Displayed durations")
+            st.caption("Each ad counts once per stated duration and may appear in several bars. "
+                       "Open minimums and ranges keep their wording. Numerical bands below only include durations that fit one band.")
+            if len(durations) > len(shown):
+                st.caption(f"Showing the {len(shown):,} most frequent of {len(durations):,} stated durations.")
             if unbanded_count:
                 outside_experience_evidence(unbanded_evidence, jobs)
-            years = profile["experience_analysis_year_counts"]
-            if years.empty:
-                st.info("No unambiguous numerical experience requirement was found in the source fields or clear advertisement wording. Missing years are not treated as zero experience.")
-            else:
-                display(years.rename(columns={"requirement": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
-            st.caption("The combined summary uses an explicit experience field when present; otherwise it may use one clear, source-linked duration clause. Ambiguous wording stays in the evidence tables, and a stated minimum is not treated as an upper hiring limit.")
             evidence_tables("Requirement fields and parsing evidence", {
                 "Education requirements": profile["education_requirement_counts"],
                 "Experience requirements": profile["experience_requirement_counts"],
                 "Explicit experience-field parsing": profile["experience_year_evidence"],
                 "Text-derived duration candidates": profile["experience_text_year_evidence"],
                 "Combined year parsing": profile["experience_analysis_year_evidence"],
+                "Stated experience durations": durations,
+                "Numerical band counts": profile["experience_band_counts"],
                 "Experience bands": profile["experience_band_evidence"]}, key="result_requirement_evidence")
             evidence_tables("Potential requirements found in advertisement text", {"": profile["requirement_evidence"]},
                             key="result_requirement_candidates", note="Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")

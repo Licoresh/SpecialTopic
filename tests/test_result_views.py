@@ -241,14 +241,14 @@ def test_education_graph_compares_classified_levels_and_reports_missing_below(mo
     pd.testing.assert_frame_equal(tables["cleaned_jobs"], original)
 
 
-def test_experience_band_chart_uses_readable_labels_and_whole_number_counts(monkeypatch):
+def test_experience_duration_chart_preserves_ranges_and_minimums_with_whole_number_counts(monkeypatch):
     tables = result_tables()
-    tables["cleaned_jobs"]["experience_requirement"] = ["2 years", "3 years", "2 years", "3 years"]
+    tables["cleaned_jobs"]["experience_requirement"] = ["Two to five years", "5+ years", "2–5 years", "5+ years"]
     app, figures = result_app(monkeypatch, tables)
     assert not app.exception and not app.error
-    bands = next(figure for figure in figures if set(figure.data[0].y) == {"1–2 years", "3–5 years"})
-    assert dict(zip(bands.data[0].y, bands.data[0].x)) == {"1–2 years": 2, "3–5 years": 2}
-    assert bands.data[0].texttemplate == "%{x:,d}"
+    durations = figure_with_title(figures, "Stated experience durations").data[0]
+    assert dict(zip(durations.y, durations.x)) == {"2–5 years": 2, "at least 5 years": 2}
+    assert durations.texttemplate == "%{x:,d}"
 
 
 def test_qualification_summary_counts_text_experience_evidence_used_by_chart(monkeypatch):
@@ -265,7 +265,7 @@ def test_qualification_summary_counts_text_experience_evidence_used_by_chart(mon
     assert int(profile["requirement_field_coverage"].loc[
         profile["requirement_field_coverage"].source_field.eq("experience_requirement"), "stated_job_ads"
     ].iloc[0]) == 0  # Field-only provenance stays intact.
-    assert any(metric.label == "3–5 years" and metric.value == "1" for metric in app.metric)
+    assert any(metric.label == "4 years stated" and metric.value == "1" for metric in app.metric)
 
 
 def test_alphabetical_chart_order_and_linked_psf_counts(monkeypatch):
@@ -551,12 +551,12 @@ def test_experience_summary_uses_only_exact_single_value_requirements(monkeypatc
     assert any("Ranges and open-ended wording are excluded" in item.value for item in app.caption)
     assert any("Not stated does not mean education was not required" in item.value for item in app.caption)
     content = html_content(app).casefold()
-    assert "experience insight" in content and "share the highest displayed count" in content
+    assert "experience insight" in content and "4 displayed durations share the highest count" in content
 
     tables["cleaned_jobs"]["experience_requirement"] = ["3 years"] * 4
     app.run(timeout=30)
     content = html_content(app).casefold()
-    assert "3–5 years is the most represented displayed band, appearing in 4 of 4 selected ads (100.0%)" in content
+    assert "3 years stated is the most frequent duration shown (4 of 4 selected ads)" in content
     assert "var(--fow-accent)" in content
 
 def test_psf_role_filter_preserves_independent_reference_roles_and_heatmap(monkeypatch):
@@ -671,6 +671,9 @@ def test_experience_coverage_explains_identified_and_banded_difference(monkeypat
     assert set(evidence["Source ad ID"]) == {"B", "C", "D"}
     assert set(evidence.Employer) == {"Employer B", "Employer C", "Employer D"}
     assert evidence.loc[evidence["Source ad ID"].eq("B"), "Original experience wording"].iloc[0] == "at least 5 years"
+    minimum = evidence.loc[evidence["Source ad ID"].eq("B")].iloc[0]
+    assert minimum["Converted duration"] == "at least 5 years"
+    assert minimum["Minimum years"] == 5 and pd.isna(minimum["Maximum years"])
 
 
 

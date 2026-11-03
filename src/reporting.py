@@ -106,6 +106,7 @@ def export_research_report(tables, metadata):
         ("experience_year_counts", "Unambiguous experience-year expressions in explicit fields"),
         ("experience_text_year_counts", "Unambiguous experience durations parsed from advertisement text"),
         ("experience_analysis_year_counts", "Combined experience-year summary"),
+        ("experience_duration_counts", "Stated experience durations (distinct ads per duration)"),
         ("experience_text_year_evidence", "Text-derived experience evidence for researcher verification"),
         ("experience_analysis_year_evidence", "Combined experience parsing evidence"),
         ("experience_band_counts", "Bounded experience groups"),
@@ -133,7 +134,7 @@ def export_research_report(tables, metadata):
     years = tables.get("experience_analysis_year_evidence")
     if years is not None and not years.empty:
         lines.extend(["### Experience-year parsing evidence", "",
-            "An explicit experience field takes precedence. When it is missing, one clear duration clause may be parsed from qualifications or advertisement text; text-derived clauses retain their source field and URL for researcher verification. Ambiguous and missing rows are not treated as zero. Parsed stated years describe wording, not an inferred hiring limit.", "",
+            "An explicit experience field takes precedence. When it is missing, clear duration clauses can be parsed from qualifications or advertisement text. Each ad counts once per stated duration and may contribute to multiple duration categories. Ranges and open minimums retain their bounds. Numerical bands require a single compatible duration. Text-derived clauses retain the source field and URL for verification.", "",
             markdown_table(years.head(250)), ""])
     evidence = tables.get("requirement_evidence")
     if evidence is not None and not evidence.empty:
