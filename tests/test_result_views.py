@@ -44,7 +44,11 @@ def result_app(monkeypatch, tables, page="Job Market Analysis"):
     monkeypatch.setattr(ui, "chart", capture)
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
     monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {"settings": {"emerging_min_jobs": 2}}))
-    app = AppTest.from_string(f"from src.ui import research_page\nresearch_page({page!r})").run(timeout=30)
+    app = AppTest.from_string(f"from src.ui import research_page\nresearch_page({page!r})")
+    # The full-dashboard option exercises all chart and drilldown paths below.
+    app.session_state["result_roles_display"] = "All charts"
+    app.session_state["result_psf_display"] = "All charts"
+    app.run(timeout=30)
     assert not app.exception and not app.error
     return app, figures
 

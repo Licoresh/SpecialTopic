@@ -56,14 +56,14 @@ def _wireframe(kind, *, cards=None, columns=None, rows=None, controls=None, fiel
     elif kind == "unmapped":
         markup = toolbar + '<div class="fow-skeleton-summary" aria-hidden="true">' + card * 3 + '</div>' + (chart_panel + disclosure) * 2
     elif kind == "psf_charts":
-        markup = chart_panel * 2 + '<div class="fow-skeleton-panel">' + heading + table + disclosure * 2 + '</div>'
+        markup = chart_panel if view != "All charts" else chart_panel * 2 + '<div class="fow-skeleton-panel">' + heading + table + disclosure * 2 + '</div>'
     elif kind == "market_section":
         if view == "Qualifications":
             markup = notice + chart_panel * 2 + disclosure * 2
         elif view == "Roles and locations":
-            markup = '<div class="fow-skeleton-panel">' + heading + field + '<div class="fow-skeleton-grid">' + chart + insight + '</div></div>' + chart_panel + disclosure
+            markup = field + chart_panel + disclosure
         elif view == "PSF-AAI demand":
-            markup = toolbar + chart_panel * 2 + disclosure * 2
+            markup = toolbar + chart_panel
         elif view == "Skills":
             markup = chart_panel * 3 + disclosure * 3
         else:

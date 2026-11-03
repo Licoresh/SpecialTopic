@@ -347,15 +347,10 @@ def _paginate_frame(frame, page, page_size=100):
     start = (page - 1) * page_size
     return frame.iloc[start:start + page_size], page, total_pages
 
-def chart(fig):
+def _prepare_chart(fig, result_page):
     from .visualization import style_chart
-    fig = style_chart(fig)
-    heading = fig.layout.title.text
-    title = heading or "Research analysis chart"
-    if st.session_state.get("_fow_current_page") in {"Job Market Analysis", "PSF Mapping", "Employer–PSF Alignment", "Unmapped / Emerging Skills"}:
-        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
-        if heading:
-            st.subheader(title, icon=f":material/{icon}:")
+    fig = style_chart(go.Figure(fig))
+    if result_page:
         fig.update_layout(font=dict(size=12, color="#171923"), title=dict(font=dict(size=15), x=.015),
                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", title_text="")
         if fig.data and all(trace.type == "bar" and trace.orientation == "h" for trace in fig.data):
@@ -369,6 +364,21 @@ def chart(fig):
             ticktext = fig.layout.yaxis.ticktext or ()
             line_count = max((str(label).count("<br>") + 1 for label in ticktext), default=1)
             fig.update_layout(height=max(300, 135 + max(28, 14 * line_count + 8) * rows), margin=dict(l=25, r=75, t=12, b=105))
+    return fig
+
+
+def chart(fig):
+    heading = fig.layout.title.text
+    title = heading or "Research analysis chart"
+    result_page = st.session_state.get("_fow_current_page") in {"Job Market Analysis", "PSF Mapping", "Employer–PSF Alignment", "Unmapped / Emerging Skills"}
+    theme = [st.get_option(f"theme.{name}") for name in ("textColor", "backgroundColor", "chartCategoricalColors")]
+    key = digest([VERSION, result_page, theme, fig.to_json()])
+    # Private prepared figures are read-only; Streamlit serializes a copy.
+    fig = _session_cached_value("_fow_chart_presentations", key, lambda: _prepare_chart(fig, result_page),
+                                ttl=None, max_entries=32, clone=lambda value: value)
+    if result_page and heading:
+        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
+        st.subheader(title, icon=f":material/{icon}:")
     if any(trace.type == "heatmap" for trace in fig.data):
         columns = max(len(trace.x) for trace in fig.data if trace.type == "heatmap")
         minimum = max(640, 280 + 72 * columns)
@@ -2086,9 +2096,17 @@ def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row
                              detail,
                              key="result_single_heatmap")
     else:
-        chart(heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
-                      row_denominators=row_denominators, share_label=share_label,
-                      denominator_label=denominator_label, transpose=transpose))
+        key = digest([VERSION, frame_hash(matrix), matrix.index.name, matrix.columns.name, title,
+                      frame_hash(pd.DataFrame(share_matrix)) if share_matrix is not None else None,
+                      pd.Series(row_denominators).to_dict() if row_denominators is not None else None,
+                      count_label, share_label, denominator_label, transpose])
+        figure = _session_cached_value(
+            "_fow_heatmap_figures", key,
+            lambda: heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
+                            row_denominators=row_denominators, share_label=share_label,
+                            denominator_label=denominator_label, transpose=transpose),
+            ttl=None, max_entries=12, clone=go.Figure)
+        chart(figure)
 
 
 @st.fragment
@@ -2160,7 +2178,7 @@ def _job_market_content(tables, meta, revision=None):
         st.session_state["_fow_market_loaded"] = loaded
         st.session_state.setdefault("_fow_loading_ready", {}).pop("job_market_psf_charts", None)
     # Keep hidden section controls out of Streamlit's widget-cleanup cycle.
-    for key in ("result_title_view", "result_family", "result_specific_title", "result_region", "result_city",
+    for key in ("result_roles_display", "result_psf_display", "result_title_view", "result_family", "result_specific_title", "result_region", "result_city",
                 "result_skill_family_heatmap_families", "result_psf_role",
                 "result_competency_heatmap_roles", "result_competency_heatmap_competencies"):
         if key in st.session_state:
@@ -2267,10 +2285,12 @@ def _job_market_content(tables, meta, revision=None):
                                 key="job_market_wording_groups", note="Equivalent wording shares one chart label. Each advertisement counts once per label; variant counts must not be added. Original wording and saved labels remain unchanged.")
 
             if section == "Roles and locations":
-                profile = (tables if "education_level_counts" in tables else _session_cached_value(
-                    "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
-                geography = (tables if "location_evidence" in tables else _session_cached_value(
-                    "_fow_market_geography_cache", revision, lambda: location_tables(jobs), ttl=None, max_entries=1))
+                role_view = st.selectbox("Explore roles and locations",
+                    ["Job titles", "Skills by occupational family", "Title and location explorer", "All charts"],
+                    key="result_roles_display")
+                if role_view != "Skills by occupational family":
+                    profile = (tables if "job_title_source_evidence" in tables else _session_cached_value(
+                        "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
                 @st.fragment
                 def title_overview():
                     with st.container(border=True, key="job_market_title_overview"):
@@ -2297,9 +2317,9 @@ def _job_market_content(tables, meta, revision=None):
                         evidence_tables("Inspect source-family role grouping", {
                             "Source-title evidence": profile["job_title_group_evidence"], "Family counts": profile["job_title_family_counts"]},
                             key="result_title_family_evidence")
-                title_overview()
+                if role_view in {"Job titles", "All charts"}:
+                    title_overview()
 
-                evidence = profile["job_title_group_evidence"]
                 def reset_exploration():
                     for key in ("result_family", "result_specific_title", "result_region", "result_city"):
                         st.session_state[key] = "All"
@@ -2366,7 +2386,8 @@ def _job_market_content(tables, meta, revision=None):
                             st.info("No chartable skill evidence is available for the selected advertisements.")
                         else:
                             st.info("No classifiable occupational families are available for the skill comparison.")
-                family_comparison()
+                if role_view in {"Skills by occupational family", "All charts"}:
+                    family_comparison()
 
                 @st.fragment
                 def title_and_location_exploration():
@@ -2504,7 +2525,10 @@ def _job_market_content(tables, meta, revision=None):
                             st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
                         else:
                             st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
-                title_and_location_exploration()
+                if role_view in {"Title and location explorer", "All charts"}:
+                    geography = (tables if "location_evidence" in tables else _session_cached_value(
+                        "_fow_market_geography_cache", revision, lambda: location_tables(jobs), ttl=None, max_entries=1))
+                    title_and_location_exploration()
 
             if section == "Qualifications":
                 profile = (tables if "education_level_counts" in tables else _session_cached_value(
@@ -2610,30 +2634,38 @@ def _job_market_content(tables, meta, revision=None):
                 st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
                 def prepare_psf_links():
                     columns = [key for key in ("source_id", "psf_competency", "psf_job_role", "status", "normalized_skill") if key in tables["psf_mapping"]]
-                    mappings = chart_mapping_rows(tables["psf_mapping"][columns])
+                    mappings = chart_mapping_rows(tables["psf_mapping"][columns].drop_duplicates())
                     if mappings.empty:
                         return mappings
                     linked = mappings.loc[mappings.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) &
                                           mappings.psf_competency.fillna("").ne("")].copy()
                     for field in ("psf_competency", "psf_job_role"):
-                        linked[field] = linked[field].map(normalize_text)
-                    return linked
-                all_linked = _session_cached_value("_fow_psf_links", revision, prepare_psf_links, ttl=None, max_entries=1)
+                        values = linked[field].fillna("")
+                        linked[field] = values.map({v: normalize_text(v) for v in values.unique()})
+                    # Chart counts use distinct advertisements. Keep phrase evidence
+                    # in its source table after screening, outside the chart cache.
+                    return linked.drop(columns="normalized_skill", errors="ignore").drop_duplicates()
+                all_linked = _session_cached_value("_fow_psf_links", revision, prepare_psf_links,
+                                                  ttl=None, max_entries=1, clone=lambda value: value)
                 if not all_linked.empty:
                     reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
                     if "competency_name" not in reference:
                         reference = reference.rename(columns={"psf_competency": "competency_name"})
-                    role_options = sorted(set(role for value in all_linked.psf_job_role for role in value.split("; ") if role))
+                    role_options = sorted({role for value in all_linked.psf_job_role.unique()
+                                           for role in value.split("; ") if role})
                     with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
                         if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
                             st.session_state["result_psf_role"] = "All"
+                        psf_view = st.selectbox("Explore PSF-AAI demand",
+                            ["Competency demand", "Reference roles", "Role–competency heatmap", "All charts"],
+                            key="result_psf_display")
                         role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
                     linked = all_linked
                     if role != "All":
                         linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
                         linked["psf_job_role"] = role
                     role_denominator = linked.source_id.nunique()
-                    with loading_content("job_market_psf_charts", "psf_charts", columns=role_options[:8], rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
+                    with loading_content("job_market_psf_charts", "psf_charts", view=psf_view, columns=role_options[:8], rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
                         def prepare_psf_charts():
                             available = {"psf_chart_demand", "psf_role_competency_demand"}.issubset(tables)
                             psf_views = (tables if role == "All" and available else
@@ -2645,10 +2677,13 @@ def _job_market_content(tables, meta, revision=None):
                             roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
                             return psf_views["psf_chart_demand"], roles, psf_views["psf_role_competency_demand"]
                         cache_key = digest([VERSION, revision, role, denominator])
-                        competence, roles, cells = _session_cached_value(
-                            "_fow_psf_chart_cache", cache_key, prepare_psf_charts, ttl=None, max_entries=2)
+                        if psf_view == "Competency demand" and role == "All" and "psf_chart_demand" in tables:
+                            competence = tables["psf_chart_demand"]
+                        else:
+                            competence, roles, cells = _session_cached_value(
+                                "_fow_psf_chart_cache", cache_key, prepare_psf_charts, ttl=None, max_entries=2)
                         with content():
-                            if not competence.empty:
+                            if psf_view in {"Competency demand", "All charts"} and not competence.empty:
                                 featured_result_chart(
                                     "psf_competency", "job_ads", "Most linked competency",
                                     role_denominator if role != "All" else denominator,
@@ -2658,17 +2693,19 @@ def _job_market_content(tables, meta, revision=None):
                                     key="psf_competencies",
                                 )
                             st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Role links can overlap.")
-                            with st.container(border=True, key="job_market_featured_psf_roles"):
-                                role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
-                                with role_chart_column:
-                                    role_figure = result_count_chart(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", order=order, limit=limit)
-                                with distribution_column:
-                                    result_role_distribution(_plotted_counts(role_figure, "psf_job_role", "job_ads"))
-                            if not cells.empty:
-                                with st.container(border=True, key="job_market_featured_psf_heatmap"):
-                                    _competency_heatmap_view(cells, roles, competence, limit)
-                            else:
-                                st.info("No role-level PSF-AAI competency evidence is available for this selection.")
+                            if psf_view in {"Reference roles", "All charts"}:
+                                with st.container(border=True, key="job_market_featured_psf_roles"):
+                                    role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
+                                    with role_chart_column:
+                                        role_figure = result_count_chart(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", order=order, limit=limit)
+                                    with distribution_column:
+                                        result_role_distribution(_plotted_counts(role_figure, "psf_job_role", "job_ads"))
+                            if psf_view in {"Role–competency heatmap", "All charts"}:
+                                if not cells.empty:
+                                    with st.container(border=True, key="job_market_featured_psf_heatmap"):
+                                        _competency_heatmap_view(cells, roles, competence, limit)
+                                else:
+                                    st.info("No role-level PSF-AAI competency evidence is available for this selection.")
                             st.html('<span data-fow-psf-ready="true" hidden></span>')
                 else:
                     st.info("No PSF-AAI mapping evidence is available for this selection.")
@@ -2815,70 +2852,76 @@ def research_page(page):
                 return extras
             tables.update(load_report_tables())
         with content():
-            if page == "Job Market Analysis":
-                _job_market_results(tables, meta, revision=st.session_state.get("_fow_loaded_bundle_revision"))
-            elif page == "PSF Mapping":
-                with st.container(border=True, key="psf_mapping_review_panel"):
-                    psf_mapping_review(skills, jobs, active_reference,
-                                       tables["psf_mapping"], tables["psf_mapping_reviews"])
-                with st.container(border=True, key="psf_mapping_demand_panel"):
-                    with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
-                        section_heading("Competency demand", "bar_chart",
-                                        "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
-                    order, limit = result_chart_options()
-                    competence = tables["psf_competency_demand"]
-                    if not competence.empty:
-                        plot_competence = tables.get("psf_chart_demand")
-                        if plot_competence is None:
-                            plot_competence = psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
-                        with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
-                            with st.container(key="psf_mapping_demand_chart", width="stretch"):
-                                plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
-                            with st.container(key="psf_mapping_demand_insight", width="stretch"):
-                                psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique(), order=order)
-                    display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
-                evidence_tables("Occurrence-level mapping evidence", {"": tables["psf_mapping"]}, icon=":material/layers:",
-                                key="psf_mapping_evidence", order=order, label="psf_competency")
-            elif page == "Employer–PSF Alignment":
-                st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
-                has_range = ("range_of_application" in active_reference and
-                             active_reference.range_of_application.fillna("").astype(str).str.strip().ne("").any())
-                st.caption("Results show the PSF competency description and verified Range of Application as supporting reference evidence; these fields help researchers inspect the comparison and do not establish equivalence." if has_range else "Results show the PSF competency description as supporting evidence. The active TESDA PDF has no separate Range of Application field, so no range text is available to compare.")
-                rates = meta["rates_before_status_display_filter"]
-                with st.container(horizontal=True, gap="medium", key="alignment_metrics"):
-                    for field, icon in (("alignment_rate", "bar_chart"), ("partially_aligned_rate", "layers"), ("unmapped_rate", "warning")):
-                        if rates.get(field) is not None:
-                            with st.container(key=f"alignment_metric_{field}"):
-                                st.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%", icon=f":material/{icon}:")
-                order, limit = result_chart_options()
-                with st.container(border=True, key="employer_psf_status_panel"):
-                    status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
-                                                "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)
-                    status_chart.update_traces(texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
-                                               textfont=dict(color="#171923", size=12))
-                    maximum = max((max(trace.x) for trace in status_chart.data if len(trace.x)), default=0)
-                    status_chart.update_xaxes(range=[0, max(1, maximum * 1.05)])
-                    with st.container(horizontal=True, key="alignment_chart_and_insight", gap="medium", vertical_alignment="center"):
-                        with st.container(key="alignment_status_chart", width="stretch"):
-                            chart(status_chart)
-                        with st.container(key="alignment_status_insight", width="stretch"):
-                            alignment_status_insight(status_chart)
-                evidence_tables("Phrase-level results and PSF-AAI basis", {
-                    "Phrase–competency evidence groups": alignment, "Occurrence-level employer demand": demand},
-                    icon=":material/layers:", key="employer_psf_evidence", order=order,
-                    label="employer_skill", value="employer_demand_count")
-                with st.container(key="employer_psf_denominators"):
-                    st.info(meta["denominators"], icon=":material/info:")
-            elif page == "Unmapped / Emerging Skills":
-                _unmapped_results(tables, meta)
-            elif page == "Reports":
-                downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports", icon=":material/database:", on_change="rerun")
-                if downloads.open:
-                    with downloads:
-                        for name, frame in tables.items():
-                            st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
-                report_deliverables(tables, meta)
+            _research_results_content(page, tables, meta, active_reference)
 
+
+@st.fragment
+def _research_results_content(page, tables, meta, active_reference):
+    jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
+    demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
+    if page == "Job Market Analysis":
+        _job_market_results(tables, meta, revision=st.session_state.get("_fow_loaded_bundle_revision"))
+    elif page == "PSF Mapping":
+        with st.container(border=True, key="psf_mapping_review_panel"):
+            psf_mapping_review(skills, jobs, active_reference,
+                               tables["psf_mapping"], tables["psf_mapping_reviews"])
+        with st.container(border=True, key="psf_mapping_demand_panel"):
+            with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
+                section_heading("Competency demand", "bar_chart",
+                                "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
+            order, limit = result_chart_options()
+            competence = tables["psf_competency_demand"]
+            if not competence.empty:
+                plot_competence = tables.get("psf_chart_demand")
+                if plot_competence is None:
+                    plot_competence = psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
+                with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
+                    with st.container(key="psf_mapping_demand_chart", width="stretch"):
+                        plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
+                    with st.container(key="psf_mapping_demand_insight", width="stretch"):
+                        psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique(), order=order)
+            display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
+        evidence_tables("Occurrence-level mapping evidence", {"": tables["psf_mapping"]}, icon=":material/layers:",
+                        key="psf_mapping_evidence", order=order, label="psf_competency")
+    elif page == "Employer–PSF Alignment":
+        st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
+        has_range = ("range_of_application" in active_reference and
+                     active_reference.range_of_application.fillna("").astype(str).str.strip().ne("").any())
+        st.caption("Results show the PSF competency description and verified Range of Application as supporting reference evidence; these fields help researchers inspect the comparison and do not establish equivalence." if has_range else "Results show the PSF competency description as supporting evidence. The active TESDA PDF has no separate Range of Application field, so no range text is available to compare.")
+        rates = meta["rates_before_status_display_filter"]
+        with st.container(horizontal=True, gap="medium", key="alignment_metrics"):
+            for field, icon in (("alignment_rate", "bar_chart"), ("partially_aligned_rate", "layers"), ("unmapped_rate", "warning")):
+                if rates.get(field) is not None:
+                    with st.container(key=f"alignment_metric_{field}"):
+                        st.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%", icon=f":material/{icon}:")
+        order, limit = result_chart_options()
+        with st.container(border=True, key="employer_psf_status_panel"):
+            status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
+                                        "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)
+            status_chart.update_traces(texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
+                                       textfont=dict(color="#171923", size=12))
+            maximum = max((max(trace.x) for trace in status_chart.data if len(trace.x)), default=0)
+            status_chart.update_xaxes(range=[0, max(1, maximum * 1.05)])
+            with st.container(horizontal=True, key="alignment_chart_and_insight", gap="medium", vertical_alignment="center"):
+                with st.container(key="alignment_status_chart", width="stretch"):
+                    chart(status_chart)
+                with st.container(key="alignment_status_insight", width="stretch"):
+                    alignment_status_insight(status_chart)
+        evidence_tables("Phrase-level results and PSF-AAI basis", {
+            "Phrase–competency evidence groups": alignment, "Occurrence-level employer demand": demand},
+            icon=":material/layers:", key="employer_psf_evidence", order=order,
+            label="employer_skill", value="employer_demand_count")
+        with st.container(key="employer_psf_denominators"):
+            st.info(meta["denominators"], icon=":material/info:")
+    elif page == "Unmapped / Emerging Skills":
+        _unmapped_results(tables, meta)
+    elif page == "Reports":
+        downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports", icon=":material/database:", on_change="rerun")
+        if downloads.open:
+            with downloads:
+                for name, frame in tables.items():
+                    st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
+        report_deliverables(tables, meta)
 
 def feedback():
     page_intro("Feedback", "Record corrections and usability feedback while preserving the original predictions.")

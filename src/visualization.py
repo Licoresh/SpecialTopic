@@ -120,14 +120,13 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
     if percentage:
         custom.append(percentage)
         hover += "<br>Share of selected ads: %{customdata[1]:.1f}%"
-    fig = px.bar(data, x=value, y=label, orientation="h", custom_data=custom,
-                 title=title, labels={value: "Job advertisements", label: label.replace("_", " ").capitalize()},
-                 color_discrete_sequence=st.get_option("theme.chartCategoricalColors"))
     emphasis = data[value].min() if order == "Lowest demand" else data[value].max()
     colors = [st.get_option("theme.primaryColor") if order in ("Highest demand", "Lowest demand") and count == emphasis else "#96857A" for count in data[value]]
-    fig.update_traces(marker_color=colors, texttemplate="%{x:,d}", textposition="outside",
-                      textfont=dict(color="#24303D"), cliponaxis=False,
-                      hovertemplate=hover + "<extra></extra>")
+    fig = go.Figure(go.Bar(x=data[value].to_numpy(), y=data[label].to_numpy(), orientation="h",
+                          customdata=data[custom].to_numpy(), marker_color=colors,
+                          texttemplate="%{x:,d}", textposition="outside",
+                          textfont=dict(color="#24303D"), cliponaxis=False,
+                          hovertemplate=hover + "<extra></extra>"), layout=dict(title=title))
     maximum = data[value].max() if not data.empty else 0
     fig.update_xaxes(**count_axis(maximum), range=[0, max(1, maximum * 1.18)], title="Job advertisements",
                      showgrid=False, zeroline=False)

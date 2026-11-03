@@ -78,6 +78,7 @@ AUTH_ERROR_MESSAGES = {
 
 def clear_read_cache(*, frames=False):
     session_state().pop("supabase_reads", None)
+    session_state().pop("_supabase_state_payloads", None)
     # Shared saves and explicit refreshes should invalidate per-user derived views too.
     for key in ("_fow_source_cache", "_fow_analysis_cache", "_fow_signature_cache", "_manual_review_queue"):
         session_state().pop(key, None)
@@ -314,11 +315,30 @@ def state_version(name: str, token: str):
     return rows[0]["updated_at"] if rows else None
 
 
-@session_cached
 def read_state(name: str, token: str):
+    # Recheck access and revision on the normal read-cache schedule. Large
+    # immutable payloads only need downloading when their saved revision changes.
+    key = (configuration()[0], token, name)
+    cache = session_state().setdefault("_supabase_state_payloads", {})
+    entry = cache.get(key)
+    now = time.monotonic()
+    if entry is not None:
+        checked, revision, payload = entry
+        if now - checked < 15:
+            return copy.deepcopy(payload)
+        if revision is not None and state_version(name, token) == revision:
+            cache[key] = (now, revision, payload)
+            return copy.deepcopy(payload)
     result = _request("GET", "/rest/v1/app_state", token=token,
-                      params={"name": f"eq.{name}", "select": "payload", "limit": "1"})
-    return unpack_state(result[0]["payload"]) if result else None
+                      params={"name": f"eq.{name}", "select": "payload,updated_at", "limit": "1"})
+    payload = unpack_state(result[0]["payload"]) if result else None
+    # Use the payload response's revision in case a save occurred between reads.
+    saved_revision = result[0].get("updated_at") if result else None
+    cache.pop(key, None)
+    cache[key] = (now, saved_revision, copy.deepcopy(payload))
+    while len(cache) > 16:
+        cache.pop(next(iter(cache)))
+    return payload
 
 
 def read_states(names: list[str], token: str) -> dict:

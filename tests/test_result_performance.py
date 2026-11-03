@@ -184,6 +184,9 @@ def test_family_heatmap_filter_redraws_only_its_fragment(monkeypatch):
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Job Market Analysis')").run(timeout=30)
     app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     assert not app.exception and not app.error
+    assert app.selectbox(key="result_roles_display").value == "Job titles"
+    assert not app.multiselect
+    app.selectbox(key="result_roles_display").select("Skills by occupational family").run(timeout=30)
     reads, bundles, builds = current.call_count, bundle.call_count, builder.call_count
     plotted.reset_mock()
     app.multiselect(key="result_skill_family_heatmap_families").set_value(["analytics"])
@@ -194,3 +197,101 @@ def test_family_heatmap_filter_redraws_only_its_fragment(monkeypatch):
     assert heatmap.data[0].type == "heatmap"
     assert list(heatmap.data[0].x) == ["analytics"]
     assert set(heatmap.data[0].y) == {"sql", "collaboration", "c++"}
+
+
+def test_chart_presentation_cache_preserves_source_and_refreshes_changed_data(monkeypatch):
+    import plotly.graph_objects as go
+    monkeypatch.setattr(ui.st, "session_state", {"_fow_current_page": "Job Market Analysis"})
+    drawn = Mock()
+    heading = Mock()
+    monkeypatch.setattr(ui.st, "plotly_chart", drawn)
+    monkeypatch.setattr(ui.st, "subheader", heading)
+    prepare = Mock(wraps=ui._prepare_chart)
+    monkeypatch.setattr(ui, "_prepare_chart", prepare)
+    source = go.Figure(go.Bar(x=[3, 1], y=["sql", "python"], orientation="h",
+                             customdata=[[75], [25]], hovertemplate="%{customdata[0]}%"),
+                       layout=dict(title="Synthetic demand"))
+    before = source.to_json()
+    ui.chart(source)
+    initial = drawn.call_args.args[0].to_json()
+    ui.chart(source)
+    assert prepare.call_count == 1 and drawn.call_count == heading.call_count == 2
+    assert drawn.call_args.args[0].to_json() == initial
+    assert source.to_json() == before  # Headings and hover data must survive revisits.
+    source.data[0].x = [4, 1]
+    ui.chart(source)
+    assert prepare.call_count == 2
+    assert list(drawn.call_args.args[0].data[0].x) == [4, 1]
+    assert drawn.call_args.args[0].data[0].hovertemplate == "%{customdata[0]}%"
+    option = ui.st.get_option
+    monkeypatch.setattr(ui.st, "get_option", lambda key: "#ffffff" if key == "theme.backgroundColor" else option(key))
+    ui.chart(source)
+    assert prepare.call_count == 3
+
+
+def test_heatmap_cache_reuses_filters_and_invalidates_counts_and_denominators(monkeypatch):
+    monkeypatch.setattr(ui.st, "session_state", {})
+    builder = Mock(wraps=ui.heatmap)
+    drawn = Mock()
+    monkeypatch.setattr(ui, "heatmap", builder)
+    monkeypatch.setattr(ui, "chart", drawn)
+    matrix = pd.DataFrame([[2, 1], [1, 0]], index=["analyst", "engineer"], columns=["sql", "python"])
+    totals = pd.Series([4, 2], index=matrix.index)
+    def render():
+        ui.result_heatmap(matrix, "Synthetic heatmap", share_matrix=matrix.div(totals, axis=0).mul(100),
+                          row_denominators=totals)
+    render()
+    original = drawn.call_args.args[0].to_json()
+    drawn.call_args.args[0].update_layout(title="Caller edit")
+    render()
+    assert builder.call_count == 1
+    assert drawn.call_args.args[0].to_json() == original
+    totals.iloc[0] = 5
+    render()
+    assert builder.call_count == 2
+    matrix.iloc[0, 0] = 3
+    render()
+    assert builder.call_count == 3
+
+def test_shared_payload_revision_avoids_redownload_and_detects_changes(monkeypatch):
+    from src import supabase_store as backend
+    state = {}
+    revision = ['one']
+    monkeypatch.setattr(backend, 'session_state', lambda: state)
+    monkeypatch.setattr(backend, 'configuration', lambda: ('https://example.invalid', ''))
+    monkeypatch.setattr(backend, 'state_version', lambda name, token: revision[0])
+    request = Mock(side_effect=lambda *args, **kwargs: [{'payload': {'value': revision[0]}, 'updated_at': revision[0]}])
+    monkeypatch.setattr(backend, '_request', request)
+    clock = Mock(side_effect=[0, 16, 32, 48, 64])
+    monkeypatch.setattr(backend, 'time', Mock(monotonic=clock))
+    read = backend.read_state
+    assert read('frame:test', 'test-token') == {'value': 'one'}
+    assert read('frame:test', 'test-token') == {'value': 'one'}
+    assert request.call_count == 1
+    revision[0] = 'two'
+    assert read('frame:test', 'test-token') == {'value': 'two'}
+    assert request.call_count == 2
+    backend.clear_read_cache()
+    read('frame:test', 'test-token')
+    assert request.call_count == 3
+    read('frame:test', 'another-token')
+    assert request.call_count == 4
+
+def test_reports_expander_does_not_reload_shared_tables(monkeypatch):
+    current = Mock(return_value=True)
+    bundle = Mock(return_value=(result_tables(), {'settings': {}}))
+    reads = Mock(return_value=pd.DataFrame())
+    monkeypatch.setattr(ui, 'current_analysis', current)
+    monkeypatch.setattr(ui, 'filtered_bundle', bundle)
+    monkeypatch.setattr(ui.storage, 'read_frame', reads)
+    monkeypatch.setattr(ui, 'corrections', lambda: pd.DataFrame())
+    monkeypatch.setattr(ui, 'report_deliverables', lambda tables, meta: None)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run(timeout=30)
+    assert not app.exception and not app.error
+    initial_reads = reads.call_count
+    assert initial_reads > 0
+    app.session_state['individual_exports'] = True
+    _run_fragment(app, monkeypatch, 'individual_exports')
+    assert reads.call_count == initial_reads
+    assert current.call_count == bundle.call_count == 1
+    assert len(app.get('download_button')) > 0
