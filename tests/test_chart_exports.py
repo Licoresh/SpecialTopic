@@ -46,6 +46,7 @@ def test_standalone_html_retains_line_series_frames_and_title_without_mutation()
     ]
     html = chart_exports.chart_html(fig, "Job-title timeline")
     assert "Job-title timeline" in html and "Plotly.addFrames" in html
+    assert '"paper_bgcolor":"#FFFFFF"' in html and '"plot_bgcolor":"#FFFFFF"' in html
     assert '<script src="' not in html
     assert fig.to_json() == before
 

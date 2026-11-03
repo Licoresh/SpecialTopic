@@ -166,6 +166,10 @@ def test_compact_job_market_chart_keeps_counts_and_accessible_title(monkeypatch,
     assert figure.data[0].to_json() == trace
     prepared = rendered.call_args.args[0]
     assert prepared.layout.height < original_height
+    assert prepared.layout.margin.t >= 56
+    assert prepared.layout.paper_bgcolor == prepared.layout.plot_bgcolor == "#FFFFFF"
+    assert rendered.call_args.kwargs["config"]["displayModeBar"] is True
+    assert "zoomIn2d" in rendered.call_args.kwargs["config"]["modeBarButtonsToRemove"]
     assert rendered.call_args.kwargs["alt"] == "Synthetic demand"
     assert heading.call_args.args[0] == "Synthetic demand"
     assert prepared.layout.title.text == ""

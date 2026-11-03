@@ -71,7 +71,8 @@ def chart_table(fig):
 def chart_html(fig, title):
     """Preserve the complete figure and playback frames in a standalone HTML file."""
     exported = go.Figure(fig)
-    exported.update_layout(title_text=title, title_x=.02, margin_t=max(65, fig.layout.margin.t or 0))
+    exported.update_layout(title_text=title, title_x=.02, margin_t=max(65, fig.layout.margin.t or 0),
+                           paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF")
     return exported.to_html(include_plotlyjs=True, full_html=True, auto_play=False,
                             config={"displaylogo": False, "responsive": True,
                                     "toImageButtonOptions": {"format": "png", "filename": chart_filename(title)}})

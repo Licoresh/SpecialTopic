@@ -1094,5 +1094,9 @@ RESPONSIVE_CSS = """
  .stMain :is(.fow-key-insight,.fow-content-note) { padding: 1rem; }
  .stMain [class*="st-key-job_market_featured_"] { padding: 1rem !important; }
 }
+[data-testid="stPlotlyChart"] .modebar { top: 0 !important; right: 0 !important; background: #fff !important; border-radius: 8px; }
+[data-testid="stPlotlyChart"] .modebar-group { display: inline-flex !important; padding: 0 !important; background: transparent !important; }
+[data-testid="stPlotlyChart"] .modebar-btn { display: inline-flex !important; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0 !important; }
+[data-testid="stPlotlyChart"] .modebar-btn:hover { background: var(--fow-accent-bg); border-radius: 6px; }
 @media (hover: none) { [data-testid="stPlotlyChart"] .modebar { opacity: 1 !important; } }
 """

@@ -365,6 +365,17 @@ def _prepare_chart(fig, result_page):
             ticktext = fig.layout.yaxis.ticktext or ()
             line_count = max((str(label).count("<br>") + 1 for label in ticktext), default=1)
             fig.update_layout(height=max(300, 135 + max(28, 14 * line_count + 8) * rows), margin=dict(l=25, r=75, t=12, b=105))
+    # Keep the toolbar outside the data area without shrinking the plotted rows.
+    timeline = isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline")
+    header_space = 120 if timeline else 100 if fig.layout.title.text else 56
+    toolbar_space = max(0, header_space - (fig.layout.margin.t or 0))
+    fig.update_layout(paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+                      modebar=dict(bgcolor="#FFFFFF", color="#647184", activecolor="#86142D"),
+                      margin_t=(fig.layout.margin.t or 0) + toolbar_space)
+    canvas_height = (fig.layout.height or 450) + toolbar_space
+    fig.update_layout(height=canvas_height)
+    if fig.layout.title.text:
+        fig.update_layout(title_y=1 - 52 / canvas_height, title_yref="container", title_yanchor="top")
     return fig
 
 
@@ -380,6 +391,7 @@ def chart(fig, *, key=None, title=None, show_heading=True):
                                 ttl=None, max_entries=32, clone=lambda value: value)
     export_key = plotly_key or f"chart_{key}"
     plot_config = {"displaylogo": False, "scrollZoom": False, "displayModeBar": True,
+                   "modeBarButtonsToRemove": ["select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d"],
                    "toImageButtonOptions": {"format": "png", "filename": chart_filename(title), "scale": 2}}
     if result_page and heading and show_heading:
         icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "timeline" if any(trace.type == "scatter" for trace in fig.data) else "bar_chart"
@@ -395,7 +407,7 @@ def chart(fig, *, key=None, title=None, show_heading=True):
                             config=plot_config, alt=title)
     else:
         plot_options = {"key": f"{plotly_key}_{VERSION}"} if plotly_key else {}
-        st.plotly_chart(fig, width="stretch", config=plot_config,
+        st.plotly_chart(fig, width="stretch", theme=None, config=plot_config,
                         alt=title, **plot_options)
     chart_downloads(fig, title, key=export_key)
 
