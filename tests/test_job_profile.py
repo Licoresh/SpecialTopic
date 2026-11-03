@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from src.job_profile import job_profile_tables
+from src.job_profile import job_profile_tables, job_title_timeline
 from src.reporting import export_research_report
 
 
@@ -396,3 +396,73 @@ def test_family_title_table_is_alphabetical_source_linked_and_keeps_seniority():
     assert evidence.original_job_title.tolist() == jobs.job_title.tolist()
     assert evidence.loc[0, "url"] == "https://example.invalid/A"
     assert evidence.source_id.tolist() == jobs.source_id.tolist()
+
+
+def test_title_timeline_groups_titles_and_counts_distinct_dated_ads_with_zero_months():
+    jobs = pd.DataFrame({
+        "source_id": ["A", "A", "B", "C", "D", "E", "F"],
+        "job_title": ["Senior Data Analyst", "Senior Data Analyst", "Junior Data Analyst",
+                      "Business Analyst (Banking)", "Data Engineer", "Data Engineer", "not specified"],
+        "posting_date_parsed": ["2026-01-14", "2026-01-14", "2026-03-01", "2026-03-10", "", "bad date", "2026-01-20"],
+    })
+    original = jobs.copy(deep=True)
+    monthly, evidence = job_title_timeline(jobs)
+    assert monthly.month.tolist() == ["2026-01", "2026-01", "2026-02", "2026-02", "2026-03", "2026-03"]
+    by_month = monthly.pivot(index="month", columns="job_title", values="job_ads")
+    assert by_month["data analyst"].tolist() == [1, 0, 1]
+    assert by_month["business analyst"].tolist() == [0, 0, 1]
+    assert int(monthly.job_ads.sum()) == 3
+    assert evidence.source_id.tolist() == ["A", "B", "C", "D", "E", "F"]
+    assert evidence.set_index("source_id").loc["D", "date_status"] == "Not stated"
+    assert evidence.set_index("source_id").loc["E", "date_status"] == "Invalid posting date"
+    assert evidence.set_index("source_id").loc["A", "original_job_title"] == "Senior Data Analyst"
+    assert "data engineer" not in monthly.job_title.tolist()  # No dated advertisements for this title.
+    pd.testing.assert_frame_equal(jobs, original)
+
+
+def test_title_timeline_uses_posting_date_only_when_cleaned_date_column_is_absent():
+    jobs = pd.DataFrame({"source_id": ["A", "B", "C", "D", "E"], "job_title": ["Data Analyst"] * 5,
+                         "posting_date": ["2026-01-14", "2026", "", "January 2026", "January 14"],
+                         "collection_date": ["2026-06-01"] * 5})
+    monthly, evidence = job_title_timeline(jobs)
+    assert monthly.job_ads.tolist() == [1]
+    assert evidence.month.tolist() == ["2026-01", "", "", "", ""]
+    jobs["posting_date_parsed"] = [""] * 5
+    monthly, evidence = job_title_timeline(jobs)
+    assert monthly.empty and evidence.month.eq("").all()
+    assert evidence.date_status.eq("Not stated").all()
+
+
+def test_title_timeline_empty_missing_dates_and_missing_titles_keep_evidence_without_counts():
+    for jobs in (pd.DataFrame(),
+                 pd.DataFrame({"source_id": ["A"], "job_title": ["Data Analyst"]}),
+                 pd.DataFrame({"source_id": ["A"], "job_title": [""], "posting_date_parsed": ["2026-01-01"]})):
+        monthly, evidence = job_title_timeline(jobs)
+        assert monthly.empty
+        assert monthly.columns.tolist() == ["month", "job_title", "job_ads"]
+        assert evidence.columns.tolist() == ["source_id", "job_title", "original_job_title", "original_posting_date",
+                                             "source_field", "url", "posting_date", "month", "date_status"]
+        assert len(evidence) == len(jobs)
+
+
+def test_title_timeline_uses_philippine_month_boundaries_and_keeps_raw_date_evidence():
+    dates = ["2026-02-01T00:30:00+08:00", "2026-01-31T16:30:00Z", "not a date"]
+    jobs = pd.DataFrame({"source_id": ["A", "B", "C"], "job_title": ["Data Analyst"] * 3,
+                         "posting_date": dates, "url": ["https://example.invalid/A", "", "https://example.invalid/C"]})
+    monthly, evidence = job_title_timeline(jobs)
+    assert monthly.month.tolist() == ["2026-02"] and monthly.job_ads.tolist() == [2]
+    assert evidence.month.tolist() == ["2026-02", "2026-02", ""]
+    assert evidence.original_posting_date.tolist() == dates
+    assert evidence.source_field.eq("posting_date").all()
+    assert evidence.url.iloc[2] == "https://example.invalid/C"
+    assert evidence.date_status.iloc[2] == "Invalid posting date"
+
+
+def test_title_timeline_keeps_large_title_month_products_sparse_without_losing_counts():
+    jobs = pd.DataFrame({"source_id": [f"SYNTHETIC-{index}" for index in range(500)],
+                         "job_title": [f"specific research occupation {index}" for index in range(500)],
+                         "posting_date_parsed": ["2000-01-01"] * 499 + ["2026-01-01"]})
+    monthly, evidence = job_title_timeline(jobs)
+    assert len(monthly) == len(evidence) == 500
+    assert monthly.job_ads.sum() == 500 and monthly.job_title.nunique() == 500
+    assert monthly.month.min() == "2000-01" and monthly.month.max() == "2026-01"

@@ -162,6 +162,42 @@ def _common_job_title_tables(jobs):
     return _counts(evidence, "common_job_title", "job_ads"), evidence
 
 
+def job_title_timeline(jobs):
+    """Count distinct dated ads by canonical title; preserve missing-date evidence."""
+    ads = (jobs.drop_duplicates("source_id") if "source_id" in jobs else jobs).reset_index(drop=True)
+    _, titles = _common_job_title_tables(ads)
+    evidence = titles[["source_id", "common_job_title", "original_job_title"]].rename(
+        columns={"common_job_title": "job_title"})
+    # Cleaned dates remain authoritative, including blanks; collection dates are never used.
+    date_field = "posting_date_parsed" if "posting_date_parsed" in ads else "posting_date"
+    raw_dates = ads.get(date_field, pd.Series("", index=ads.index)).map(clean_text)
+    number_parts = raw_dates.str.findall(r"\d+").str.len()
+    has_month_name = raw_dates.str.contains(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b", case=False)
+    complete_date = raw_dates.str.contains(r"(?<!\d)\d{4}(?!\d)") & (number_parts.ge(3) | (has_month_name & number_parts.ge(2)))
+    dates = (pd.to_datetime(raw_dates.where(complete_date), errors="coerce", format="mixed", utc=True)
+             .dt.tz_convert("Asia/Manila").dt.tz_localize(None))
+    evidence["original_posting_date"] = raw_dates
+    evidence["source_field"] = date_field
+    evidence["url"] = ads.get("url", pd.Series("", index=ads.index)).map(clean_text)
+    evidence["posting_date"] = dates
+    evidence["month"] = dates.dt.to_period("M").astype(str).where(dates.notna(), "")
+    evidence["date_status"] = "Dated"
+    evidence.loc[dates.isna(), "date_status"] = "Invalid posting date"
+    evidence.loc[raw_dates.map(_missing), "date_status"] = "Not stated"
+    dated = evidence.loc[evidence.month.ne("") & evidence.job_title.ne("")]
+    monthly = pd.DataFrame(columns=["month", "job_title", "job_ads"])
+    if not dated.empty:
+        months = pd.period_range(dated.month.min(), dated.month.max(), freq="M").astype(str)
+        title_names = sorted(dated.job_title.unique())
+        counts = dated.groupby(["month", "job_title"]).source_id.nunique()
+        # The UI fills zero months after selecting at most eight titles for large inputs.
+        if len(months) * len(title_names) <= 50000:
+            grid = pd.MultiIndex.from_product([months, title_names], names=["month", "job_title"])
+            counts = counts.reindex(grid, fill_value=0)
+        monthly = counts.rename("job_ads").reset_index()
+    return monthly, evidence
+
+
 _EDUCATION_LEVELS = [
     ("high school", r"\bhigh\s+school\b"),
     ("senior high school", r"\b(?:senior\s+high(?:\s+school)?|shs|grade\s*1[12])\b"),

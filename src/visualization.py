@@ -8,10 +8,13 @@ import streamlit as st
 from textwrap import wrap
 from html import escape
 from math import ceil
+from datetime import timedelta
 
 # Keep zero cells pale while making small positive shares visible.
 HEATMAP_COLORSCALE = [(0, "#FBF8F4"), (.002, "#EBD1A0"), (.2, "#E2BC72"),
                      (.4, "#D6A33D"), (.6, "#A8751C"), (.8, "#78182B"), (1, "#4D1020")]
+_TIMELINE_LAYOUT = dict(height=490, margin=dict(l=45, r=20, t=75, b=150),
+                        legend=dict(orientation="h", y=1.16, x=0, xanchor="left", yanchor="bottom"))
 
 
 def style_chart(fig):
@@ -43,6 +46,9 @@ def style_chart(fig):
                                       font=dict(color="#FFFFFF", size=13), align="left", namelength=-1))
     fig.update_xaxes(automargin=True, title_font_size=12)
     fig.update_yaxes(automargin=True, title_font_size=12)
+    if isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline"):
+        fig.update_layout(**_TIMELINE_LAYOUT)
+        fig.update_layout(uirevision=revision + "-" + digest([trace.name for trace in fig.data])[:16])
     return fig
 
 def _hover_text(value):
@@ -52,6 +58,60 @@ def _hover_text(value):
 def count_axis(maximum=0):
     """Keep indivisible counts on integer ticks, including after chart zooms."""
     return dict(tickmode="linear", tick0=0, dtick=max(1, ceil(maximum / 8)), tickformat=",d")
+
+
+def job_title_trend(monthly, title="Job-title posting timeline"):
+    """Reveal recorded monthly counts in the browser, keeping axes fixed during playback."""
+    fig = go.Figure(layout=dict(title=title, meta={"fow_title_timeline": True}, **_TIMELINE_LAYOUT))
+    if monthly.empty:
+        return fig
+    data = monthly[["month", "job_title", "job_ads"]].copy()
+    dates = pd.to_datetime(data.month, format="%Y-%m", errors="coerce")
+    counts = pd.to_numeric(data.job_ads, errors="coerce")
+    if dates.isna().any() or counts.isna().any() or counts.lt(0).any() or counts.mod(1).ne(0).any():
+        raise ValueError("Timeline data needs valid months and nonnegative whole advertisement counts.")
+    data["month"], data["job_ads"] = dates.dt.to_period("M"), counts.astype(int)
+    matrix = data.pivot(index="month", columns="job_title", values="job_ads").sort_index()
+    months = pd.period_range(matrix.index.min(), matrix.index.max(), freq="M")
+    matrix = matrix.reindex(months).fillna(0).astype(int).sort_index(axis=1)
+    month_names = months.astype(str).tolist()
+    x = months.to_timestamp().strftime("%Y-%m-%d").tolist()
+    point_count = len(months) * len(matrix.columns)
+    frame_count = min(len(months), 48, max(2, 120000 // max(1, point_count)))
+    frame_indexes = ([round(index * (len(months) - 1) / (frame_count - 1)) for index in range(frame_count)]
+                     if frame_count > 1 else [0])
+    playback_months = [month_names[index] for index in frame_indexes]
+    fig.update_layout(meta={"fow_title_timeline": True, "fow_playback_steps": len(frame_indexes),
+                            "fow_timeline_months": len(months), "fow_playback_sampled": len(frame_indexes) < len(months)})
+    colors = st.get_option("theme.chartCategoricalColors")
+    for index, name in enumerate(matrix.columns):
+        fig.add_trace(go.Scatter(
+            x=x, y=matrix[name].tolist(), name=str(name), mode="lines+markers",
+            line=dict(color=colors[index % len(colors)], width=2.5, simplify=False), marker=dict(size=6),
+            connectgaps=False, hovertemplate="<b>" + escape(str(name)) + "</b><br>%{x|%b %Y}<br>Job advertisements: %{y:,d}<extra></extra>"))
+    fig.frames = [go.Frame(name=month, traces=list(range(len(fig.data))), data=[
+        go.Scatter(x=x[:index + 1], y=matrix[name].iloc[:index + 1].tolist()) for name in matrix.columns
+    ]) for index, month in zip(frame_indexes, playback_months)]
+    immediate = dict(mode="immediate", frame=dict(duration=0, redraw=False), transition=dict(duration=0))
+    fig.update_layout(
+        xaxis=dict(title="Posting month", type="date", range=[
+            (months[0].to_timestamp().to_pydatetime() - timedelta(days=5)).strftime("%Y-%m-%d"),
+            (months[-1].to_timestamp().to_pydatetime() + timedelta(days=5)).strftime("%Y-%m-%d")],
+            dtick=f"M{max(1, ceil(len(months) / 8))}", tickformat="%b %Y"),
+        yaxis=dict(title="Job advertisements", range=[0, max(1, counts.max() * 1.15)],
+                   **count_axis(counts.max())),
+        sliders=[dict(active=len(playback_months) - 1, x=0, len=1, y=-.15, xanchor="left", yanchor="top",
+                      currentvalue=dict(prefix="Through: ", xanchor="left"), font=dict(size=10),
+                      pad=dict(t=15, b=0), steps=[dict(label=month, method="animate", args=[[month], immediate])
+                                               for month in playback_months])],
+        updatemenus=[dict(type="buttons", direction="left", x=0, y=-.38, xanchor="left", yanchor="top",
+                          pad=dict(t=0, r=10), showactive=False, font=dict(size=12), buttons=[
+                              dict(label="▶ Play", method="animate", args=[playback_months, dict(
+                                  mode="immediate", fromcurrent=False, frame=dict(duration=650, redraw=False),
+                                  transition=dict(duration=0))]),
+                              dict(label="❚❚ Pause", method="animate", args=[[None], immediate])])],
+    )
+    return fig
 
 
 def bar(frame, x, y, title, color=None):

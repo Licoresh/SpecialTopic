@@ -1,5 +1,6 @@
 """Synthetic audience-focused result views; no live sources or research records."""
 from copy import deepcopy
+import json
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -180,7 +181,7 @@ def test_timeline_and_family_insights_acknowledge_ties_while_education_compares_
     assert not app.exception and not app.error
     content = html_content(app)
     assert "displayed skill–family pairs tie" in content
-    assert "2 displayed months tie" in content
+    assert "highest recorded monthly count is 2, in 2026-01, 2026-02" in content
     assert not app.exception and not app.error
     education_figure = figure_with_title(figures, None)
     education = education_figure.data[0]
@@ -449,7 +450,7 @@ def test_common_title_chart_uses_canonical_role_but_specific_view_keeps_title(mo
     assert evidence.loc[evidence.source_id.eq("E"), "original_job_title"].iloc[0] == "Junior Business Analyst - Banking Branch"
 
 
-def test_family_title_filters_reset_and_geographical_denominators(monkeypatch):
+def test_family_title_filters_are_independent_from_geography(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
     app.selectbox(key="result_family").select("analytics").run(timeout=30)
     assert app.selectbox(key="result_specific_title").options == ["All", "data analyst"]
@@ -460,9 +461,10 @@ def test_family_title_filters_reset_and_geographical_denominators(monkeypatch):
     app.selectbox(key="result_region").select("national capital region").run(timeout=30)
     app.selectbox(key="result_family").select("engineering").run(timeout=30)
     assert not app.exception
-    assert app.selectbox(key="result_region").value == "All"
-    next(button for button in app.button if button.label == "Reset title and location filters").click().run(timeout=30)
+    assert app.selectbox(key="result_region").value == "national capital region"
+    next(button for button in app.button if button.label == "Reset title filters").click().run(timeout=30)
     assert not app.exception and app.selectbox(key="result_family").value == "All"
+    assert app.selectbox(key="result_region").value == "national capital region"
 
 
 def test_skill_family_heatmap_uses_all_ads_in_each_family_as_denominator(monkeypatch):
@@ -549,18 +551,19 @@ def test_experience_summary_uses_only_exact_single_value_requirements(monkeypatc
     assert "3–5 years is the most represented displayed band, appearing in 4 of 4 selected ads (100.0%)" in content
     assert "var(--fow-accent)" in content
 
-def test_psf_role_filter_limits_multi_role_links_and_heatmap(monkeypatch):
+def test_psf_role_filter_preserves_independent_reference_roles_and_heatmap(monkeypatch):
     tables = result_tables()
     tables['psf_mapping'].loc[0,'psf_job_role'] = 'analyst; scientist'
     tables['verified_psf_aai'] = pd.DataFrame({'competency_name':['Programming']})
     app, figures = result_app(monkeypatch,tables)
+    baseline = {fig.layout.title.text: fig.to_json() for fig in figures if fig.layout.title.text in (
+        'Related PSF-AAI reference roles', 'Reviewed PSF-AAI competencies across reference roles')}
     figures.clear()
     app.selectbox(key='result_psf_role').select('analyst').run(timeout=30)
     assert not app.exception and not app.error
-    assert not any(fig.layout.title.text in ('Related PSF-AAI reference roles', 'Reviewed PSF-AAI competencies across reference roles') for fig in figures)
-    assert any(item.label == 'analyst' and item.value == '1' for item in app.metric)
-    assert any(item.label == 'analyst · programming' and item.value == '1' for item in app.metric)
-    assert any("100.0% of 1 job ad in this reference role" in item.value for item in app.caption)
+    assert baseline == {fig.layout.title.text: fig.to_json() for fig in figures if fig.layout.title.text in baseline}
+    assert any(item.label == 'programming' and item.value == '1' for item in app.metric)
+    assert any("reference-role filter applies to competency demand above" in item.value for item in app.caption)
 
 
 def test_psf_heatmap_compares_reviewed_competencies_with_role_denominators(monkeypatch):
@@ -585,8 +588,7 @@ def test_psf_heatmap_compares_reviewed_competencies_with_role_denominators(monke
     figures.clear()
     app.selectbox(key="result_psf_role").select("scientist").run(timeout=30)
     focused = figure_with_title(figures, "Reviewed PSF-AAI competencies across reference roles")
-    assert focused.data[0].x.tolist() == ["scientist"]
-    assert all("analyst" not in str(value) for value in focused.data[0].x)
+    assert focused.to_json() == figure.to_json()
 
 
 def test_single_category_uses_headline_metric_with_scope(monkeypatch):
@@ -599,25 +601,45 @@ def test_single_category_uses_headline_metric_with_scope(monkeypatch):
     assert any("25.0% of selected job advertisements" in item.value for item in app.caption)
 
 
-def test_single_posting_month_is_a_metric_not_a_trend(monkeypatch):
+def test_single_posting_month_uses_title_table_without_a_time_trend(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-02-01", "2026-02-04", "2026-02-11", "2026-02-18"]
     app, figures = result_app(monkeypatch, tables)
     assert not any(fig.layout.title.text == "Posting months represented in the dataset" for fig in figures)
-    assert any(item.label == "2026-02" and item.value == "4" for item in app.metric)
-    assert any("One month is present; this is coverage, not a time trend." in item.value for item in app.caption)
+    assert not any(fig.layout.title.text == "Job-title posting timeline" for fig in figures)
+    summary = next(item.value for item in app.dataframe if "Monthly counts" in item.value)
+    assert summary["Dated ads through month"].sum() == 4
+    assert any("Only one posting month is available" in item.value for item in app.info)
 
 
-def test_multiple_posting_months_use_chronological_count_bars(monkeypatch):
+def test_title_timeline_line_table_and_filters_use_only_their_own_scope(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-03-01", "2026-01-04", "2026-03-14", "2026-02-12"]
     app, figures = result_app(monkeypatch, tables)
-    figure = figure_with_title(figures, "Posting months represented in the dataset")
-    assert figure.data[0].type == "bar"
-    assert figure.data[0].x.tolist() == ["2026-01", "2026-02", "2026-03"]
-    assert figure.data[0].y.tolist() == [1, 1, 2]
+    figure = figure_with_title(figures, "Job-title posting timeline")
+    assert all(trace.type == "scatter" for trace in figure.data)
+    assert [frame.name for frame in figure.frames] == ["2026-01", "2026-02", "2026-03"]
+    assert sum(sum(trace.y) for trace in figure.data) == 4
     assert figure.layout.yaxis.tickformat == ",d"
-    assert any("This shows collection coverage, not market growth." in item.value for item in app.caption)
+    rendered = next(json.loads(item.proto.spec) for item in app.get("plotly_chart")
+                    if json.loads(item.proto.spec).get("layout", {}).get("meta", {}).get("fow_title_timeline"))
+    assert len(rendered["frames"]) == 3
+    assert rendered["layout"]["updatemenus"][0]["buttons"][0]["method"] == "animate"
+    before = figure.to_json()
+    app.selectbox(key="result_region").select("national capital region").run(timeout=30)
+    assert figure_with_title(figures, "Job-title posting timeline").to_json() == before
+    assert app.selectbox(key="result_family").value == "All"
+    app.multiselect(key="result_timeline_titles").set_value(["data analyst"]).run(timeout=30)
+    assert app.selectbox(key="result_region").value == "national capital region"
+    selected = figure_with_title(figures, "Job-title posting timeline")
+    assert [trace.name for trace in selected.data] == ["data analyst"]
+    app.segmented_control(key="result_timeline_view").set_value("Table").run(timeout=30)
+    app.select_slider(key="result_timeline_table_month").set_value("2026-02").run(timeout=30)
+    assert not app.exception and not app.error
+    summary = next(item.value for item in app.dataframe if "Monthly counts" in item.value)
+    row = summary.iloc[0]
+    assert row["Job title"] == "data analyst" and row["Ads in month"] == 0
+    assert row["Dated ads through month"] == 1 and list(row["Monthly counts"]) == [1, 0]
 
 
 

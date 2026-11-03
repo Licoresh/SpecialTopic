@@ -377,10 +377,14 @@ def test_reports_expander_does_not_reload_shared_tables(monkeypatch):
     assert current.call_count == bundle.call_count == 1
 
 
-@pytest.mark.parametrize("key,value", [("result_explore_skill", "collaboration"), ("result_chart_order", "Alphabetical")])
-def test_skill_explore_and_order_only_redraw_their_own_panels(monkeypatch, key, value):
+@pytest.mark.parametrize("key,value", [("result_region", "national capital region"),
+                                      ("result_timeline_titles", ["data analyst"]),
+                                      ("result_chart_order", "Alphabetical")])
+def test_chart_filters_only_redraw_their_own_panels(monkeypatch, key, value):
     current = Mock(return_value=True)
-    bundle = Mock(return_value=(result_tables(), {}))
+    tables = result_tables()
+    tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-01-01", "2026-03-01", "2026-02-01", "2026-01-02"]
+    bundle = Mock(return_value=(tables, {}))
     plotted = Mock()
     monkeypatch.setattr(ui, "current_analysis", current)
     monkeypatch.setattr(ui, "filtered_bundle", bundle)
@@ -388,13 +392,58 @@ def test_skill_explore_and_order_only_redraw_their_own_panels(monkeypatch, key, 
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Job Market Analysis')").run(timeout=30)
     assert not app.exception and not app.error
     plotted.reset_mock()
-    app.selectbox(key=key).set_value(value)
+    (app.multiselect(key=key) if isinstance(value, list) else app.selectbox(key=key)).set_value(value)
     _run_fragment(app, monkeypatch, key)
-    if key == "result_explore_skill":
-        assert any(metric.label == "Advertisements requesting this skill" and metric.value == "1" for metric in app.metric)
-        plotted.assert_not_called()  # One occupational family is shown as a metric.
-    else:
-        assert plotted.call_count
-        assert {call.args[0].layout.title.text for call in plotted.call_args_list} <= {
-            "Employer-requested skills", "Technical skills", "Enabling and interpersonal skills", "Broad competency areas"}
+    allowed = ({"Job-title posting timeline"} if key == "result_timeline_titles" else
+               {"Cities and municipalities in national capital region", "Skills in the selected geographical area"}
+               if key == "result_region" else
+               {"Employer-requested skills", "Technical skills", "Enabling and interpersonal skills", "Broad competency areas"})
+    assert plotted.call_count
+    assert {call.args[0].layout.title.text for call in plotted.call_args_list} <= allowed
     assert current.call_count == bundle.call_count == 1
+
+
+def test_psf_role_filter_only_redraws_competency_demand(monkeypatch):
+    tables = result_tables()
+    tables["psf_mapping"] = pd.DataFrame({
+        "source_id": ["A", "B", "C", "D"],
+        "psf_competency": ["Programming", "Analysis", "Programming", "Analysis"],
+        "psf_job_role": ["Analyst", "Analyst", "Engineer", "Engineer"],
+        "status": ["ALIGNED"] * 4, "normalized_skill": ["sql", "collaboration", "c++", "collaboration"],
+    })
+    current = Mock(return_value=True)
+    bundle = Mock(return_value=(tables, {}))
+    plotted = Mock()
+    monkeypatch.setattr(ui, "current_analysis", current)
+    monkeypatch.setattr(ui, "filtered_bundle", bundle)
+    monkeypatch.setattr(ui, "chart", plotted)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Job Market Analysis')").run(timeout=30)
+    assert not app.exception and not app.error
+    plotted.reset_mock()
+    app.selectbox(key="result_psf_role").select("analyst")
+    _run_fragment(app, monkeypatch, "result_psf_role")
+    assert plotted.call_count == 1
+    assert plotted.call_args.args[0].layout.title.text == "PSF-AAI competencies linked to employer demand"
+    assert current.call_count == bundle.call_count == 1
+
+
+def test_reports_metadata_preserves_independent_route_chart_controls(monkeypatch):
+    rendered = Mock()
+    monkeypatch.setattr(ui, "current_analysis", lambda: True)
+    monkeypatch.setattr(ui, "filtered_bundle", lambda: (result_tables(), {}))
+    monkeypatch.setattr(ui, "corrections", lambda: pd.DataFrame())
+    monkeypatch.setattr(ui, "_load_report_tables", lambda: {})
+    monkeypatch.setattr(ui, "_research_results_content", rendered)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')")
+    for prefix, order, limit in (("mapping_chart", "Alphabetical", 10),
+                                 ("alignment_chart", "Lowest demand", 20),
+                                 ("unmapped_chart", "Highest demand", 30)):
+        app.session_state[f"{prefix}_order"] = order
+        app.session_state[f"{prefix}_limit"] = limit
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    settings = rendered.call_args.args[2]["chart_view_settings"]
+    assert settings["order"] == "Highest demand" and settings["items_per_chart"] == 15
+    assert settings["chart_controls"]["PSF Mapping"] == {"order": "Alphabetical", "items_per_chart": 10}
+    assert settings["chart_controls"]["Employer–PSF Alignment"] == {"order": "Lowest demand", "items_per_chart": 20}
+    assert settings["chart_controls"]["Unmapped skills"] == {"order": "Highest demand", "items_per_chart": 30}

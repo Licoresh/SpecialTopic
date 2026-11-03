@@ -28,12 +28,13 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness
 from .analytics import skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
-from .job_profile import job_profile_tables
+from .job_profile import job_profile_tables, job_title_timeline
+from .chart_exports import chart_downloads, chart_filename
 from .geography import location_tables
 from .alignment import STATUSES, ALIGNMENT_COLUMNS
 from .skill_extraction import EXTRACTION_COLUMNS
 from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
-from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar, experience_bar
+from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar, experience_bar, job_title_trend
 from .reporting import export_csv, export_excel, export_html, export_research_report
 from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
@@ -367,9 +368,9 @@ def _prepare_chart(fig, result_page):
     return fig
 
 
-def chart(fig, *, key=None):
+def chart(fig, *, key=None, title=None, show_heading=True):
     heading = fig.layout.title.text
-    title = heading or "Research analysis chart"
+    title = title or heading or "Research analysis chart"
     result_page = st.session_state.get("_fow_current_page") in {"Job Market Analysis", "PSF Mapping", "Employer–PSF Alignment", "Unmapped / Emerging Skills"}
     theme = [st.get_option(f"theme.{name}") for name in ("textColor", "backgroundColor", "chartCategoricalColors")]
     plotly_key = key
@@ -377,8 +378,11 @@ def chart(fig, *, key=None):
     # Private prepared figures are read-only; Streamlit serializes a copy.
     fig = _session_cached_value("_fow_chart_presentations", key, lambda: _prepare_chart(fig, result_page),
                                 ttl=None, max_entries=32, clone=lambda value: value)
-    if result_page and heading:
-        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
+    export_key = plotly_key or f"chart_{key}"
+    plot_config = {"displaylogo": False, "scrollZoom": False, "displayModeBar": True,
+                   "toImageButtonOptions": {"format": "png", "filename": chart_filename(title), "scale": 2}}
+    if result_page and heading and show_heading:
+        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "timeline" if any(trace.type == "scatter" for trace in fig.data) else "bar_chart"
         st.subheader(title, icon=f":material/{icon}:")
     if any(trace.type == "heatmap" for trace in fig.data):
         columns = max(len(trace.x) for trace in fig.data if trace.type == "heatmap")
@@ -388,11 +392,12 @@ def chart(fig, *, key=None):
             st.html(f'<style>.st-key-{key}' + '{--fow-matrix-width:' + str(minimum) + 'px}</style>'
                     '<p class="fow-matrix-scroll-hint">Scroll horizontally to read all chart columns.</p>')
             st.plotly_chart(fig, width="stretch", theme=None, key=f"{key}_plot_{VERSION}",
-                            config={"displaylogo": False, "scrollZoom": False}, alt=title)
+                            config=plot_config, alt=title)
     else:
         plot_options = {"key": f"{plotly_key}_{VERSION}"} if plotly_key else {}
-        st.plotly_chart(fig, width="stretch", config={"displaylogo": False, "scrollZoom": False},
+        st.plotly_chart(fig, width="stretch", config=plot_config,
                         alt=title, **plot_options)
+    chart_downloads(fig, title, key=export_key)
 
 def page_intro(title, description):
     key = {"Job Market Analysis": "job_market_heading", "PSF Mapping": "psf_mapping_heading",
@@ -2060,6 +2065,10 @@ def result_role_distribution(roles):
             f'<p>{total:,} displayed reference roles have competency links to the selected advertisements. An advertisement may link to several roles.</p>'
             f'<div class="fow-role-distribution"><div class="fow-role-donut" role="img" aria-label="{total} linked reference roles grouped by advertisement count" style="background:conic-gradient({", ".join(stops)})">'
             f'<span><strong>{total:,}</strong><small>Linked roles</small></span></div><ul>{"".join(legend)}</ul></div></aside>')
+    donut = go.Figure(go.Pie(labels=[label for label, _ in groups], values=[count for _, count in groups],
+                            hole=.65, marker_colors=list(colors), textinfo="percent",
+                            hovertemplate="%{label}<br>Reference roles: %{value:,d}<extra></extra>"))
+    chart_downloads(donut, "Reference-role distribution", key="reference_role_distribution")
 
 
 def _plotted_counts(figure, label, value):
@@ -2401,9 +2410,9 @@ def _job_market_content(tables, meta, revision=None):
         @st.fragment
         def title_and_location_exploration():
             def reset_exploration():
-                for key in ("result_family", "result_specific_title", "result_region", "result_city"):
+                for key in ("result_family", "result_specific_title"):
                     st.session_state[key] = "All"
-            st.button("Reset title and location filters", on_click=reset_exploration, icon=":material/restart_alt:")
+            st.button("Reset title filters", on_click=reset_exploration, icon=":material/restart_alt:")
             with st.container(border=True, key="job_market_title_section"):
                 st.subheader("Explore a selected title", icon=":material/person_search:")
                 title_evidence = profile["job_title_source_evidence"]
@@ -2433,119 +2442,162 @@ def _job_market_content(tables, meta, revision=None):
                     evidence_tables("View all skills for this selection", {"": selected_title_demand},
                                     key="result_all_title_skills", order=order, label="skill_label", value="job_ads",
                                     note="The searchable table includes every chartable skill for the selected group, not only the displayed bars.")
-            @st.fragment
-            def geographical_distribution():
-                st.subheader("Geographical distribution", icon=":material/location_on:")
-                locations = geography["location_evidence"]
-                focused_locations = locations[locations.source_id.isin(source_ids)]
-                region_options = sorted(value for value in focused_locations.region.unique() if value)
-                if st.session_state.get("result_region", "All") not in ["All", *region_options]:
-                    st.session_state["result_region"] = "All"
-                selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
-                if selected_region == "All":
+        @st.fragment
+        def geographical_distribution():
+            st.subheader("Geographical distribution", icon=":material/location_on:")
+            locations = geography["location_evidence"]
+            source_ids = jobs.source_id
+            focused_locations = locations
+            region_options = sorted(value for value in focused_locations.region.unique() if value)
+            if st.session_state.get("result_region", "All") not in ["All", *region_options]:
+                st.session_state["result_region"] = "All"
+            selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
+            if selected_region == "All":
+                st.session_state["result_city"] = "All"
+                location_rows = focused_locations[focused_locations.region.ne("")]
+                count_field = "region"
+                denominator_for_locations = source_ids.nunique()
+                location_title = "Advertisements by Philippine region"
+                area_rows = location_rows
+            else:
+                region_rows = focused_locations[focused_locations.region.eq(selected_region)]
+                city_options = sorted(value for value in region_rows.locality.unique() if value)
+                if st.session_state.get("result_city", "All") not in ["All", *city_options]:
                     st.session_state["result_city"] = "All"
-                    location_rows = focused_locations[focused_locations.region.ne("")]
-                    count_field = "region"
-                    denominator_for_locations = source_ids.nunique()
-                    location_title = "Advertisements by Philippine region"
-                    area_rows = location_rows
-                else:
-                    region_rows = focused_locations[focused_locations.region.eq(selected_region)]
-                    city_options = sorted(value for value in region_rows.locality.unique() if value)
-                    if st.session_state.get("result_city", "All") not in ["All", *city_options]:
-                        st.session_state["result_city"] = "All"
-                    selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
-                    locality_rows = region_rows[region_rows.locality.ne("")]
-                    location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
-                    count_field = "locality"
-                    denominator_for_locations = region_rows.source_id.nunique()
-                    location_title = f"Cities and municipalities in {selected_region}"
-                    area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
-                location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
-                if denominator_for_locations:
-                    location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
-                else:
-                    location_counts["job_ads_pct"] = float("nan")
-                location_ids = area_rows.source_id
-                location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
-                with st.container(border=True, key="job_market_featured_geography"):
-                    location_chart_col, skill_chart_col, insight_col = st.columns([1.05, 1.2, .9], vertical_alignment="center")
-                    with location_chart_col:
-                        location_figure = result_count_chart(location_counts, count_field, "job_ads", location_title,
-                                                             order=order, limit=limit)
-                    with skill_chart_col:
-                        skill_figure = result_count_chart(location_skill_counts, "skill_label", "job_ads",
-                                                          "Skills in the selected geographical area", order=order, limit=min(limit, 10))
-                    with insight_col:
-                        locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
-                        location_summary = "No classifiable location is available in this selection."
-                        if not locations_shown.empty:
-                            maximum = int(locations_shown.job_ads.max())
-                            leaders = locations_shown.loc[locations_shown.job_ads.eq(maximum), count_field].tolist()
-                            location_summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator_for_locations:,} ads."
-                                                if len(locations_shown) == 1 else
-                                                f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator_for_locations:,} ads."
-                                                if len(leaders) == 1 else
-                                                f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator_for_locations:,} ads each.")
-                        skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads").sort_values(
-                            ["job_ads", "skill_label"], ascending=[False, True], kind="stable")
-                        skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
-                        result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
-                                       skill_top_rows, "Top Displayed Skills")
-                missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
-                unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
-                if selected_region == "All":
-                    st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
-                else:
-                    st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
-                st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
-                st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
-                evidence_tables("View all regional or city counts", {"": location_counts.rename(columns={
-                    count_field: "Region" if selected_region == "All" else "City or municipality", "job_ads": "Job advertisements",
-                    "job_ads_pct": "Share of comparison group (%)"})}, key="result_all_location_counts")
-                evidence_tables("Location standardization evidence", {"": focused_locations}, key="result_location_standardization")
-                trend_jobs = jobs[jobs.source_id.isin(location_ids)]
-                if "posting_date_parsed" in trend_jobs:
-                    dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
-                    monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
-                    if len(monthly) > 1:
-                        coverage = px.bar(monthly, x="month", y="postings", title="Posting months represented in the dataset",
-                                          labels={"month": "Posting month", "postings": "Job advertisements"},
-                                          color_discrete_sequence=[st.get_option("theme.primaryColor")])
-                        coverage.update_traces(texttemplate="%{y:,d}", textposition="outside", cliponaxis=False,
-                                               hovertemplate="<b>%{x}</b><br>Job advertisements: %{y:,d}<extra></extra>")
-                        coverage.update_xaxes(type="category", categoryorder="array", categoryarray=monthly.month.tolist(),
-                                              title="Posting month", automargin=True)
-                        coverage.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero",
-                                              title="Job advertisements", showgrid=False, zeroline=False)
-                        timeline_sorted = monthly.sort_values(["postings", "month"], ascending=[False, True], kind="stable")
-                        peak = timeline_sorted.iloc[0]
-                        peak_months = timeline_sorted.loc[timeline_sorted.postings.eq(peak.postings), "month"]
-                        timeline_summary = (f"{peak.month} has the most dated postings ({int(peak.postings):,} ads)."
-                                            if len(peak_months) == 1 else
-                                            f"{len(peak_months):,} displayed months tie for the most dated postings ({int(peak.postings):,} ads each).")
-                        timeline_rows = list(zip(timeline_sorted.month.head(3), timeline_sorted.postings.head(3)))
-                        featured_visual_chart(
-                            lambda: chart(coverage),
-                            timeline_summary + " This describes dataset coverage, not market growth.",
-                            timeline_rows, key="posting_timeline", insight_title="Timeline Insight",
-                            list_title="Most represented months",
-                        )
-                    elif len(monthly) == 1:
-                        result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
-                                             monthly.postings.iloc[0], "Job advertisements",
-                                             "One month is present; this is coverage, not a time trend.",
-                                             key="result_single_posting_month")
-                    if not dates.empty:
-                        st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
-                    else:
-                        st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
+                selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
+                locality_rows = region_rows[region_rows.locality.ne("")]
+                location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
+                count_field = "locality"
+                denominator_for_locations = region_rows.source_id.nunique()
+                location_title = f"Cities and municipalities in {selected_region}"
+                area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
+            location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
+            if denominator_for_locations:
+                location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
+            else:
+                location_counts["job_ads_pct"] = float("nan")
+            location_ids = area_rows.source_id
+            location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
+            with st.container(border=True, key="job_market_featured_geography"):
+                location_chart_col, skill_chart_col, insight_col = st.columns([1.05, 1.2, .9], vertical_alignment="center")
+                with location_chart_col:
+                    location_figure = result_count_chart(location_counts, count_field, "job_ads", location_title,
+                                                         order=order, limit=limit)
+                with skill_chart_col:
+                    skill_figure = result_count_chart(location_skill_counts, "skill_label", "job_ads",
+                                                      "Skills in the selected geographical area", order=order, limit=min(limit, 10))
+                with insight_col:
+                    locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
+                    location_summary = "No classifiable location is available in this selection."
+                    if not locations_shown.empty:
+                        maximum = int(locations_shown.job_ads.max())
+                        leaders = locations_shown.loc[locations_shown.job_ads.eq(maximum), count_field].tolist()
+                        location_summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator_for_locations:,} ads."
+                                            if len(locations_shown) == 1 else
+                                            f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator_for_locations:,} ads."
+                                            if len(leaders) == 1 else
+                                            f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator_for_locations:,} ads each.")
+                    skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads").sort_values(
+                        ["job_ads", "skill_label"], ascending=[False, True], kind="stable")
+                    skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
+                    result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
+                                   skill_top_rows, "Top Displayed Skills")
+            missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
+            unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
+            if selected_region == "All":
+                st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
+            else:
+                st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
+            st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
+            st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
+            evidence_tables("View all regional or city counts", {"": location_counts.rename(columns={
+                count_field: "Region" if selected_region == "All" else "City or municipality", "job_ads": "Job advertisements",
+                "job_ads_pct": "Share of comparison group (%)"})}, key="result_all_location_counts")
+            evidence_tables("Location standardization evidence", {"": focused_locations}, key="result_location_standardization")
 
-            geographical_distribution()
+
+        @st.fragment
+        def posting_timeline():
+            monthly, date_evidence = _session_cached_value(
+                "_fow_title_timeline_data", revision, lambda: job_title_timeline(jobs),
+                ttl=None, max_entries=1, clone=lambda value: value)
+            with st.container(border=True, key="job_market_posting_timeline"):
+                st.subheader("Job-title posting timeline", icon=":material/timeline:")
+                totals = monthly.groupby("job_title").job_ads.sum().sort_values(ascending=False)
+                title_options = sorted(date_evidence.loc[date_evidence.job_title.ne(""), "job_title"].unique())
+                default_titles = totals.head(5).index.tolist() or title_options[:5]
+                selection_key = "result_timeline_titles"
+                if selection_key in st.session_state:
+                    retained = [name for name in st.session_state[selection_key] if name in title_options]
+                    if retained != st.session_state[selection_key]:
+                        st.session_state[selection_key] = retained
+                chosen = st.multiselect("Job titles to compare", title_options, default=default_titles,
+                                        max_selections=8, key=selection_key,
+                                        help="Compare up to 8 grouped job titles. Seniority variants use the same grouping as Most common job titles.")
+                selected = monthly.loc[monthly.job_title.isin(chosen)]
+                if not selected.empty:
+                    months = pd.period_range(monthly.month.min(), monthly.month.max(), freq="M").astype(str)
+                    grid = pd.MultiIndex.from_product([months, sorted(selected.job_title.unique())], names=["month", "job_title"])
+                    selected = selected.set_index(["month", "job_title"]).reindex(grid, fill_value=0).reset_index()
+                selected_evidence = date_evidence.loc[date_evidence.job_title.isin(chosen)]
+                dated = int(selected_evidence.loc[selected_evidence.date_status.eq("Dated"), "source_id"].nunique())
+                missing = int(selected_evidence.loc[selected_evidence.date_status.ne("Dated"), "source_id"].nunique())
+                st.caption(f"{dated:,} dated ads for the chosen titles; {missing:,} ads with missing or invalid posting dates are excluded. "
+                           "Monthly counts describe the collected dataset. Zero means no dated ad was recorded in that month, not zero jobs in the market.")
+                if not chosen:
+                    st.info("Choose at least one job title to explore its posting dates.")
+                elif selected.empty:
+                    st.info("No usable posting dates are available for these job titles.")
+                else:
+                    months = sorted(selected.month.unique())
+                    view = st.segmented_control("Timeline view", ["Line", "Table"],
+                                                default="Line" if len(months) > 1 else "Table",
+                                                key="result_timeline_view", selection_mode="single")
+                    if view == "Line" and len(months) > 1:
+                        counts_by_month = selected.groupby("month").job_ads.sum()
+                        peak = int(counts_by_month.max())
+                        leaders = counts_by_month[counts_by_month.eq(peak)].index.tolist()
+                        summary = (f"The chosen titles appear in {dated:,} dated ads. The highest recorded monthly count is "
+                                   f"{peak:,}, in {', '.join(leaders[:3])}" +
+                                   (f" and {len(leaders) - 3} other months." if len(leaders) > 3 else "."))
+                        top_titles = selected.groupby("job_title").job_ads.sum().sort_values(ascending=False)
+                        timeline_figure = job_title_trend(selected)
+                        featured_visual_chart(
+                            lambda: chart(timeline_figure, key="job_title_posting_timeline", show_heading=False),
+                            summary, list(top_titles.head(3).items()), key="title_timeline",
+                            insight_title="Timeline Insight", list_title="Dated ads by selected title")
+                        st.caption("Play reveals the recorded monthly points from the beginning; Pause stops playback. The slider chooses a month. The final frame shows the complete selected period.")
+                        if timeline_figure.layout.meta.get("fow_playback_sampled"):
+                            st.caption(f"Playback uses {len(timeline_figure.frames):,} steps for this long interval. All monthly values remain in the final lines, table and downloads.")
+                    else:
+                        if len(months) == 1:
+                            st.info("Only one posting month is available; the table shows counts without implying a time trend.")
+                        if st.session_state.get("result_timeline_table_month", months[-1]) not in months:
+                            st.session_state["result_timeline_table_month"] = months[-1]
+                        endpoint = st.select_slider("Through posting month", options=months, value=months[-1],
+                                                    key="result_timeline_table_month") if len(months) > 1 else months[0]
+                        shown = selected.loc[selected.month.le(endpoint)]
+                        pivot = shown.pivot(index="job_title", columns="month", values="job_ads").fillna(0).astype(int)
+                        summary = pd.DataFrame({"Job title": pivot.index, "Ads in month": pivot[endpoint].values,
+                                                "Dated ads through month": pivot.sum(axis=1).values,
+                                                "Monthly counts": pivot.values.tolist()})
+                        st.caption(f"Monthly counts from {months[0]} through {endpoint}.")
+                        st.dataframe(summary, hide_index=True, width="stretch", column_config={
+                            "Monthly counts": st.column_config.LineChartColumn("Monthly counts", y_min=0),
+                            "Ads in month": st.column_config.NumberColumn(format="%d"),
+                            "Dated ads through month": st.column_config.NumberColumn(format="%d")},
+                            alt=f"Selected job-title posting counts through {endpoint}")
+                        st.download_button("Download timeline data (CSV)", data=lambda: export_csv(shown),
+                                           file_name="job-title-posting-timeline.csv", mime="text/csv",
+                                           on_click="ignore", key="result_timeline_table_download", icon=":material/download:")
+                evidence_tables("Timeline source dates and title grouping", {"": selected_evidence},
+                                key="result_timeline_source_evidence")
 
         title_overview()
         family_comparison()
         title_and_location_exploration()
+        geographical_distribution()
+        posting_timeline()
 
     def qualifications():
         profile = market_profile()
@@ -2586,7 +2638,7 @@ def _job_market_content(tables, meta, revision=None):
             education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
             with education_column:
                 if len(education_chart) > 1:
-                    chart(education_bar(education_chart))
+                    chart(education_bar(education_chart), title="Stated education requirements by level")
                 elif len(education_chart) == 1:
                     level = education_chart.iloc[0]
                     st.metric(str(level.education_level), f"{int(level.job_ads):,}",
@@ -2639,7 +2691,7 @@ def _job_market_content(tables, meta, revision=None):
             experience_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
             with experience_column:
                 if len(experience_bands) > 1:
-                    chart(experience_bar(experience_bands))
+                    chart(experience_bar(experience_bands), title="Experience requirements by band")
                 elif len(experience_bands) == 1:
                     band = experience_bands.iloc[0]
                     st.html('<style>.st-key-job_market_experience [data-testid="stMetricValue"]{color:var(--fow-accent)!important}</style>')
@@ -2709,41 +2761,45 @@ def _job_market_content(tables, meta, revision=None):
                 reference = reference.rename(columns={"psf_competency": "competency_name"})
             role_options = sorted({role for value in all_linked.psf_job_role.unique()
                                    for role in value.split("; ") if role})
-            with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
-                if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
-                    st.session_state["result_psf_role"] = "All"
-                role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
-            linked = all_linked
-            if role != "All":
-                linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
-                linked["psf_job_role"] = role
-            role_denominator = linked.source_id.nunique()
             def prepare_psf_charts():
                 available = {"psf_chart_demand", "psf_role_competency_demand"}.issubset(tables)
-                psf_views = (tables if role == "All" and available else
-                             psf_demand_tables(linked, jobs, reference,
-                                              denominator=role_denominator if role != "All" else denominator))
-                roles = linked.assign(psf_job_role=linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
+                psf_views = tables if available else psf_demand_tables(all_linked, jobs, reference, denominator=denominator)
+                roles = all_linked.assign(psf_job_role=all_linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
                 roles = roles[roles.psf_job_role.ne("")]
                 roles = roles.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
                 roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
                 return psf_views["psf_chart_demand"], roles, psf_views["psf_role_competency_demand"]
-            cache_key = digest([VERSION, revision, role, denominator])
+            cache_key = digest([VERSION, revision, denominator])
 
             competence, roles, cells = _session_cached_value(
                 "_fow_psf_chart_cache", cache_key, prepare_psf_charts, ttl=None, max_entries=4,
                 clone=lambda value: value)
-            st.subheader("Competency demand", icon=":material/bar_chart:")
-            if not competence.empty:
-                featured_result_chart(
-                    "psf_competency", "job_ads", "Most linked competency",
-                    role_denominator if role != "All" else denominator,
-                    lambda: result_count_chart(competence, "psf_competency", "job_ads",
-                                               "PSF-AAI competencies linked to employer demand",
-                                               order=order, limit=limit),
-                    key="psf_competencies",
-                )
-            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Role links can overlap.")
+            @st.fragment
+            def competency_role_demand():
+                st.subheader("Competency demand", icon=":material/bar_chart:")
+                with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
+                    if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
+                        st.session_state["result_psf_role"] = "All"
+                    role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
+                role_competence, role_denominator = competence, denominator
+                if role != "All":
+                    linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
+                    linked["psf_job_role"] = role
+                    role_denominator = linked.source_id.nunique()
+                    role_competence = _session_cached_value(
+                        "_fow_psf_competency_role_cache", digest([cache_key, role]),
+                        lambda: psf_demand_tables(linked, jobs, reference, denominator=role_denominator)["psf_chart_demand"],
+                        ttl=None, max_entries=4, clone=lambda value: value)
+                if not role_competence.empty:
+                    featured_result_chart(
+                        "psf_competency", "job_ads", "Most linked competency", role_denominator,
+                        lambda: result_count_chart(role_competence, "psf_competency", "job_ads",
+                                                   "PSF-AAI competencies linked to employer demand",
+                                                   order=order, limit=limit),
+                        key="psf_competencies",
+                    )
+                st.caption("The reference-role filter applies to competency demand above. The reference-role chart and heatmap below retain the full selected dataset and their own controls. Role links can overlap.")
+            competency_role_demand()
             st.subheader("Reference roles", icon=":material/work:")
             with st.container(border=True, key="job_market_featured_psf_roles"):
                 role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
@@ -2792,7 +2848,7 @@ def _unmapped_results(tables, meta):
     denominator = jobs.source_id.nunique() if "source_id" in jobs else 0
     @st.fragment
     def unmapped_charts():
-        order, limit = result_chart_options()
+        order, limit = result_chart_options(key_prefix="unmapped_chart")
         raw = tables["unmapped_skills"]
         chart_counts = ordered_result_table(counts, "skill_label", order, "job_ads").head(limit)
         chart_recurring = ordered_result_table(recurring, "skill_label", order, "job_ads").head(limit)
@@ -2929,6 +2985,13 @@ def research_page(page):
                 "items_per_chart": st.session_state.get("result_chart_limit", 15),
                 "role_chart_order": st.session_state.get("result_roles_order", "Highest demand"),
                 "psf_chart_order": st.session_state.get("result_psf_order", "Highest demand"),
+                "chart_controls": {
+                    section: {"order": st.session_state.get(f"{prefix}_order", "Highest demand"),
+                              "items_per_chart": st.session_state.get(f"{prefix}_limit", 15)}
+                    for section, prefix in (("Skills", "result_chart"), ("Roles and locations", "result_roles"),
+                                            ("PSF-AAI demand", "result_psf"), ("PSF Mapping", "mapping_chart"),
+                                            ("Employer–PSF Alignment", "alignment_chart"), ("Unmapped skills", "unmapped_chart"))
+                },
                 "focused_job_title": st.session_state.get("result_specific_title"),
                 "focused_location": st.session_state.get("result_region"),
                 "note": "Display settings do not limit the complete exported tables or selected-job denominator.",
@@ -2956,7 +3019,7 @@ def _research_results_content(page, tables, meta, active_reference):
                 with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
                     section_heading("Competency demand", "bar_chart",
                                     "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
-                order, limit = result_chart_options()
+                order, limit = result_chart_options(key_prefix="mapping_chart")
                 competence = tables["psf_competency_demand"]
                 if not competence.empty:
                     plot_competence = tables.get("psf_chart_demand")
@@ -2990,7 +3053,7 @@ def _research_results_content(page, tables, meta, active_reference):
                         st.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%", icon=f":material/{icon}:")
         @st.fragment
         def alignment_chart():
-            order, limit = result_chart_options()
+            order, limit = result_chart_options(key_prefix="alignment_chart")
             with st.container(border=True, key="employer_psf_status_panel"):
                 status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
                                             "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)

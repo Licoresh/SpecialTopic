@@ -164,10 +164,12 @@ def test_compact_job_market_chart_keeps_counts_and_accessible_title(monkeypatch,
     ui.chart(figure)
 
     assert figure.data[0].to_json() == trace
-    assert figure.layout.height < original_height
+    prepared = rendered.call_args.args[0]
+    assert prepared.layout.height < original_height
     assert rendered.call_args.kwargs["alt"] == "Synthetic demand"
     assert heading.call_args.args[0] == "Synthetic demand"
-    assert figure.layout.title.text == ""
+    assert prepared.layout.title.text == ""
+    assert figure.layout.title.text == "Synthetic demand"
     session["_fow_current_page"] = "Employer–PSF alignment"
     other = ranked_bar(frame, "skill", "job_ads", "Synthetic demand")
     ui.chart(other)
@@ -189,13 +191,14 @@ def test_long_chart_labels_reserve_their_lines_without_changing_evidence(monkeyp
     monkeypatch.setattr(ui.st, "subheader", Mock())
     ui.chart(figure)
     assert figure.data[0].to_json() == trace
-    assert list(figure.layout.yaxis.tickvals) == list(figure.data[0].y)
-    labels = figure.layout.yaxis.ticktext
+    prepared = rendered.call_args.args[0]
+    assert list(prepared.layout.yaxis.tickvals) == list(figure.data[0].y)
+    labels = prepared.layout.yaxis.ticktext
     assert any("<br>" in label for label in labels)
     assert any("&lt;and&gt;" in label for label in labels)
     required_height = 55 + sum(max(28, 14 * (label.count("<br>") + 1) + 8) for label in labels)
-    assert figure.layout.height >= required_height
-    assert figure.layout.font.size >= 12
+    assert prepared.layout.height >= required_height
+    assert prepared.layout.font.size >= 12
     assert rendered.call_args.kwargs["width"] == "stretch"
 
 
@@ -510,7 +513,7 @@ def test_mapping_uses_one_chart_order_control_for_chart_and_table(monkeypatch):
     app = AppTest.from_string('from src.ui import research_page\nresearch_page("PSF Mapping")').run(timeout=30)
     for order, expected in [('Highest demand', ['Zulu', 'Middle', 'Alpha']),
                             ('Alphabetical', ['Alpha', 'Middle', 'Zulu'])]:
-        app.selectbox(key='result_chart_order').set_value(order).run(timeout=30)
+        app.selectbox(key='mapping_chart_order').set_value(order).run(timeout=30)
         assert not app.exception and not app.error
         assert sum(item.label == 'Chart order' for item in app.selectbox) == 1
         assert not any(item.label == 'Competency order' for item in app.selectbox)
