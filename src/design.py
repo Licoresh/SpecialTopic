@@ -472,8 +472,9 @@ body:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_
 .st-key-result_title_exploration_filters > [data-testid="stElementContainer"], .st-key-result_psf_controls > [data-testid="stElementContainer"] { width: auto !important; min-width: 0; flex: 1 1 0; }
 .st-key-result_psf_controls { width: 100%; max-width: none; margin: 0; gap: .7rem; flex-wrap: wrap; }
 .st-key-result_psf_controls > [data-testid="stLayoutWrapper"] { min-width: min(100%, 220px); flex: 1 1 220px; max-width: 420px; }
-.st-key-result_sections > div > [role="tablist"] > [role="tab"] { flex: 1 0 auto; min-height: var(--fow-control-height); gap: .5rem; border-radius: 7px; }
-.st-key-result_sections > div > [role="tablist"] > [role="tab"]::before { font: 21px/1 "Material Symbols Rounded"; }
+.st-key-result_sections > div > [role="tablist"] > [role="tab"] { display: flex; flex: 1 1 0; align-items: center; justify-content: center; min-height: var(--fow-control-height); gap: .5rem; border-radius: 7px; text-align: center; }
+.st-key-result_sections > div > [role="tablist"] > [role="tab"] > div { display: flex; align-items: center; justify-content: center; }
+.st-key-result_sections > div > [role="tablist"] > [role="tab"]::before { display: inline-flex; flex: 0 0 21px; align-items: center; justify-content: center; width: 21px; height: 21px; font: 21px/1 "Material Symbols Rounded"; }
 .st-key-result_sections > div > [role="tablist"] > [role="tab"]:nth-of-type(1)::before { content: "work"; }
 .st-key-result_sections > div > [role="tablist"] > [role="tab"]:nth-of-type(2)::before { content: "person_pin_circle"; }
 .st-key-result_sections > div > [role="tablist"] > [role="tab"]:nth-of-type(3)::before { content: "school"; }
