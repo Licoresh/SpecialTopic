@@ -2553,11 +2553,16 @@ def _job_market_content(tables, meta, revision=None):
 
     def qualification_charts(profile):
         coverage = profile["requirement_field_coverage"].set_index("source_field")
+        education_stated = int(coverage.loc["education_requirement", "stated_job_ads"])
+        experience_evidence = profile["experience_analysis_year_evidence"]
+        experience_status = experience_evidence["parse_status"].fillna("").astype(str)
+        experience_observed = int(experience_evidence.loc[
+            experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"
+        ].nunique())
         with st.container(border=True, key="job_market_qualification_summary"):
             st.subheader("What qualifications are stated?", icon=":material/school:")
-            for row in profile["requirement_field_coverage"].itertuples():
-                label = row.source_field.removesuffix("_requirement").capitalize()
-                st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads.")
+            st.write(f"Education: stated in {education_stated:,} of {denominator:,} ads.")
+            st.write(f"Experience: identified in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text.")
         education = profile["education_level_counts"]
         missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
         stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
@@ -2623,7 +2628,6 @@ def _job_market_content(tables, meta, revision=None):
                 "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")
         with st.container(border=True, key="job_market_experience"):
             st.subheader("Experience requirements", icon=":material/work:")
-            experience_evidence = profile["experience_analysis_year_evidence"]
             exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
             exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
             if len(exact_years) >= 2:

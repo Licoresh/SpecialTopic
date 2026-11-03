@@ -245,6 +245,23 @@ def test_experience_band_chart_uses_readable_labels_and_whole_number_counts(monk
     assert bands.data[0].texttemplate == "%{x:,d}"
 
 
+def test_qualification_summary_counts_text_experience_evidence_used_by_chart(monkeypatch):
+    tables = result_tables()
+    tables["cleaned_jobs"]["experience_requirement"] = [""] * 4
+    tables["cleaned_jobs"]["job_description"] = [
+        "Requires 4 years of professional experience.", "Synthetic posting", "Synthetic posting", "Synthetic posting"
+    ]
+    app, _ = result_app(monkeypatch, tables)
+    assert not app.exception and not app.error
+    summary = "\n".join(str(item.value) for item in app.markdown)
+    assert "Experience: identified in 1 of 4 ads from source fields or advertisement text." in summary
+    profile = ui.job_profile_tables(tables["cleaned_jobs"])
+    assert int(profile["requirement_field_coverage"].loc[
+        profile["requirement_field_coverage"].source_field.eq("experience_requirement"), "stated_job_ads"
+    ].iloc[0]) == 0  # Field-only provenance stays intact.
+    assert any(metric.label == "3–5 years" and metric.value == "1" for metric in app.metric)
+
+
 def test_alphabetical_chart_order_and_linked_psf_counts(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
     app.selectbox(key="result_chart_order").set_value("Alphabetical").run(timeout=30)
