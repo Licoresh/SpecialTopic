@@ -1,5 +1,5 @@
 """Downloads contain the selected graph values; file generation waits for a click."""
-from html import unescape
+from html import unescape, escape
 import re
 
 import pandas as pd
@@ -68,12 +68,11 @@ def chart_table(fig):
     return frame
 
 
-def chart_html(fig, title):
+def chart_html(fig, title, *, full_html=True, include_plotlyjs=True):
     """Preserve the complete figure and playback frames in a standalone HTML file."""
     exported = go.Figure(fig)
-    exported.update_layout(title_text=title, title_x=.02, margin_t=max(65, fig.layout.margin.t or 0),
-                           paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF")
-    return exported.to_html(include_plotlyjs=True, full_html=True, auto_play=False,
+    exported.update_layout(title_text=title, title_x=.02, margin_t=max(65, fig.layout.margin.t or 0))
+    return exported.to_html(include_plotlyjs=include_plotlyjs, full_html=full_html, auto_play=False,
                             config={"displaylogo": False, "responsive": True,
                                     "toImageButtonOptions": {"format": "png", "filename": chart_filename(title)}})
 
@@ -83,6 +82,11 @@ def chart_filename(title):
 
 
 def chart_downloads(fig, title, *, key):
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        _chart_download_menu(fig, title, key=key)
+
+
+def _chart_download_menu(fig, title, *, key):
     filename = chart_filename(title)
     with st.popover("Download graph", icon=":material/download:", key=f"{key}_downloads"):
         st.download_button("Graph data (CSV)", data=lambda: export_csv(chart_table(fig)),
@@ -92,3 +96,26 @@ def chart_downloads(fig, title, *, key):
                            file_name=f"{filename}.html", mime="text/html", key=f"{key}_html",
                            icon=":material/code:", on_click="ignore", width="stretch")
         st.caption("For a PNG image, use the camera button on the graph or in its downloaded HTML file.")
+
+
+def chart_group_html(figures, title):
+    parts = [chart_html(fig, name, full_html=False, include_plotlyjs=index == 0)
+             for index, (name, fig) in enumerate(figures.items())]
+    return f'<!doctype html><html><head><meta charset="utf-8"><title>{escape(title)}</title></head><body style="margin:24px">' + "".join(parts) + "</body></html>"
+
+
+def chart_group_data(figures):
+    return pd.concat([chart_table(fig).assign(Graph=name) for name, fig in figures.items()], ignore_index=True) if figures else pd.DataFrame()
+
+
+def chart_group_downloads(figures, title, *, key):
+    figures = {name: fig for name, fig in figures.items() if fig is not None}
+    filename = chart_filename(title)
+    with st.popover("Download section", icon=":material/download:", key=f"{key}_downloads", disabled=not figures):
+        st.download_button("Section graphs (HTML)", data=lambda: chart_group_html(figures, title),
+                           file_name=f"{filename}.html", mime="text/html", key=f"{key}_html",
+                           icon=":material/code:", on_click="ignore", width="stretch")
+        st.download_button("Section data (CSV)", data=lambda: export_csv(chart_group_data(figures)),
+                           file_name=f"{filename}.csv", mime="text/csv", key=f"{key}_csv",
+                           icon=":material/table:", on_click="ignore", width="stretch")
+        st.caption("Includes the location and skill charts for the current region and city selection. Use each chart’s camera for PNG.")

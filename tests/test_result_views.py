@@ -396,10 +396,10 @@ def test_incomplete_psf_chart_group_can_retry(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {}))
     original = ui.chart
     fail = [True]
-    def draw(figure):
+    def draw(figure, **kwargs):
         if figure.layout.title.text == "PSF-AAI competencies linked to employer demand" and fail[0]:
             raise ValueError("Synthetic chart rendering interruption")
-        return original(figure)
+        return original(figure, **kwargs)
     monkeypatch.setattr(ui, "chart", draw)
     app = AppTest.from_string("from src.ui import render\nrender('Job Market Analysis')").run(timeout=30)
     assert any("Synthetic chart rendering interruption" in item.message for item in app.exception)
@@ -452,6 +452,9 @@ def test_common_title_chart_uses_canonical_role_but_specific_view_keeps_title(mo
 
 def test_family_title_filters_are_independent_from_geography(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
+    geography = app.get_by_key("job_market_featured_geography")
+    assert len(geography.get("popover")) == 1
+    assert geography.get("popover")[0].proto.popover.label == "Download section"
     app.selectbox(key="result_family").select("analytics").run(timeout=30)
     assert app.selectbox(key="result_specific_title").options == ["All", "data analyst"]
     focused = figure_with_title(figures, "Top skills for analytics")

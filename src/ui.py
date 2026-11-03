@@ -29,7 +29,7 @@ from .labeling import annotation_conflicts, save_annotations, save_correction, c
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness
 from .analytics import skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import job_profile_tables, job_title_timeline
-from .chart_exports import chart_downloads, chart_filename
+from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
 from .geography import location_tables
 from .alignment import STATUSES, ALIGNMENT_COLUMNS
 from .skill_extraction import EXTRACTION_COLUMNS
@@ -369,8 +369,7 @@ def _prepare_chart(fig, result_page):
     timeline = isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline")
     header_space = 120 if timeline else 100 if fig.layout.title.text else 56
     toolbar_space = max(0, header_space - (fig.layout.margin.t or 0))
-    fig.update_layout(paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
-                      modebar=dict(bgcolor="#FFFFFF", color="#647184", activecolor="#86142D"),
+    fig.update_layout(modebar=dict(bgcolor="rgba(0,0,0,0)", color="#647184", activecolor="#86142D"),
                       margin_t=(fig.layout.margin.t or 0) + toolbar_space)
     canvas_height = (fig.layout.height or 450) + toolbar_space
     fig.update_layout(height=canvas_height)
@@ -379,7 +378,7 @@ def _prepare_chart(fig, result_page):
     return fig
 
 
-def chart(fig, *, key=None, title=None, show_heading=True):
+def chart(fig, *, key=None, title=None, show_heading=True, downloads=True):
     heading = fig.layout.title.text
     title = title or heading or "Research analysis chart"
     result_page = st.session_state.get("_fow_current_page") in {"Job Market Analysis", "PSF Mapping", "Employer–PSF Alignment", "Unmapped / Emerging Skills"}
@@ -393,8 +392,17 @@ def chart(fig, *, key=None, title=None, show_heading=True):
     plot_config = {"displaylogo": False, "scrollZoom": False, "displayModeBar": True,
                    "modeBarButtonsToRemove": ["select2d", "lasso2d", "zoomIn2d", "zoomOut2d", "autoScale2d"],
                    "toImageButtonOptions": {"format": "png", "filename": chart_filename(title), "scale": 2}}
-    if result_page and heading and show_heading:
-        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "timeline" if any(trace.type == "scatter" for trace in fig.data) else "bar_chart"
+    visible_heading = result_page and heading and show_heading
+    if downloads:
+        with st.container(horizontal=True, horizontal_alignment="distribute" if visible_heading else "right",
+                          vertical_alignment="center"):
+            if visible_heading:
+                icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "timeline" if any(trace.type == "scatter" for trace in fig.data) else "bar_chart"
+                st.subheader(title, icon=f":material/{icon}:")
+            with st.container(width="content"):
+                chart_downloads(fig, title, key=export_key)
+    elif visible_heading:
+        icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
         st.subheader(title, icon=f":material/{icon}:")
     if any(trace.type == "heatmap" for trace in fig.data):
         columns = max(len(trace.x) for trace in fig.data if trace.type == "heatmap")
@@ -407,9 +415,8 @@ def chart(fig, *, key=None, title=None, show_heading=True):
                             config=plot_config, alt=title)
     else:
         plot_options = {"key": f"{plotly_key}_{VERSION}"} if plotly_key else {}
-        st.plotly_chart(fig, width="stretch", theme=None, config=plot_config,
+        st.plotly_chart(fig, width="stretch", config=plot_config,
                         alt=title, **plot_options)
-    chart_downloads(fig, title, key=export_key)
 
 def page_intro(title, description):
     key = {"Job Market Analysis": "job_market_heading", "PSF Mapping": "psf_mapping_heading",
@@ -1916,7 +1923,7 @@ def result_single_metric(title, label, value, unit, detail, *, key):
         st.caption(" · ".join(part for part in (unit, detail) if part))
 
 
-def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False):
+def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False, downloads=True):
     if frame.empty:
         st.caption("No evidence for this chart in the current selection.")
         return
@@ -1943,7 +1950,10 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
         for trace in figure.data:
             trace.update(marker_color=["#99043B" if count == maximum else "#958277" for count in trace.x])
     if len(frame) != 1:
-        chart(figure)
+        if downloads:
+            chart(figure)
+        else:
+            chart(figure, downloads=False)
         return figure
     category = figure.data[0].y[0]
     count = figure.data[0].x[0]
@@ -2456,48 +2466,50 @@ def _job_market_content(tables, meta, revision=None):
                                     note="The searchable table includes every chartable skill for the selected group, not only the displayed bars.")
         @st.fragment
         def geographical_distribution():
-            st.subheader("Geographical distribution", icon=":material/location_on:")
-            locations = geography["location_evidence"]
-            source_ids = jobs.source_id
-            focused_locations = locations
-            region_options = sorted(value for value in focused_locations.region.unique() if value)
-            if st.session_state.get("result_region", "All") not in ["All", *region_options]:
-                st.session_state["result_region"] = "All"
-            selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
-            if selected_region == "All":
-                st.session_state["result_city"] = "All"
-                location_rows = focused_locations[focused_locations.region.ne("")]
-                count_field = "region"
-                denominator_for_locations = source_ids.nunique()
-                location_title = "Advertisements by Philippine region"
-                area_rows = location_rows
-            else:
-                region_rows = focused_locations[focused_locations.region.eq(selected_region)]
-                city_options = sorted(value for value in region_rows.locality.unique() if value)
-                if st.session_state.get("result_city", "All") not in ["All", *city_options]:
-                    st.session_state["result_city"] = "All"
-                selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
-                locality_rows = region_rows[region_rows.locality.ne("")]
-                location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
-                count_field = "locality"
-                denominator_for_locations = region_rows.source_id.nunique()
-                location_title = f"Cities and municipalities in {selected_region}"
-                area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
-            location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
-            if denominator_for_locations:
-                location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
-            else:
-                location_counts["job_ads_pct"] = float("nan")
-            location_ids = area_rows.source_id
-            location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
             with st.container(border=True, key="job_market_featured_geography"):
+                with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+                    st.subheader("Geographical distribution", icon=":material/location_on:")
+                    download_slot = st.container(width="content")
+                locations = geography["location_evidence"]
+                source_ids = jobs.source_id
+                focused_locations = locations
+                region_options = sorted(value for value in focused_locations.region.unique() if value)
+                if st.session_state.get("result_region", "All") not in ["All", *region_options]:
+                    st.session_state["result_region"] = "All"
+                selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
+                if selected_region == "All":
+                    st.session_state["result_city"] = "All"
+                    location_rows = focused_locations[focused_locations.region.ne("")]
+                    count_field = "region"
+                    denominator_for_locations = source_ids.nunique()
+                    location_title = "Advertisements by Philippine region"
+                    area_rows = location_rows
+                else:
+                    region_rows = focused_locations[focused_locations.region.eq(selected_region)]
+                    city_options = sorted(value for value in region_rows.locality.unique() if value)
+                    if st.session_state.get("result_city", "All") not in ["All", *city_options]:
+                        st.session_state["result_city"] = "All"
+                    selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
+                    locality_rows = region_rows[region_rows.locality.ne("")]
+                    location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
+                    count_field = "locality"
+                    denominator_for_locations = region_rows.source_id.nunique()
+                    location_title = f"Cities and municipalities in {selected_region}"
+                    area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
+                location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
+                if denominator_for_locations:
+                    location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
+                else:
+                    location_counts["job_ads_pct"] = float("nan")
+                location_ids = area_rows.source_id
+                location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
                 location_chart_col, skill_chart_col, insight_col = st.columns([1.05, 1.2, .9], vertical_alignment="center")
                 with location_chart_col:
                     location_figure = result_count_chart(location_counts, count_field, "job_ads", location_title,
-                                                         order=order, limit=limit)
+                                                         order=order, limit=limit, downloads=False)
                 with skill_chart_col:
                     skill_figure = result_count_chart(location_skill_counts, "skill_label", "job_ads",
-                                                      "Skills in the selected geographical area", order=order, limit=min(limit, 10))
+                                                      "Skills in the selected geographical area", order=order, limit=min(limit, 10), downloads=False)
                 with insight_col:
                     locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
                     location_summary = "No classifiable location is available in this selection."
@@ -2514,18 +2526,22 @@ def _job_market_content(tables, meta, revision=None):
                     skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
                     result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
                                    skill_top_rows, "Top Displayed Skills")
-            missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
-            unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
-            if selected_region == "All":
-                st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
-            else:
-                st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
-            st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
-            st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
-            evidence_tables("View all regional or city counts", {"": location_counts.rename(columns={
-                count_field: "Region" if selected_region == "All" else "City or municipality", "job_ads": "Job advertisements",
-                "job_ads_pct": "Share of comparison group (%)"})}, key="result_all_location_counts")
-            evidence_tables("Location standardization evidence", {"": focused_locations}, key="result_location_standardization")
+                missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
+                unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
+                if selected_region == "All":
+                    st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
+                else:
+                    st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
+                st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
+                st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
+                evidence_tables("View all regional or city counts", {"": location_counts.rename(columns={
+                    count_field: "Region" if selected_region == "All" else "City or municipality", "job_ads": "Job advertisements",
+                    "job_ads_pct": "Share of comparison group (%)"})}, key="result_all_location_counts")
+                evidence_tables("Location standardization evidence", {"": focused_locations}, key="result_location_standardization")
+                with download_slot:
+                    chart_group_downloads({location_title: location_figure,
+                                           "Skills in the selected geographical area": skill_figure},
+                                          "Geographical distribution", key="geography_section")
 
 
         @st.fragment

@@ -38,6 +38,7 @@ def test_standalone_html_retains_line_series_frames_and_title_without_mutation()
                     frames=[go.Frame(name="2026-01", data=[go.Scatter(x=["2026-01"], y=[2])])])
     fig.update_xaxes(title="Posting month")
     fig.update_yaxes(title="Job advertisements")
+    fig.update_layout(paper_bgcolor="#FAF5EF", plot_bgcolor="#FAF5EF")
     before = fig.to_json()
     result = chart_exports.chart_table(fig)
     assert result.to_dict("records") == [
@@ -46,7 +47,7 @@ def test_standalone_html_retains_line_series_frames_and_title_without_mutation()
     ]
     html = chart_exports.chart_html(fig, "Job-title timeline")
     assert "Job-title timeline" in html and "Plotly.addFrames" in html
-    assert '"paper_bgcolor":"#FFFFFF"' in html and '"plot_bgcolor":"#FFFFFF"' in html
+    assert '"paper_bgcolor":"#FAF5EF"' in html and '"plot_bgcolor":"#FAF5EF"' in html
     assert '<script src="' not in html
     assert fig.to_json() == before
 
@@ -74,3 +75,13 @@ def test_standalone_html_escapes_script_tags_in_labels():
     label = "</script><script>alert(1)</script>"
     html = chart_exports.chart_html(go.Figure(go.Bar(x=[1], y=[label])), label)
     assert label not in html
+
+
+def test_section_download_keeps_both_graphs_and_their_counts():
+    figures = {"Location": go.Figure(go.Bar(x=[11, 2], y=["region a", "region b"], orientation="h")),
+               "Skills": go.Figure(go.Bar(x=[6, 3], y=["sql", "python"], orientation="h"))}
+    data = chart_exports.chart_group_data(figures)
+    assert data.groupby("Graph").Value.sum().to_dict() == {"Location": 13, "Skills": 9}
+    html = chart_exports.chart_group_html(figures, "Geography <selection>")
+    assert html.count('class="plotly-graph-div"') == 2
+    assert "Geography &lt;selection&gt;" in html
