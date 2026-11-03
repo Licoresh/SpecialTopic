@@ -193,7 +193,7 @@ def test_shared_visual_direction_is_present_in_theme_css():
     assert ".st-key-job_market_heading" in JOB_MARKET_CSS
     assert ".st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading" in JOB_MARKET_CSS
     assert '[data-testid="stSidebarNavLink"][aria-current="page"]' in SIDEBAR_CSS
-    assert '[role="radiogroup"] > button[aria-checked="true"]' in JOB_MARKET_CSS
+    assert '[role="tablist"] > [role="tab"][aria-selected="true"]' in JOB_MARKET_CSS
     root = Path(__file__).resolve().parents[1]
     assert "MSU-IIT" not in (root / "assets" / "job_market_brand.svg").read_text(encoding="utf-8")
     entry = (root / "app.py").read_text(encoding="utf-8")
@@ -342,7 +342,7 @@ def test_loading_shapes_are_scoped_responsive_and_respect_reduced_motion():
     assert "@media (prefers-reduced-motion: reduce)" in LOADING_CSS
     assert "animation: none; opacity: 1" in LOADING_CSS
     assert "position: fixed" not in LOADING_CSS and "backdrop-filter" not in LOADING_CSS
-    assert ".st-key-result_chart_note > * { grid-column: 2; min-width: 0; }" in JOB_MARKET_CSS
+    assert '[class*="st-key-result_chart_note_"] > * { grid-column: 2; min-width: 0; }' in JOB_MARKET_CSS
     assert 'font: 18px/1 "Material Symbols Rounded"' in JOB_MARKET_CSS
 
 
@@ -569,7 +569,7 @@ def test_preparation_content_and_sidebar_controls_share_workspace_geometry():
     assert 'padding-left: 54px' in WORKSPACE_CONTENT_CSS
     assert 'grid-template-columns: minmax(0,1fr) 44px' in WORKSPACE_CONTENT_CSS
     assert 'data-fow-psf-ready' not in WORKSPACE_CONTENT_CSS
-    assert '.st-key-job_market_psf_charts:has(.fow-loading) .st-key-job_market_psf_charts_body' in JOB_MARKET_CSS
+    assert '.st-key-research_results_content_body { visibility: hidden;' in JOB_MARKET_CSS
     assert '[class*="st-key-workspace_page_"] h3 [data-testid="stIconMaterial"] { color: #8B1630;' in WORKSPACE_CONTENT_CSS
 
 
@@ -848,13 +848,7 @@ def test_ranked_hover_has_one_share_for_each_bar_with_its_own_value():
     assert list(zip(trace.y, trace.x, trace.customdata[:, 1])) == [("SQL", 3, 75.), ("Python", 1, 25.)]
     pd.testing.assert_frame_equal(frame, before)
 
-def test_market_section_transition_is_short_nonblocking_and_respects_reduced_motion():
+def test_result_loading_style_only_hides_content_during_initial_load():
     from src.design import JOB_MARKET_CSS
-    assert 'fow-section-cover 180ms ease-out both' in JOB_MARKET_CSS
-    assert 'fow-section-reveal 180ms steps(1,end) both' in JOB_MARKET_CSS
-    assert '.fow-section-transition[data-fow-cached="true"]' in JOB_MARKET_CSS
-    assert 'animation-duration: 100ms;' in JOB_MARKET_CSS
-    assert 'fow-loading[role="status"]' in JOB_MARKET_CSS
-    assert 'pointer-events: none; overflow: clip;' in JOB_MARKET_CSS
-    assert '@media (prefers-reduced-motion: reduce)' in JOB_MARKET_CSS
-    assert '.fow-section-transition { animation: none; visibility: hidden; }' in JOB_MARKET_CSS
+    assert '.st-key-research_results_content:has(.fow-loading[role="status"])' in JOB_MARKET_CSS
+    assert '.fow-section-transition' not in JOB_MARKET_CSS

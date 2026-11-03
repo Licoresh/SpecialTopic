@@ -198,7 +198,7 @@ def test_visible_page_rerun_does_not_create_another_loading_region(workspace, mo
     assert [(item.label, item.value) for item in app.metric] == before
 
 
-def test_reports_defer_auxiliary_reads_until_prepared(workspace, monkeypatch):
+def test_reports_preload_tables_and_reload_only_changed_revisions(workspace, monkeypatch):
     from contextlib import contextmanager
     import streamlit as st
     from src import ui
@@ -229,34 +229,25 @@ def test_reports_defer_auxiliary_reads_until_prepared(workspace, monkeypatch):
     monkeypatch.setattr(ui, "filtered_bundle", lambda: loaded("bundle", (tables, {})))
     monkeypatch.setattr(ui, "job_profile_tables", Mock(side_effect=AssertionError("Bundle already has job profiles")))
     monkeypatch.setattr(ui, "corrections", lambda: loaded("corrections", pd.DataFrame()))
-    monkeypatch.setattr(storage, "read_frame", lambda name: reads.append(name) or pd.DataFrame())
-    def render_cards(*args, prepared):
+    revisions = dict.fromkeys(ui.REPORT_AUXILIARY_TABLES, 1)
+    monkeypatch.setattr(storage, "frame_revisions", lambda names: revisions.copy())
+    monkeypatch.setattr(storage, "read_frame", lambda name: loaded(name, pd.DataFrame()))
+    def render_cards(tables, meta):
         assert not phase["loading"]
-        reads.append(f"render:{prepared}")
+        assert set(ui.REPORT_AUXILIARY_TABLES).issubset(tables)
     monkeypatch.setattr(ui, "report_deliverables", render_cards)
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run(timeout=30)
     assert not app.exception and not app.error
-    assert reads == ["freshness", "bundle", "corrections", "render:False"]
-    app.button(key="prepare_report_tables").click().run(timeout=30)
-    assert not app.exception and not app.error
-    assert set(ui.REPORT_AUXILIARY_TABLES).issubset(reads)
-    assert reads[-1] == "render:True"
-    before = [name for name in reads if name in ui.REPORT_AUXILIARY_TABLES]
+    assert reads == ["freshness", "bundle", "corrections", *ui.REPORT_AUXILIARY_TABLES]
+    reads.clear()
     app.run(timeout=30)
     assert not app.exception and not app.error
-    assert [name for name in reads if name in ui.REPORT_AUXILIARY_TABLES] == before
-    app.button(key="refresh_report_tables").click().run(timeout=30)
-    assert not app.exception and not app.error
-    assert len([name for name in reads if name in ui.REPORT_AUXILIARY_TABLES]) == 2 * len(before)
-    revision, _, extras = app.session_state["_fow_report_auxiliary"]
-    app.session_state["_fow_report_auxiliary"] = (revision, 0, extras)
+    assert reads == ["freshness", "bundle", "corrections"]
+    reads.clear()
+    revisions["usability"] += 1
     app.run(timeout=30)
     assert not app.exception and not app.error
-    assert reads[-1] == "render:False"
-    app.session_state["_fow_recent_actions"] = {}
-    app.button(key="prepare_report_tables").click().run(timeout=30)
-    assert not app.exception and not app.error
-    assert len([name for name in reads if name in ui.REPORT_AUXILIARY_TABLES]) == 3 * len(before)
+    assert reads == ["freshness", "bundle", "corrections", "usability"]
 
 
 def test_missing_results_remain_unmaterialized_until_successful_retry(workspace, monkeypatch):
@@ -586,13 +577,8 @@ def test_reports_do_not_generate_files_until_requested(workspace, monkeypatch):
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run()
     assert not app.exception
     assert len(app.get("download_button")) == 4
-    assert {button.label: button.disabled for button in app.get("download_button")} == {
-        "Download research_results.xlsx": True,
-        "Download report (.md)": True,
-        "Download summary (HTML)": True,
-        "Download metadata": False,
-    }
-    assert app.button(key="save_report_snapshot").disabled
+    assert all(not button.disabled for button in app.get("download_button"))
+    assert not app.button(key="save_report_snapshot").disabled
     assert excel.call_count == 0
 
 

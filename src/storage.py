@@ -51,6 +51,19 @@ def frame_revision(name):
     return (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
 
 
+def frame_revisions(names):
+    """Check a collection of report tables without requesting their payloads."""
+    from . import supabase_store as backend
+    if not backend.configured():
+        return {name: frame_revision(name) for name in names}
+    token = backend.get_token()
+    if not token:
+        raise backend.SupabaseError("Sign in to read the shared research workspace.")
+    keys = {name: _shared_key("frame", name) for name in names}
+    revisions = backend.state_versions(tuple(keys.values()), token)
+    return {name: revisions.get(key) for name, key in keys.items()}
+
+
 def _shared_key(kind, name, writing=False):
     """Publish evaluation bundles by switching metadata only after all writes succeed."""
     from . import supabase_store as backend

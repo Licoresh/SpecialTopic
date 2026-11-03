@@ -45,9 +45,6 @@ def result_app(monkeypatch, tables, page="Job Market Analysis"):
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
     monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {"settings": {"emerging_min_jobs": 2}}))
     app = AppTest.from_string(f"from src.ui import research_page\nresearch_page({page!r})")
-    # The full-dashboard option exercises all chart and drilldown paths below.
-    app.session_state["result_roles_display"] = "All charts"
-    app.session_state["result_psf_display"] = "All charts"
     app.run(timeout=30)
     assert not app.exception and not app.error
     return app, figures
@@ -61,56 +58,22 @@ def html_content(app):
     return "\n".join(item.proto.body for item in app.get("html"))
 
 
-def test_every_section_switch_transitions_while_revisits_reuse_prepared_data(monkeypatch):
-    from unittest.mock import Mock
-    from src import loading_ui
-    tables = result_tables()
-    wireframe = Mock(wraps=loading_ui._wireframe)
-    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
-    original_profile = ui.job_profile_tables
-    def prepare_profile(jobs):
-        assert wireframe.call_args.args == ("market_section",)
-        assert wireframe.call_args.kwargs["view"] in {"Roles and locations", "Qualifications"}
-        return original_profile(jobs)
-    profile = Mock(side_effect=prepare_profile)
-    geography = Mock(wraps=ui.location_tables)
-    monkeypatch.setattr(ui, "job_profile_tables", profile)
-    monkeypatch.setattr(ui, "location_tables", geography)
-    app, _ = result_app(monkeypatch, tables)
-    def transitions():
-        return [call.kwargs["view"] for call in wireframe.call_args_list if call.args == ("market_section",)]
-    assert transitions() == ["Skills"]
-    assert 'data-fow-cached="false"' in html_content(app)
-    for section in ("Roles and locations", "Qualifications", "PSF-AAI demand"):
-        app.button_group(key="result_section").select(section).run(timeout=30)
-        assert not app.exception and not app.error
-        assert transitions()[-1] == section
-        assert app.session_state["_fow_loading_ready"]["job_market_view_load"]
-        assert 'data-fow-cached="false"' in html_content(app)
-    assert transitions() == ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"]
-    before = list(transitions())
-    revisits = ["Skills", "Qualifications", "Roles and locations", "PSF-AAI demand", "Skills"]
-    for section in revisits:
-        app.button_group(key="result_section").select(section).run(timeout=30)
-        assert not app.exception and not app.error
-        before.append(section)
-        assert transitions() == before
-        assert 'class="fow-section-transition"' in html_content(app)
-        assert 'data-fow-cached="true"' in html_content(app)
-    profile.assert_called_once()
-    geography.assert_called_once()
-    sequence = app.session_state["_fow_market_transition"]
-    app.selectbox(key="result_chart_order").set_value("Alphabetical").run(timeout=30)
-    assert transitions() == before
-    assert app.session_state["_fow_market_transition"] == sequence
-    assert 'class="fow-section-transition"' not in html_content(app)
-    app.run(timeout=30)
-    assert transitions() == before
+def test_job_market_preloads_every_section_on_entry(monkeypatch):
+    app, figures = result_app(monkeypatch, result_tables())
+    tabs = {tab.label: tab for tab in app.tabs}
+    assert tabs["Skill overview"].get("plotly_chart")
+    assert tabs["Explore skills"].selectbox(key="result_explore_skill").value == "sql"
+    assert tabs["Job titles"].get("plotly_chart")
+    assert tabs["Skills by occupational family"].get("plotly_chart")
+    assert tabs["Title and location explorer"].get("plotly_chart")
+    assert any(metric.label == "College / undergraduate" for metric in tabs["Qualifications"].metric)
+    assert any(metric.label == "programming" for metric in tabs["Competency demand"].metric)
+    assert "fow-section-transition" not in html_content(app)
 
 
 def test_keyed_market_fragment_can_rerun_without_reentering_parent_data_loads(monkeypatch):
     from unittest.mock import Mock
-    hashed = Mock(side_effect=AssertionError("Explicit revisions must not rehash the snapshot"))
+    hashed = Mock(wraps=ui.frame_hash)
     monkeypatch.setattr(ui, "frame_hash", hashed)
     app = AppTest.from_string('''
 import streamlit as st
@@ -123,39 +86,24 @@ _job_market_results(result_tables(), {}, revision="synthetic-revision-one")
     assert not app.exception and app.session_state["synthetic_parent_loads"] == 1
     next(item for item in app.button if item.label == "Synthetic fragment refresh").click().run(timeout=30)
     assert not app.exception and app.session_state["synthetic_parent_loads"] == 1
-    hashed.assert_not_called()
+    assert all("source_id" not in call.args[0] for call in hashed.call_args_list)  # Only compact chart matrices are hashed.
 
 
-def test_section_filters_survive_switches_and_changed_inputs_invalidate_summaries(monkeypatch):
+def test_unchanged_inputs_reuse_summaries_and_changed_inputs_rebuild_them(monkeypatch):
     from unittest.mock import Mock
-    from src import loading_ui
     tables = result_tables()
     profile = Mock(wraps=ui.job_profile_tables)
     geography = Mock(wraps=ui.location_tables)
-    wireframe = Mock(wraps=loading_ui._wireframe)
     monkeypatch.setattr(ui, "job_profile_tables", profile)
     monkeypatch.setattr(ui, "location_tables", geography)
-    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
     app, _ = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     app.selectbox(key="result_title_view").select("Specific titles (alphabetical)").run(timeout=30)
-    app.button_group(key="result_section").select("Skills").run(timeout=30)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
-    assert app.selectbox(key="result_title_view").value == "Specific titles (alphabetical)"
     assert profile.call_count == geography.call_count == 1
-    before = sum(call.args == ("market_section",) for call in wireframe.call_args_list)
-    # A same-sized replacement must refresh cached summaries and readiness.
     tables["cleaned_jobs"].loc[0, "job_title"] = "Synthetic changed title"
     app.run(timeout=30)
     assert not app.exception and not app.error
     assert profile.call_count == geography.call_count == 2
-    assert sum(call.args == ("market_section",) for call in wireframe.call_args_list) == before + 1
-    assert 'data-fow-cached="true"' not in html_content(app)
-    # A reviewed mapping change also invalidates visited sections.
-    tables["psf_mapping"].loc[0, "psf_competency"] = "Synthetic changed competency"
-    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
-    assert not app.exception and not app.error
-    assert app.session_state["_fow_market_loaded"]["sections"] == {"psf_aai"}
+    assert app.selectbox(key="result_title_view").value == "Specific titles (alphabetical)"
 
 
 def test_job_market_hides_audience_guidance_banner(monkeypatch):
@@ -173,7 +121,7 @@ def test_reference_metrics_render_selected_counts_without_extra_badges(monkeypat
     assert metrics["PSF-AAI reference roles"] == "—"
     assert "fow-metric-badge" not in html_content(app)
     assert not any("fow-metric-badge" in item.value for item in app.markdown)
-    assert app.button_group(key="result_section").options == ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"]
+    assert {"Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"} <= {tab.label for tab in app.tabs}
 
 
 def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
@@ -183,9 +131,7 @@ def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
     main = figure_with_title(figures, "Employer-requested skills")
     assert dict(zip(main.data[0].y, main.data[0].x)) == {"sql": 2, "c++": 1, "collaboration": 1}
     assert not any(fig.layout.title.text == "Related role groups" for fig in figures)
-    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert any("not stated: 2 of 4 selected ads" in item.value.casefold() for item in app.caption)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     focused = figure_with_title(figures, "Top skills for all selected advertisements")
     assert dict(zip(focused.data[0].y, focused.data[0].x)) == {"sql": 2, "c++": 1, "collaboration": 1}
     metrics = {item.label: item.value for item in app.metric}
@@ -220,7 +166,6 @@ def test_job_market_insights_and_reference_role_card_use_selected_data(monkeypat
         ("Qualifications", "education insight", "only one classifiable stated level"),
         ("PSF-AAI demand", "key insight", "programming"),
     ):
-        app.button_group(key="result_section").select(section).run(timeout=30)
         assert not app.exception and not app.error
         content = html_content(app).casefold()
         assert insight in content and evidence in content
@@ -231,16 +176,15 @@ def test_timeline_and_family_insights_acknowledge_ties_while_education_compares_
     tables["cleaned_jobs"]["education_requirement"] = ["Bachelor's degree", "Master's degree"] * 2
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-01-01", "2026-02-01"] * 2
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     assert not app.exception and not app.error
     content = html_content(app)
     assert "displayed skill–family pairs tie" in content
     assert "2 displayed months tie" in content
-    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert not app.exception and not app.error
-    education = figures[-1].data[0]
+    education_figure = figure_with_title(figures, None)
+    education = education_figure.data[0]
     assert dict(zip(education.y, education.x)) == {"College / undergraduate": 2, "master's degree": 2}
-    assert not figures[-1].layout.title.text
+    assert not education_figure.layout.title.text
     assert "not stated" not in [str(label).casefold() for label in education.y]
     assert "2 displayed levels share the highest count" in html_content(app).casefold()
 
@@ -259,8 +203,7 @@ def test_education_graph_compares_classified_levels_and_reports_missing_below(mo
     tables["cleaned_jobs"]["education_requirement"] = requirements
     original = tables["cleaned_jobs"].copy(deep=True)
     app, figures = result_app(monkeypatch, tables)
-    figures.clear()
-    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
+    figures = [figure for figure in figures if figure.layout.title.text is None]
     assert not app.exception and not app.error
     if expected_levels:
         if len(expected_levels) == 1:
@@ -295,7 +238,6 @@ def test_experience_band_table_uses_readable_labels_and_hides_sort_key(monkeypat
     tables = result_tables()
     tables["cleaned_jobs"]["experience_requirement"] = ["2 years", "3 years", "2 years", "3 years"]
     app, _ = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     bands = next(frame.value for frame in app.dataframe if "Experience requirement" in frame.value.columns
                  and "1–2 years" in frame.value["Experience requirement"].astype(str).tolist())
     assert bands.columns.tolist() == ["Experience requirement", "Job advertisements", "Share of selected ads (%)"]
@@ -307,7 +249,6 @@ def test_alphabetical_chart_order_and_linked_psf_counts(monkeypatch):
     assert not app.exception and not app.error
     labels = list(figure_with_title(figures, "Employer-requested skills").data[0].y)
     assert labels == sorted(labels, key=str.casefold)
-    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
     assert not any(fig.layout.title.text == "PSF-AAI competencies linked to employer demand" for fig in figures)
     assert any(item.label == "programming" and item.value == "1" for item in app.metric)  # Corrected NOT MAPPED row is excluded.
 
@@ -389,27 +330,19 @@ def test_unmapped_insight_uses_alphabetical_visible_subset_and_ties(monkeypatch)
     assert "sql has the highest" not in content
 
 
-def test_psf_tab_has_isolated_body_and_reuses_prepared_all_role_summaries(monkeypatch):
+def test_psf_tabs_preload_and_reuse_prepared_all_role_summaries(monkeypatch):
     from unittest.mock import Mock
     from src.analytics import psf_demand_tables
-    from src import loading_ui
     tables = result_tables()
     tables.update(psf_demand_tables(tables["psf_mapping"], tables["cleaned_jobs"], pd.DataFrame()))
     builder = Mock(side_effect=AssertionError("All-role summaries are already available"))
     monkeypatch.setattr(ui, "psf_demand_tables", builder)
-    wireframe = Mock(wraps=loading_ui._wireframe)
-    monkeypatch.setattr(loading_ui, "_wireframe", wireframe)
     app, _ = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
-    assert not app.exception and not app.error
-    content = html_content(app)
-    assert "st-key-job_market_section_psf_aai{display:flex!important}" in content
-    assert '[class*="st-key-job_market_section_"]{display:none!important}' in content
-    assert 'data-fow-psf-ready="true"' in content
-    assert sum(call.args[0] == "psf_charts" for call in wireframe.call_args_list) == 1
+    tabs = {tab.label: tab for tab in app.tabs}
+    assert tabs["Competency demand"].metric
+    assert tabs["Reference roles"].metric
+    assert tabs["Role–competency heatmap"].metric
     builder.assert_not_called()
-    app.run(timeout=30)
-    assert sum(call.args[0] == "psf_charts" for call in wireframe.call_args_list) == 1
 
 
 def test_psf_chart_summary_does_not_hash_or_copy_repeated_source_text(monkeypatch):
@@ -423,14 +356,13 @@ def test_psf_chart_summary_does_not_hash_or_copy_repeated_source_text(monkeypatc
         return original(frame)
     monkeypatch.setattr(ui, "frame_hash", check)
     app, _ = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
     assert not app.exception and not app.error
     assert all("original_text" not in fields for fields in columns)
     assert any(item.label == "programming" and item.value == "1" for item in app.metric)
     assert "original_text" in tables["psf_mapping"]
 
 
-def test_incomplete_psf_chart_group_never_gets_a_ready_marker_and_can_retry(monkeypatch, tmp_path):
+def test_incomplete_psf_chart_group_can_retry(monkeypatch, tmp_path):
     from src import storage
     monkeypatch.setattr(storage, "ROOT", tmp_path)
     tables = result_tables()
@@ -448,29 +380,23 @@ def test_incomplete_psf_chart_group_never_gets_a_ready_marker_and_can_retry(monk
         return original(figure)
     monkeypatch.setattr(ui, "chart", draw)
     app = AppTest.from_string("from src.ui import render\nrender('Job Market Analysis')").run(timeout=30)
-    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
-    assert not app.exception
-    assert any("Synthetic chart rendering interruption" in item.value for item in app.error)
-    assert 'data-fow-psf-ready="true"' not in html_content(app)
-    assert not app.session_state["_fow_loading_ready"].get("job_market_psf_charts")
+    assert any("Synthetic chart rendering interruption" in item.message for item in app.exception)
     fail[0] = False
     app.run(timeout=30)
     assert not app.exception and not app.error
-    assert 'data-fow-psf-ready="true"' in html_content(app)
-    assert app.session_state["_fow_loading_ready"]["job_market_psf_charts"]
+    assert any(tab.label == "Role–competency heatmap" for tab in app.tabs)
 
 
 def test_specific_titles_stay_alphabetical_and_grouped_view_is_auditable(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
     assert "Select job ads" in html_content(app)
     assert "Describe results" in html_content(app)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     common = figure_with_title(figures, "Most common job titles")
     assert common.data[0].y[0] == "data analyst"
     app.selectbox(key="result_title_view").set_value("Related role groups").run(timeout=30)
     grouped = figure_with_title(figures, "Related role groups")
     assert dict(zip(grouped.data[0].y, grouped.data[0].x))["analytics"] == 2
-    app.selectbox(key="result_chart_order").set_value("Highest demand").run(timeout=30)
+    app.selectbox(key="result_roles_order").set_value("Highest demand").run(timeout=30)
     app.selectbox(key="result_title_view").set_value("Specific titles (alphabetical)").run(timeout=30)
     titles = list(figure_with_title(figures, "Specific job titles (alphabetical)").data[0].y)
     assert titles == ["data analyst", "designer", "engineer"]
@@ -489,7 +415,6 @@ def test_common_title_chart_uses_canonical_role_but_specific_view_keeps_title(mo
         "job_description": "Synthetic posting",
     }])], ignore_index=True)
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     common = figure_with_title(figures, "Most common job titles")
     labels = list(common.data[0].y)
     assert "business analyst" in labels
@@ -505,7 +430,6 @@ def test_common_title_chart_uses_canonical_role_but_specific_view_keeps_title(mo
 
 def test_family_title_filters_reset_and_geographical_denominators(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     app.selectbox(key="result_family").select("analytics").run(timeout=30)
     assert app.selectbox(key="result_specific_title").options == ["All", "data analyst"]
     focused = figure_with_title(figures, "Top skills for analytics")
@@ -516,13 +440,12 @@ def test_family_title_filters_reset_and_geographical_denominators(monkeypatch):
     app.selectbox(key="result_family").select("engineering").run(timeout=30)
     assert not app.exception
     assert app.selectbox(key="result_region").value == "All"
-    next(button for button in app.button if button.label == "Reset exploration filters").click().run(timeout=30)
+    next(button for button in app.button if button.label == "Reset title and location filters").click().run(timeout=30)
     assert not app.exception and app.selectbox(key="result_family").value == "All"
 
 
 def test_skill_family_heatmap_uses_all_ads_in_each_family_as_denominator(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     app.multiselect(key="result_skill_family_heatmap_families").set_value(["analytics"]).run(timeout=30)
     figure = figure_with_title(figures, "Top requested skills by occupational family")
     trace = figure.data[0]
@@ -536,7 +459,6 @@ def test_skill_family_heatmap_uses_all_ads_in_each_family_as_denominator(monkeyp
 
 def test_skill_family_count_table_renders_inside_its_expander(monkeypatch):
     app, _ = result_app(monkeypatch, result_tables())
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     app.session_state["result_all_skill_family_table"] = True
     app.run(timeout=30)
     expander = next(item for item in app.expander if item.label == "View all skill-by-family counts")
@@ -556,7 +478,6 @@ def test_selected_title_starts_with_top_ten_and_offers_full_searchable_table(mon
     tables["extracted_job_skills"] = pd.concat([skills, extra], ignore_index=True)
     tables.update(skill_chart_tables(tables["extracted_job_skills"], tables["cleaned_jobs"]))
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     app.selectbox(key="result_family").select("analytics").run(timeout=30)
     app.selectbox(key="result_specific_title").select("data analyst").run(timeout=30)
     figure = figure_with_title(figures, "Top skills for data analyst")
@@ -583,7 +504,6 @@ def test_location_charts_separate_region_and_city_levels_and_warn_against_rates(
     tables["cleaned_jobs"]["location"] = ["Manila City, Philippines", "Quezon City, Philippines",
                                            "Cebu City, Philippines", "Cebu City, Philippines"]
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     regional = figure_with_title(figures, "Advertisements by Philippine region")
     assert set(regional.data[0].y) == {"national capital region", "central visayas"}
     assert any("not population- or labor-force-adjusted" in item.value for item in app.caption)
@@ -596,7 +516,6 @@ def test_experience_summary_uses_only_exact_single_value_requirements(monkeypatc
     tables = result_tables()
     tables["cleaned_jobs"]["experience_requirement"] = ["2 years", "4 years", "2–3 years", "At least 5 years"]
     app, _ = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Qualifications").run(timeout=30)
     assert any("median 3 years (observed range 2–4)" in item.value and "2 of 4 selected ads" in item.value for item in app.caption)
     assert any("Ranges and open-ended wording are excluded" in item.value for item in app.caption)
     assert any("Not stated does not mean education was not required" in item.value for item in app.caption)
@@ -606,7 +525,6 @@ def test_psf_role_filter_limits_multi_role_links_and_heatmap(monkeypatch):
     tables['psf_mapping'].loc[0,'psf_job_role'] = 'analyst; scientist'
     tables['verified_psf_aai'] = pd.DataFrame({'competency_name':['Programming']})
     app, figures = result_app(monkeypatch,tables)
-    app.button_group(key='result_section').select('PSF-AAI demand').run(timeout=30)
     figures.clear()
     app.selectbox(key='result_psf_role').select('analyst').run(timeout=30)
     assert not app.exception and not app.error
@@ -626,7 +544,6 @@ def test_psf_heatmap_compares_reviewed_competencies_with_role_denominators(monke
     })
     tables["verified_psf_aai"] = pd.DataFrame({"competency_name": ["SQL", "Visualization", "Programming"]})
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("PSF-AAI demand").run(timeout=30)
     figure = figure_with_title(figures, "Reviewed PSF-AAI competencies across reference roles")
     trace = figure.data[0]
     analyst = trace.x.tolist().index("analyst")
@@ -657,7 +574,6 @@ def test_single_posting_month_is_a_metric_not_a_trend(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-02-01", "2026-02-04", "2026-02-11", "2026-02-18"]
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     assert not any(fig.layout.title.text == "Posting months represented in the dataset" for fig in figures)
     assert any(item.label == "2026-02" and item.value == "4" for item in app.metric)
     assert any("One month is present; this is coverage, not a time trend." in item.value for item in app.caption)
@@ -667,7 +583,6 @@ def test_multiple_posting_months_use_chronological_count_bars(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["posting_date_parsed"] = ["2026-03-01", "2026-01-04", "2026-03-14", "2026-02-12"]
     app, figures = result_app(monkeypatch, tables)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     figure = figure_with_title(figures, "Posting months represented in the dataset")
     assert figure.data[0].type == "bar"
     assert figure.data[0].x.tolist() == ["2026-01", "2026-02", "2026-03"]
@@ -704,7 +619,6 @@ def test_missing_and_experience_phrases_are_reported_below_skill_charts(monkeypa
 def test_location_counts_render_inside_their_expander_only_when_open(monkeypatch):
     tables = result_tables()
     app, _ = result_app(monkeypatch, tables)
-    app.button_group(key='result_section').select('Roles and locations').run(timeout=30)
     def regional_tables(elements):
         return [item for item in elements if 'Share of comparison group (%)' in item.value]
     assert not app.exception

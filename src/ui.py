@@ -1867,20 +1867,16 @@ def analysis_workflow():
             '<h2>Analysis Pipeline</h2><ol>' + cards + '</ol></section>')
 
 
-def result_chart_options(*, include_export=False):
-    with st.container(horizontal=True, gap="medium", vertical_alignment="bottom", key="result_chart_controls"):
-        with st.container(horizontal=True, key="result_chart_selectors"):
-            order = st.selectbox("Chart order", ["Alphabetical", "Highest demand", "Lowest demand"], index=1, key="result_chart_order")
-            limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key="result_chart_limit")
-        with st.container(key="result_chart_note"):
+def result_chart_options(*, key_prefix="result_chart"):
+    with st.container(horizontal=True, gap="medium", vertical_alignment="bottom", key=f"result_chart_controls_{key_prefix}"):
+        with st.container(horizontal=True, key=f"result_chart_selectors_{key_prefix}"):
+            order = st.selectbox("Chart order", ["Alphabetical", "Highest demand", "Lowest demand"], index=1, key=f"{key_prefix}_order")
+            limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key=f"{key_prefix}_limit")
+        with st.container(key=f"result_chart_note_{key_prefix}"):
             st.caption(f"Up to {limit} aggregated categories per chart. Full evidence tables are paginated and exportable. " +
                        ("Darker bars mark the highest count, including ties." if order == "Highest demand" else
                         "Darker bars mark the lowest displayed count, including ties." if order == "Lowest demand" else
                         "Alphabetical order supports label lookup, rather than demand ranking."))
-        if include_export:
-            with st.container(key="result_chart_export"):
-                if action_button("Export results", icon=":material/download:", key="results_export", type="primary"):
-                    st.switch_page("pages/14_Reports.py")
     return order, limit
 
 
@@ -2132,7 +2128,7 @@ def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row
                 detail = f"{share:.1f}% of {total:,} {unit} in this {row_group_label}. Only one cell is present, so there is no category comparison."
         result_single_metric(title, label, matrix.iat[0, 0], count_label,
                              detail,
-                             key="result_single_heatmap")
+                             key=f"result_single_heatmap_{digest([title])}")
     else:
         key = digest([VERSION, frame_hash(matrix), matrix.index.name, matrix.columns.name, title,
                       frame_hash(pd.DataFrame(share_matrix)) if share_matrix is not None else None,
@@ -2196,8 +2192,6 @@ def _job_market_results(tables, meta, revision=None):
     try:
         _job_market_content(tables, meta, revision)
     except (ValueError, OSError, KeyError, TypeError, supabase_store.SupabaseError) as exc:
-        loaded = st.session_state.get("_fow_market_loaded", {})
-        loaded.get("sections", set()).discard(st.session_state.get("_fow_market_active_section"))
         st.error(str(exc))
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")
 
@@ -2210,17 +2204,6 @@ def _job_market_content(tables, meta, revision=None):
             "cleaned_jobs", "extracted_job_skills", "psf_mapping", "psf_framework_order", "verified_psf_aai"
         ) if name in tables
     }])
-    loaded = st.session_state.get("_fow_market_loaded", {})
-    if loaded.get("revision") != revision:
-        loaded = {"revision": revision, "sections": set()}
-        st.session_state["_fow_market_loaded"] = loaded
-        st.session_state.setdefault("_fow_loading_ready", {}).pop("job_market_psf_charts", None)
-    # Keep hidden section controls out of Streamlit's widget-cleanup cycle.
-    for key in ("result_roles_display", "result_psf_display", "result_title_view", "result_family", "result_specific_title", "result_region", "result_city",
-                "result_skill_family_heatmap_families", "result_psf_role",
-                "result_competency_heatmap_roles", "result_competency_heatmap_competencies"):
-        if key in st.session_state:
-            st.session_state[key] = st.session_state[key]
     jobs = tables["cleaned_jobs"]
     chart_keys = {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review", "chart_skill_family_demand", "chart_family_ad_counts"}
     views = (tables if chart_keys.issubset(tables) else _session_cached_value(
@@ -2245,516 +2228,543 @@ def _job_market_content(tables, meta, revision=None):
         for index, (label, value, icon) in enumerate(metrics, 1):
             with st.container(border=True, key=f"result_metric_{index}"):
                 st.metric(label, f"{value:,}" if isinstance(value, int) else value, icon=f":material/{icon}:")
-    order, limit = result_chart_options(include_export=True)
-
-    def plot(frame, label, value, title):
-        return result_count_chart(frame, label, value, title, order=order, limit=limit)
-
     def skill_counts(rows, total):
         out = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
         out["job_ads_pct"] = out.job_ads / total * 100 if total else float("nan")
         return out
 
-    st.subheader("Results Section", icon=":material/bar_chart:")
-    with st.container(key="result_sections"):
-        section = st.segmented_control("Results section", ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"],
-                                       default="Skills", key="result_section", width="stretch", label_visibility="collapsed")
-    section_key = {"Skills": "skills", "Roles and locations": "roles", "Qualifications": "qualifications",
-                   "PSF-AAI demand": "psf_aai"}.get(section, "none")
-    changed_section = st.session_state.get("_fow_market_active_section") != section_key
-    st.session_state["_fow_market_active_section"] = section_key
-    if changed_section:
-        st.session_state["_fow_market_transition"] = st.session_state.get("_fow_market_transition", 0) + 1
-    ready = st.session_state.setdefault("_fow_loading_ready", {})
-    if section_key in loaded["sections"]:
-        ready["job_market_view_load"] = True
-    else:
-        ready.pop("job_market_view_load", None)
-    st.html('<style>[class*="st-key-job_market_section_"]{display:none!important}'
-            f'.st-key-job_market_section_{section_key}' + '{display:flex!important}</style>')
-    with loading_content("job_market_view_load", "market_section", view=section, rows=limit, defer=True,
-                         transition=st.session_state["_fow_market_transition"] if changed_section else None) as section_content:
-        with section_content(), st.container(key=f"job_market_section_{section_key}"):
-            if section == "Skills":
-                featured_result_chart(
-                    "employer_skill", "employer_demand_count", "Top requested skills", denominator,
-                    lambda: plot(demand, "employer_skill", "employer_demand_count", "Employer-requested skills"),
-                    key="skills",
-                )
-                withheld_reasons = unclear.review_reason.fillna("") if not unclear.empty else pd.Series(dtype=str)
-                def ads_for_reason(prefixes):
-                    if unclear.empty:
-                        return 0
-                    return int(unclear.loc[withheld_reasons.str.startswith(tuple(prefixes)), "source_id"].nunique())
-                not_reported_ads = ads_for_reason(("Not reported (missing placeholder)",))
-                experience_phrase_ads = ads_for_reason(("Experience-duration requirement", "Unclear year-duration phrase", "No-experience requirement"))
-                irrelevant_ads = ads_for_reason(("Researcher or classifier marked",))
-                chart_summary = meta.get("chart_presentation", {})
-                no_chartable_ads = int(chart_summary.get("ads_without_chartable_skill", max(0, denominator - skills.source_id.nunique()))) if denominator else 0
-                st.caption(f"Missing / not-mentioned placeholders: {not_reported_ads:,} ads. No chartable skill evidence, regardless of PSF status: {no_chartable_ads:,} of {denominator:,} ads.")
-                st.caption(f"Experience/year wording: {experience_phrase_ads:,} ads; excluded from skills and PSF-AAI demand. Irrelevant labels: {irrelevant_ads:,} ads; excluded.")
-                st.caption(f"One advertisement counts once per grouped skill, including equivalent wording. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
-                st.caption("Unmapped but skill-like phrases remain in employer demand; their PSF-AAI correspondence is reviewed separately.")
-                for kind, title in (("Technical", "Technical skills"), ("Soft / Enabling", "Enabling and interpersonal skills")):
-                    rows = skills[skills.get("skill_type", pd.Series("", index=skills.index)).eq(kind)]
-                    skill_heading = "Top technical skills" if kind == "Technical" else "Top enabling skills"
-                    counts = skill_counts(rows, denominator)
-                    featured_result_chart("skill_label", "job_ads", skill_heading, denominator,
-                                          lambda: plot(counts, "skill_label", "job_ads", title),
-                                          key=f"{kind.casefold().replace(' ', '_')}_skills")
-                if not skills.empty:
-                    categories = skills.copy()
-                    categories["category_group"] = categories.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
-                    if "category_conflict" in categories:
-                        categories.loc[categories.category_conflict.eq(True), "category_group"] = "category needs review"
-                    counts = categories.groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
-                    featured_result_chart("category_group", "job_ads", "Most common broad area", denominator,
-                                          lambda: plot(counts, "category_group", "job_ads", "Broad competency areas"),
-                                          key="broad_competency_areas")
-                    st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
-                with st.expander("How technical and enabling categories are determined"):
-                    st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
-                    st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
-                    st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
-                evidence_tables(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)", {"": unclear},
-                                key="result_unclear_evidence", note="Missing values, experience wording, vague-only descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. Original phrases and saved labels stay here for review; specific skill mentions remain counted.")
-                evidence_tables("Skill-demand table", {"": demand}, key="result_skill_demand_evidence")
-                evidence_tables("Skill wording groups and original phrases", {"": views.get("chart_skill_variants", pd.DataFrame())},
-                                key="job_market_wording_groups", note="Equivalent wording shares one chart label. Each advertisement counts once per label; variant counts must not be added. Original wording and saved labels remain unchanged.")
+    @st.fragment
+    def skill_overview():
+        def summarize_types():
+            kinds = skills.get("skill_type", pd.Series("", index=skills.index))
+            typed = {kind: skill_counts(skills[kinds.eq(kind)], denominator)
+                     for kind in ("Technical", "Soft / Enabling")}
+            groups = skills.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
+            if "category_conflict" in skills:
+                groups = groups.mask(skills.category_conflict.eq(True), "category needs review")
+            broad = (skills.assign(category_group=groups).groupby("category_group")
+                     .source_id.nunique().rename("job_ads").reset_index())
+            return typed, broad
 
-            if section == "Roles and locations":
-                role_view = st.selectbox("Explore roles and locations",
-                    ["Job titles", "Skills by occupational family", "Title and location explorer", "All charts"],
-                    key="result_roles_display")
-                if role_view != "Skills by occupational family":
-                    profile = (tables if "job_title_source_evidence" in tables else _session_cached_value(
-                        "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
-                @st.fragment
-                def title_overview():
-                    with st.container(border=True, key="job_market_title_overview"):
-                        st.subheader("Job-title overview", icon=":material/work:")
-                        title_view = st.selectbox("Job-title overview", ["Most common job titles", "Related role groups", "Specific titles (alphabetical)"], key="result_title_view", label_visibility="collapsed")
-                        grouped = title_view == "Related role groups"
-                        common_titles = title_view == "Most common job titles"
-                        alphabetical_titles = title_view == "Specific titles (alphabetical)"
-                        title_field = "job_role_group" if grouped else "common_job_title" if common_titles else "job_title"
-                        title_counts = (profile["job_role_group_counts"] if grouped else
-                                        profile["common_job_title_counts"] if common_titles else profile["job_title_counts"])
-                        if not title_counts.empty:
-                            chart_title = "Related role groups" if grouped else ("Specific job titles (alphabetical)" if alphabetical_titles else "Most common job titles")
-                            title_order = "Alphabetical" if alphabetical_titles else order
-                            featured_result_chart(
-                                title_field, "job_ads", "Top occupational titles", denominator,
-                                lambda: result_count_chart(title_counts, title_field, "job_ads", chart_title,
-                                                           order=title_order, limit=limit),
-                                key="titles",
-                            )
-                        st.caption("Most-common titles consolidate clear seniority and branch/specialty variants when one recognized occupation is stated. Composite and unrecognized titles stay distinct. Related role groups use source families; specific titles preserve exact normalized wording. Counts are distinct ads, and original titles remain auditable.")
-                        evidence_tables("Inspect common-title normalization", {"": profile["common_job_title_evidence"]},
-                                        key="result_title_normalization")
-                        evidence_tables("Inspect source-family role grouping", {
-                            "Source-title evidence": profile["job_title_group_evidence"], "Family counts": profile["job_title_family_counts"]},
-                            key="result_title_family_evidence")
-                if role_view in {"Job titles", "All charts"}:
-                    title_overview()
+        typed, broad = _session_cached_value("_fow_market_skill_types", revision, summarize_types,
+                                              ttl=None, max_entries=1, clone=lambda value: value)
+        order, limit = result_chart_options()
 
-                def reset_exploration():
-                    for key in ("result_family", "result_specific_title", "result_region", "result_city"):
-                        st.session_state[key] = "All"
-                    st.session_state.pop("result_skill_family_heatmap_families", None)
-                st.button("Reset exploration filters", on_click=reset_exploration, icon=":material/restart_alt:")
+        def plot(frame, label, value, title):
+            return result_count_chart(frame, label, value, title, order=order, limit=limit)
 
-                @st.fragment
-                def family_comparison():
-                    with st.container(border=True, key="job_market_family_section"):
-                        st.subheader("How do requested skills vary by occupational family?", icon=":material/layers:")
-                        family_demand = views.get("chart_skill_family_demand", pd.DataFrame())
-                        family_ads = views.get("chart_family_ad_counts", pd.DataFrame())
-                        family_options = family_ads.loc[family_ads.job_family.ne("not stated"), "job_family"].tolist() if not family_ads.empty else []
-                        top_skills = ordered_result_table(demand, "employer_skill", order, "employer_demand_count").head(min(limit, 15)).employer_skill.tolist()
-                        if family_options and top_skills:
-                            family_sizes = family_ads.set_index("job_family").family_ads
-                            heatmap_families_default = sorted(family_options, key=lambda name: (-family_sizes.get(name, 0), name))[:8]
-                            family_key = "result_skill_family_heatmap_families"
-                            family_selection = [name for name in st.session_state.get(family_key, heatmap_families_default) if name in family_options]
-                            if family_selection != st.session_state.get(family_key, heatmap_families_default):
-                                st.session_state[family_key] = family_selection
-                            chosen_families = st.multiselect("Occupational families in the heatmap", family_options,
-                                                             default=heatmap_families_default, key=family_key)
-                            selected_family_demand = family_demand[
-                                family_demand.job_family.isin(chosen_families) & family_demand.skill_label.isin(top_skills)]
-                            if selected_family_demand.empty:
-                                st.info("No chartable skill evidence is available for the selected occupational families.")
-                            else:
-                                matrix = selected_family_demand.pivot(index="job_family", columns="skill_label", values="job_ads")
-                                matrix = matrix.reindex(index=chosen_families, columns=top_skills).fillna(0).astype(int)
-                                row_denominators = family_sizes.reindex(matrix.index).fillna(0).astype(int)
-                                shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
-                                cells = selected_family_demand.copy()
-                                cells["family_ads"] = cells.job_family.map(family_sizes).fillna(0).astype(int)
-                                cells["share"] = cells.job_ads.div(cells.family_ads.where(cells.family_ads.gt(0), 1)).mul(100)
-                                cells = cells.sort_values(["share", "job_ads", "skill_label", "job_family"],
-                                                          ascending=[False, False, True, True], kind="stable")
-                                best = cells.iloc[0]
-                                tied = cells[cells.share.eq(best.share)]
-                                family_summary = (f"{len(tied):,} displayed skill–family pairs tie for the highest within-family share ({best.share:.1f}%)."
-                                                  if len(tied) > 1 else
-                                                  f"{best.skill_label} has the highest displayed within-family share in {best.job_family}: "
-                                                  f"{int(best.job_ads):,} of {int(best.family_ads):,} ads ({best.share:.1f}%).")
-                                family_rows = [(f"{row.skill_label} · {row.job_family}", row.job_ads)
-                                               for row in cells.head(3).itertuples()]
-                                featured_visual_chart(
-                                    lambda: result_heatmap(matrix, "Least frequent requested skills by occupational family" if order == "Lowest demand" else "Top requested skills by occupational family",
-                                                            count_label="Job advertisements", share_matrix=shares,
-                                                            row_denominators=row_denominators, share_label="Share of family ads",
-                                                            denominator_label="Advertisements in family",
-                                                            row_group_label="occupational family", transpose=True),
-                                    family_summary, family_rows, key="family_heatmap", insight_title="Heatmap Insight",
-                                    list_title="Top Skill × Family",
-                                )
-                            missing_family_ads = int(family_ads.loc[family_ads.job_family.eq("not stated"), "family_ads"].sum())
-                            if missing_family_ads:
-                                st.caption(f"Occupational family not stated or classifiable: {missing_family_ads:,} ads; excluded from this comparison.")
-                            st.caption("Color compares the share of advertisements in each family that request a skill. Denominators include ads with no chartable skill; skill categories overlap, so row percentages can exceed 100% in total. Hover for counts and family size.")
-                            evidence_tables("View all skill-by-family counts", {"": family_demand.rename(columns={
-                                "job_family": "Occupational family", "skill_label": "Skill", "job_ads": "Job advertisements",
-                                "family_ads": "Family advertisements", "job_ads_pct": "Share of family ads (%)"})},
-                                key="result_all_skill_family_table")
-                        elif family_options:
-                            st.info("No chartable skill evidence is available for the selected advertisements.")
-                        else:
-                            st.info("No classifiable occupational families are available for the skill comparison.")
-                if role_view in {"Skills by occupational family", "All charts"}:
-                    family_comparison()
+        featured_result_chart(
+            "employer_skill", "employer_demand_count", "Top requested skills", denominator,
+            lambda: plot(demand, "employer_skill", "employer_demand_count", "Employer-requested skills"),
+            key="skills",
+        )
+        withheld_reasons = unclear.review_reason.fillna("") if not unclear.empty else pd.Series(dtype=str)
+        def ads_for_reason(prefixes):
+            if unclear.empty:
+                return 0
+            return int(unclear.loc[withheld_reasons.str.startswith(tuple(prefixes)), "source_id"].nunique())
+        not_reported_ads = ads_for_reason(("Not reported (missing placeholder)",))
+        experience_phrase_ads = ads_for_reason(("Experience-duration requirement", "Unclear year-duration phrase", "No-experience requirement"))
+        irrelevant_ads = ads_for_reason(("Researcher or classifier marked",))
+        chart_summary = meta.get("chart_presentation", {})
+        no_chartable_ads = int(chart_summary.get("ads_without_chartable_skill", max(0, denominator - skills.source_id.nunique()))) if denominator else 0
+        st.caption(f"Missing / not-mentioned placeholders: {not_reported_ads:,} ads. No chartable skill evidence, regardless of PSF status: {no_chartable_ads:,} of {denominator:,} ads.")
+        st.caption(f"Experience/year wording: {experience_phrase_ads:,} ads; excluded from skills and PSF-AAI demand. Irrelevant labels: {irrelevant_ads:,} ads; excluded.")
+        st.caption(f"One advertisement counts once per grouped skill, including equivalent wording. Percentages use all {denominator:,} selected ads; an ad can request several skills.")
+        st.caption("Unmapped but skill-like phrases remain in employer demand; their PSF-AAI correspondence is reviewed separately.")
+        for kind, title in (("Technical", "Technical skills"), ("Soft / Enabling", "Enabling and interpersonal skills")):
+            skill_heading = "Top technical skills" if kind == "Technical" else "Top enabling skills"
+            featured_result_chart("skill_label", "job_ads", skill_heading, denominator,
+                                  lambda: plot(typed[kind], "skill_label", "job_ads", title),
+                                  key=f"{kind.casefold().replace(' ', '_')}_skills")
+        if not broad.empty:
+            featured_result_chart("category_group", "job_ads", "Most common broad area", denominator,
+                                  lambda: plot(broad, "category_group", "job_ads", "Broad competency areas"),
+                                  key="broad_competency_areas")
+            st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
+        with st.expander("How technical and enabling categories are determined"):
+            st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
+            st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
+            st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
+        evidence_tables(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)", {"": unclear},
+                        key="result_unclear_evidence", note="Missing values, experience wording, vague-only descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. Original phrases and saved labels stay here for review; specific skill mentions remain counted.")
+        evidence_tables("Skill-demand table", {"": demand}, key="result_skill_demand_evidence")
+        evidence_tables("Skill wording groups and original phrases", {"": views.get("chart_skill_variants", pd.DataFrame())},
+                        key="job_market_wording_groups", note="Equivalent wording shares one chart label. Each advertisement counts once per label; variant counts must not be added. Original wording and saved labels remain unchanged.")
 
-                @st.fragment
-                def title_and_location_exploration():
-                    with st.container(border=True, key="job_market_title_section"):
-                        st.subheader("Explore a selected title", icon=":material/person_search:")
-                        title_evidence = profile["job_title_source_evidence"]
-                        family_options = sorted(title_evidence.job_family.unique().tolist())
-                        with st.container(horizontal=True, key="result_title_exploration_filters"):
-                            family = st.selectbox("Occupational family", ["All", *family_options], key="result_family")
-                            family_rows = title_evidence if family == "All" else title_evidence[title_evidence.job_family.eq(family)]
-                            specific_options = ["All", *sorted(family_rows.job_title.unique().tolist())]
-                            if st.session_state.get("result_specific_title", "All") not in specific_options:
-                                st.session_state["result_specific_title"] = "All"
-                            specific = st.selectbox("Specific job title", specific_options, key="result_specific_title")
-                        scoped = family_rows if specific == "All" else family_rows[family_rows.job_title.eq(specific)]
-                        source_ids = scoped.source_id
-                        selected_title_demand = skill_counts(skills[skills.source_id.isin(source_ids)], source_ids.nunique())
-                        selected_title_label = specific if specific != "All" else (family if family != "All" else "all selected advertisements")
-                        featured_result_chart(
-                            "skill_label", "job_ads", "Top requested skills", source_ids.nunique(),
-                            lambda: result_count_chart(selected_title_demand, "skill_label", "job_ads",
-                                                       f"Top skills for {selected_title_label}",
-                                                       order=order, limit=min(limit, 10)),
-                            key="selected_title",
+    @st.fragment
+    def explore_skills():
+        st.subheader("Explore a skill", icon=":material/search:")
+        if demand.empty:
+            st.info("No chartable skills are available in the selected advertisements.")
+            return
+        options = sorted(demand.employer_skill.unique(), key=str.casefold)
+        key = "result_explore_skill"
+        if st.session_state.get(key) not in options:
+            st.session_state[key] = demand.loc[demand.employer_demand_count.idxmax(), "employer_skill"]
+        skill = st.selectbox("Skill", options, key=key, help="Search the grouped skill labels from the selected advertisements.")
+        occurrences = skills.loc[skills.skill_label.eq(skill)]
+        count = occurrences.source_id.nunique()
+        share = 100 * count / denominator if denominator else 0
+        st.metric("Advertisements requesting this skill", f"{count:,}")
+        st.caption(f"{count:,} of {denominator:,} selected advertisements ({share:.1f}%).")
+        family_demand = views.get("chart_skill_family_demand", pd.DataFrame())
+        if not family_demand.empty:
+            families = family_demand.loc[family_demand.skill_label.eq(skill), ["job_family", "job_ads"]]
+            result_count_chart(families, "job_family", "job_ads", "Advertisements by occupational family")
+        source_columns = ["source_id", "job_title", "company", "location", "url"]
+        ads = jobs.loc[jobs.source_id.isin(occurrences.source_id), jobs.columns.intersection(source_columns)]
+        evidence_tables("Source advertisements", {"": ads}, key="result_explore_skill_ads")
+        variants = views.get("chart_skill_variants", pd.DataFrame())
+        wording = variants.loc[variants.skill_label.eq(skill)] if not variants.empty else occurrences
+        evidence_tables("Skill wording in the source", {"": wording}, key="result_explore_skill_occurrences")
+
+    @st.fragment
+    def roles_and_locations():
+        order, limit = result_chart_options(key_prefix="result_roles")
+        profile = (tables if "job_title_source_evidence" in tables else _session_cached_value(
+            "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
+        geography = (tables if "location_evidence" in tables else _session_cached_value(
+            "_fow_market_geography_cache", revision, lambda: location_tables(jobs), ttl=None, max_entries=1))
+
+        @st.fragment
+        def title_overview():
+            with st.container(border=True, key="job_market_title_overview"):
+                st.subheader("Job-title overview", icon=":material/work:")
+                title_view = st.selectbox("Job-title overview", ["Most common job titles", "Related role groups", "Specific titles (alphabetical)"], key="result_title_view", label_visibility="collapsed")
+                grouped = title_view == "Related role groups"
+                common_titles = title_view == "Most common job titles"
+                alphabetical_titles = title_view == "Specific titles (alphabetical)"
+                title_field = "job_role_group" if grouped else "common_job_title" if common_titles else "job_title"
+                title_counts = (profile["job_role_group_counts"] if grouped else
+                                profile["common_job_title_counts"] if common_titles else profile["job_title_counts"])
+                if not title_counts.empty:
+                    chart_title = "Related role groups" if grouped else ("Specific job titles (alphabetical)" if alphabetical_titles else "Most common job titles")
+                    title_order = "Alphabetical" if alphabetical_titles else order
+                    featured_result_chart(
+                        title_field, "job_ads", "Top occupational titles", denominator,
+                        lambda: result_count_chart(title_counts, title_field, "job_ads", chart_title,
+                                                   order=title_order, limit=limit),
+                        key="titles",
+                    )
+                st.caption("Most-common titles consolidate clear seniority and branch/specialty variants when one recognized occupation is stated. Composite and unrecognized titles stay distinct. Related role groups use source families; specific titles preserve exact normalized wording. Counts are distinct ads, and original titles remain auditable.")
+                evidence_tables("Inspect common-title normalization", {"": profile["common_job_title_evidence"]},
+                                key="result_title_normalization")
+                evidence_tables("Inspect source-family role grouping", {
+                    "Source-title evidence": profile["job_title_group_evidence"], "Family counts": profile["job_title_family_counts"]},
+                    key="result_title_family_evidence")
+        @st.fragment
+        def family_comparison():
+            with st.container(border=True, key="job_market_family_section"):
+                st.subheader("How do requested skills vary by occupational family?", icon=":material/layers:")
+                family_demand = views.get("chart_skill_family_demand", pd.DataFrame())
+                family_ads = views.get("chart_family_ad_counts", pd.DataFrame())
+                family_options = family_ads.loc[family_ads.job_family.ne("not stated"), "job_family"].tolist() if not family_ads.empty else []
+                top_skills = ordered_result_table(demand, "employer_skill", order, "employer_demand_count").head(min(limit, 15)).employer_skill.tolist()
+                if family_options and top_skills:
+                    family_sizes = family_ads.set_index("job_family").family_ads
+                    heatmap_families_default = sorted(family_options, key=lambda name: (-family_sizes.get(name, 0), name))[:8]
+                    family_key = "result_skill_family_heatmap_families"
+                    family_selection = [name for name in st.session_state.get(family_key, heatmap_families_default) if name in family_options]
+                    if family_selection != st.session_state.get(family_key, heatmap_families_default):
+                        st.session_state[family_key] = family_selection
+                    chosen_families = st.multiselect("Occupational families in the heatmap", family_options,
+                                                     default=heatmap_families_default, key=family_key)
+                    selected_family_demand = family_demand[
+                        family_demand.job_family.isin(chosen_families) & family_demand.skill_label.isin(top_skills)]
+                    if selected_family_demand.empty:
+                        st.info("No chartable skill evidence is available for the selected occupational families.")
+                    else:
+                        matrix = selected_family_demand.pivot(index="job_family", columns="skill_label", values="job_ads")
+                        matrix = matrix.reindex(index=chosen_families, columns=top_skills).fillna(0).astype(int)
+                        row_denominators = family_sizes.reindex(matrix.index).fillna(0).astype(int)
+                        shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
+                        cells = selected_family_demand.copy()
+                        cells["family_ads"] = cells.job_family.map(family_sizes).fillna(0).astype(int)
+                        cells["share"] = cells.job_ads.div(cells.family_ads.where(cells.family_ads.gt(0), 1)).mul(100)
+                        cells = cells.sort_values(["share", "job_ads", "skill_label", "job_family"],
+                                                  ascending=[False, False, True, True], kind="stable")
+                        best = cells.iloc[0]
+                        tied = cells[cells.share.eq(best.share)]
+                        family_summary = (f"{len(tied):,} displayed skill–family pairs tie for the highest within-family share ({best.share:.1f}%)."
+                                          if len(tied) > 1 else
+                                          f"{best.skill_label} has the highest displayed within-family share in {best.job_family}: "
+                                          f"{int(best.job_ads):,} of {int(best.family_ads):,} ads ({best.share:.1f}%).")
+                        family_rows = [(f"{row.skill_label} · {row.job_family}", row.job_ads)
+                                       for row in cells.head(3).itertuples()]
+                        featured_visual_chart(
+                            lambda: result_heatmap(matrix, "Least frequent requested skills by occupational family" if order == "Lowest demand" else "Top requested skills by occupational family",
+                                                    count_label="Job advertisements", share_matrix=shares,
+                                                    row_denominators=row_denominators, share_label="Share of family ads",
+                                                    denominator_label="Advertisements in family",
+                                                    row_group_label="occupational family", transpose=True),
+                            family_summary, family_rows, key="family_heatmap", insight_title="Heatmap Insight",
+                            list_title="Top Skill × Family",
                         )
-                        st.caption(f"Selected group: {selected_title_label} · {source_ids.nunique():,} advertisements. Percentages use these ads as the denominator.")
-                        if 0 < source_ids.nunique() < 10:
-                            st.caption("Small group; treat this ranking as descriptive for these advertisements, not a stable estimate for the occupation.")
-                        if len(selected_title_demand) > min(limit, 10):
-                            evidence_tables("View all skills for this selection", {"": selected_title_demand},
-                                            key="result_all_title_skills", order=order, label="skill_label", value="job_ads",
-                                            note="The searchable table includes every chartable skill for the selected group, not only the displayed bars.")
-                    st.subheader("Geographical distribution", icon=":material/location_on:")
-                    locations = geography["location_evidence"]
-                    focused_locations = locations[locations.source_id.isin(source_ids)]
-                    region_options = sorted(value for value in focused_locations.region.unique() if value)
-                    if st.session_state.get("result_region", "All") not in ["All", *region_options]:
-                        st.session_state["result_region"] = "All"
-                    selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
-                    if selected_region == "All":
-                        st.session_state["result_city"] = "All"
-                        location_rows = focused_locations[focused_locations.region.ne("")]
-                        count_field = "region"
-                        denominator_for_locations = source_ids.nunique()
-                        location_title = "Advertisements by Philippine region"
-                        area_rows = location_rows
-                    else:
-                        region_rows = focused_locations[focused_locations.region.eq(selected_region)]
-                        city_options = sorted(value for value in region_rows.locality.unique() if value)
-                        if st.session_state.get("result_city", "All") not in ["All", *city_options]:
-                            st.session_state["result_city"] = "All"
-                        selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
-                        locality_rows = region_rows[region_rows.locality.ne("")]
-                        location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
-                        count_field = "locality"
-                        denominator_for_locations = region_rows.source_id.nunique()
-                        location_title = f"Cities and municipalities in {selected_region}"
-                        area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
-                    location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
-                    if denominator_for_locations:
-                        location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
-                    else:
-                        location_counts["job_ads_pct"] = float("nan")
-                    location_ids = area_rows.source_id
-                    location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
-                    with st.container(border=True, key="job_market_featured_geography"):
-                        location_chart_col, skill_chart_col, insight_col = st.columns([1.05, 1.2, .9], vertical_alignment="center")
-                        with location_chart_col:
-                            location_figure = result_count_chart(location_counts, count_field, "job_ads", location_title,
-                                                                 order=order, limit=limit)
-                        with skill_chart_col:
-                            skill_figure = result_count_chart(location_skill_counts, "skill_label", "job_ads",
-                                                              "Skills in the selected geographical area", order=order, limit=min(limit, 10))
-                        with insight_col:
-                            locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
-                            location_summary = "No classifiable location is available in this selection."
-                            if not locations_shown.empty:
-                                maximum = int(locations_shown.job_ads.max())
-                                leaders = locations_shown.loc[locations_shown.job_ads.eq(maximum), count_field].tolist()
-                                location_summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator_for_locations:,} ads."
-                                                    if len(locations_shown) == 1 else
-                                                    f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator_for_locations:,} ads."
-                                                    if len(leaders) == 1 else
-                                                    f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator_for_locations:,} ads each.")
-                            skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads").sort_values(
-                                ["job_ads", "skill_label"], ascending=[False, True], kind="stable")
-                            skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
-                            result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
-                                           skill_top_rows, "Top Displayed Skills")
-                    missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
-                    unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
-                    if selected_region == "All":
-                        st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
-                    else:
-                        st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
-                    st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
-                    st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
-                    evidence_tables("View all regional or city counts", {"": location_counts.rename(columns={
-                        count_field: "Region" if selected_region == "All" else "City or municipality", "job_ads": "Job advertisements",
-                        "job_ads_pct": "Share of comparison group (%)"})}, key="result_all_location_counts")
-                    evidence_tables("Location standardization evidence", {"": focused_locations}, key="result_location_standardization")
-                    trend_jobs = jobs[jobs.source_id.isin(location_ids)]
-                    if "posting_date_parsed" in trend_jobs:
-                        dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
-                        monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
-                        if len(monthly) > 1:
-                            coverage = px.bar(monthly, x="month", y="postings", title="Posting months represented in the dataset",
-                                              labels={"month": "Posting month", "postings": "Job advertisements"},
-                                              color_discrete_sequence=[st.get_option("theme.primaryColor")])
-                            coverage.update_traces(texttemplate="%{y:,d}", textposition="outside", cliponaxis=False,
-                                                   hovertemplate="<b>%{x}</b><br>Job advertisements: %{y:,d}<extra></extra>")
-                            coverage.update_xaxes(type="category", categoryorder="array", categoryarray=monthly.month.tolist(),
-                                                  title="Posting month", automargin=True)
-                            coverage.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero",
-                                                  title="Job advertisements", showgrid=False, zeroline=False)
-                            timeline_sorted = monthly.sort_values(["postings", "month"], ascending=[False, True], kind="stable")
-                            peak = timeline_sorted.iloc[0]
-                            peak_months = timeline_sorted.loc[timeline_sorted.postings.eq(peak.postings), "month"]
-                            timeline_summary = (f"{peak.month} has the most dated postings ({int(peak.postings):,} ads)."
-                                                if len(peak_months) == 1 else
-                                                f"{len(peak_months):,} displayed months tie for the most dated postings ({int(peak.postings):,} ads each).")
-                            timeline_rows = list(zip(timeline_sorted.month.head(3), timeline_sorted.postings.head(3)))
-                            featured_visual_chart(
-                                lambda: chart(coverage),
-                                timeline_summary + " This describes dataset coverage, not market growth.",
-                                timeline_rows, key="posting_timeline", insight_title="Timeline Insight",
-                                list_title="Most represented months",
-                            )
-                        elif len(monthly) == 1:
-                            result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
-                                                 monthly.postings.iloc[0], "Job advertisements",
-                                                 "One month is present; this is coverage, not a time trend.",
-                                                 key="result_single_posting_month")
-                        if not dates.empty:
-                            st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
-                        else:
-                            st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
-                if role_view in {"Title and location explorer", "All charts"}:
-                    geography = (tables if "location_evidence" in tables else _session_cached_value(
-                        "_fow_market_geography_cache", revision, lambda: location_tables(jobs), ttl=None, max_entries=1))
-                    title_and_location_exploration()
-
-            if section == "Qualifications":
-                profile = (tables if "education_level_counts" in tables else _session_cached_value(
-                    "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
-                coverage = profile["requirement_field_coverage"].set_index("source_field")
-                with st.container(border=True, key="job_market_qualification_summary"):
-                    st.subheader("What qualifications are stated?", icon=":material/school:")
-                    for row in profile["requirement_field_coverage"].itertuples():
-                        label = row.source_field.removesuffix("_requirement").capitalize()
-                        st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads.")
-                education = profile["education_level_counts"]
-                missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
-                stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
-                education_evidence = profile["education_level_evidence"]
-                needs_review_education = int(education_evidence.loc[
-                    education_evidence.parse_status.eq("Needs review"), "source_id"
-                ].nunique())
-                education_chart = education.assign(education_level=education.education_level.replace({
-                    "undergraduate / college level": "College / undergraduate",
-                    "bachelor's degree": "College / undergraduate",
-                })).groupby("education_level", as_index=False, sort=False).agg(
-                    job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"),
-                    level_order=("level_order", "min"),
-                ).sort_values("level_order", kind="stable").reset_index(drop=True)
-                with st.container(border=True, key="job_market_education"):
-                    st.subheader("Stated education requirements by level", icon=":material/bar_chart:")
-                    education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
-                    with education_column:
-                        if len(education_chart) > 1:
-                            chart(education_bar(education_chart))
-                        elif len(education_chart) == 1:
-                            level = education_chart.iloc[0]
-                            st.metric(str(level.education_level), f"{int(level.job_ads):,}",
-                                      help="Distinct selected job advertisements with this stated education level.")
-                            st.caption("Job advertisements with a classifiable stated education level.")
-                        else:
-                            st.info("No stated education requirement has one unambiguous level to compare in this selection.")
-                    with insight_column:
-                        if education_chart.empty:
-                            summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
-                        elif len(education_chart) == 1:
-                            only = education_chart.iloc[0]
-                            summary = (f"Only one classifiable stated level appears in this selection: "
-                                       f"{only.education_level} ({int(only.job_ads):,} ads).")
-                            top_levels = []
-                        else:
-                            maximum = int(education_chart.job_ads.max())
-                            leaders = education_chart.loc[education_chart.job_ads.eq(maximum), "education_level"].astype(str).tolist()
-                            leader_text = ", ".join(leaders)
-                            classified_total = int(education_chart.job_ads.sum())
-                            if len(leaders) > 1:
-                                summary = (f"{len(leaders):,} displayed levels share the highest count "
-                                           f"({maximum:,} ads each): {leader_text}. There are {classified_total:,} "
-                                           "ads with one recognized level.")
-                            else:
-                                summary = (f"{leader_text} has the highest classified count ({maximum:,} of "
-                                           f"{classified_total:,} ads with one recognized level).")
-                            top_levels = list(education_chart.sort_values(
-                                ["job_ads", "level_order"], ascending=[False, True], kind="stable"
-                            ).loc[:, ["education_level", "job_ads"]].itertuples(index=False, name=None))
-                        result_insight("Education Insight", summary, top_levels, "Classified levels")
-                    stated_pct = 100 * stated_education / denominator if denominator else 0.0
-                    missing_pct = 100 * missing_education / denominator if denominator else 0.0
-                    st.caption(f"Not stated: {missing_education:,} of {denominator:,} selected ads ({missing_pct:.1f}%). "
-                               f"An education requirement appears in {stated_education:,} ads ({stated_pct:.1f}%), including {needs_review_education:,} "
-                               "that could not be assigned one unambiguous level and remain available in the evidence table. Not stated does not mean education was not required.")
-                    evidence_tables("Education standardization evidence", {
-                        "Recognized qualification levels": education.drop(columns="level_order", errors="ignore"),
-                        "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")
-                with st.container(border=True, key="job_market_experience"):
-                    st.subheader("Experience requirements", icon=":material/work:")
-                    experience_evidence = profile["experience_year_evidence"]
-                    exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
-                    exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
-                    if len(exact_years) >= 2:
-                        exact_pct = 100 * len(exact_years) / denominator if denominator else 0
-                        st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")
-                    elif len(exact_years) == 1:
-                        st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
-                    if not profile["experience_band_counts"].empty:
-                        display(profile["experience_band_counts"].drop(columns="band_order", errors="ignore").rename(
-                            columns={"experience_band": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
-                    else:
-                        st.html('<div class="fow-experience-empty"><span class="material-symbols-rounded" aria-hidden="true">assignment</span>'
-                                '<h4>No numerical requirement falls unambiguously within a single experience band.</h4></div>')
-                    st.caption("Bands include only numerical requirements contained entirely within one interval. Spanning, open-ended and descriptive requirements remain in the evidence table rather than being forced into a band.")
-                    years = profile["experience_year_counts"]
-                    if years.empty:
-                        st.info("No unambiguous experience-year requirement is available in the source fields. Missing years are not treated as zero experience.")
-                    else:
-                        display(years.rename(columns={"requirement": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
-                    st.caption("Year summaries use explicit experience fields only. Missing and ambiguous wording is excluded from the numeric summary and retained below. A stated number is not assumed to be an upper hiring limit.")
-                    evidence_tables("Requirement fields and parsing evidence", {
-                        "Education requirements": profile["education_requirement_counts"],
-                        "Experience requirements": profile["experience_requirement_counts"],
-                        "Year parsing": profile["experience_year_evidence"],
-                        "Experience bands": profile["experience_band_evidence"]}, key="result_requirement_evidence")
-                    evidence_tables("Potential requirements found in advertisement text", {"": profile["requirement_evidence"]},
-                                    key="result_requirement_candidates", note="Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")
-
-            if section == "PSF-AAI demand":
-                st.subheader("How does observed demand relate to PSF-AAI?")
-                st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
-                def prepare_psf_links():
-                    columns = [key for key in ("source_id", "psf_competency", "psf_job_role", "status", "normalized_skill") if key in tables["psf_mapping"]]
-                    mappings = chart_mapping_rows(tables["psf_mapping"][columns].drop_duplicates())
-                    if mappings.empty:
-                        return mappings
-                    linked = mappings.loc[mappings.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) &
-                                          mappings.psf_competency.fillna("").ne("")].copy()
-                    for field in ("psf_competency", "psf_job_role"):
-                        values = linked[field].fillna("")
-                        linked[field] = values.map({v: normalize_text(v) for v in values.unique()})
-                    # Chart counts use distinct advertisements. Keep phrase evidence
-                    # in its source table after screening, outside the chart cache.
-                    return linked.drop(columns="normalized_skill", errors="ignore").drop_duplicates()
-                all_linked = _session_cached_value("_fow_psf_links", revision, prepare_psf_links,
-                                                  ttl=None, max_entries=1, clone=lambda value: value)
-                if not all_linked.empty:
-                    reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
-                    if "competency_name" not in reference:
-                        reference = reference.rename(columns={"psf_competency": "competency_name"})
-                    role_options = sorted({role for value in all_linked.psf_job_role.unique()
-                                           for role in value.split("; ") if role})
-                    with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
-                        if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
-                            st.session_state["result_psf_role"] = "All"
-                        psf_view = st.selectbox("Explore PSF-AAI demand",
-                            ["Competency demand", "Reference roles", "Role–competency heatmap", "All charts"],
-                            key="result_psf_display")
-                        role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
-                    linked = all_linked
-                    if role != "All":
-                        linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
-                        linked["psf_job_role"] = role
-                    role_denominator = linked.source_id.nunique()
-                    with loading_content("job_market_psf_charts", "psf_charts", view=psf_view, columns=role_options[:8], rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
-                        def prepare_psf_charts():
-                            available = {"psf_chart_demand", "psf_role_competency_demand"}.issubset(tables)
-                            psf_views = (tables if role == "All" and available else
-                                         psf_demand_tables(linked, jobs, reference,
-                                                          denominator=role_denominator if role != "All" else denominator))
-                            roles = linked.assign(psf_job_role=linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
-                            roles = roles[roles.psf_job_role.ne("")]
-                            roles = roles.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
-                            roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
-                            return psf_views["psf_chart_demand"], roles, psf_views["psf_role_competency_demand"]
-                        cache_key = digest([VERSION, revision, role, denominator])
-                        if psf_view == "Competency demand" and role == "All" and "psf_chart_demand" in tables:
-                            competence = tables["psf_chart_demand"]
-                        else:
-                            competence, roles, cells = _session_cached_value(
-                                "_fow_psf_chart_cache", cache_key, prepare_psf_charts, ttl=None, max_entries=2)
-                        with content():
-                            if psf_view in {"Competency demand", "All charts"} and not competence.empty:
-                                featured_result_chart(
-                                    "psf_competency", "job_ads", "Most linked competency",
-                                    role_denominator if role != "All" else denominator,
-                                    lambda: result_count_chart(competence, "psf_competency", "job_ads",
-                                                               "PSF-AAI competencies linked to employer demand",
-                                                               order=order, limit=limit),
-                                    key="psf_competencies",
-                                )
-                            st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Role links can overlap.")
-                            if psf_view in {"Reference roles", "All charts"}:
-                                with st.container(border=True, key="job_market_featured_psf_roles"):
-                                    role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
-                                    with role_chart_column:
-                                        role_figure = result_count_chart(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", order=order, limit=limit)
-                                    with distribution_column:
-                                        result_role_distribution(_plotted_counts(role_figure, "psf_job_role", "job_ads"))
-                            if psf_view in {"Role–competency heatmap", "All charts"}:
-                                if not cells.empty:
-                                    with st.container(border=True, key="job_market_featured_psf_heatmap"):
-                                        _competency_heatmap_view(cells, roles, competence, limit)
-                                else:
-                                    st.info("No role-level PSF-AAI competency evidence is available for this selection.")
-                            st.html('<span data-fow-psf-ready="true" hidden></span>')
+                    missing_family_ads = int(family_ads.loc[family_ads.job_family.eq("not stated"), "family_ads"].sum())
+                    if missing_family_ads:
+                        st.caption(f"Occupational family not stated or classifiable: {missing_family_ads:,} ads; excluded from this comparison.")
+                    st.caption("Color compares the share of advertisements in each family that request a skill. Denominators include ads with no chartable skill; skill categories overlap, so row percentages can exceed 100% in total. Hover for counts and family size.")
+                    evidence_tables("View all skill-by-family counts", {"": family_demand.rename(columns={
+                        "job_family": "Occupational family", "skill_label": "Skill", "job_ads": "Job advertisements",
+                        "family_ads": "Family advertisements", "job_ads_pct": "Share of family ads (%)"})},
+                        key="result_all_skill_family_table")
+                elif family_options:
+                    st.info("No chartable skill evidence is available for the selected advertisements.")
                 else:
-                    st.info("No PSF-AAI mapping evidence is available for this selection.")
-    loaded["sections"].add(section_key)
+                    st.info("No classifiable occupational families are available for the skill comparison.")
+        @st.fragment
+        def title_and_location_exploration():
+            def reset_exploration():
+                for key in ("result_family", "result_specific_title", "result_region", "result_city"):
+                    st.session_state[key] = "All"
+            st.button("Reset title and location filters", on_click=reset_exploration, icon=":material/restart_alt:")
+            with st.container(border=True, key="job_market_title_section"):
+                st.subheader("Explore a selected title", icon=":material/person_search:")
+                title_evidence = profile["job_title_source_evidence"]
+                family_options = sorted(title_evidence.job_family.unique().tolist())
+                with st.container(horizontal=True, key="result_title_exploration_filters"):
+                    family = st.selectbox("Occupational family", ["All", *family_options], key="result_family")
+                    family_rows = title_evidence if family == "All" else title_evidence[title_evidence.job_family.eq(family)]
+                    specific_options = ["All", *sorted(family_rows.job_title.unique().tolist())]
+                    if st.session_state.get("result_specific_title", "All") not in specific_options:
+                        st.session_state["result_specific_title"] = "All"
+                    specific = st.selectbox("Specific job title", specific_options, key="result_specific_title")
+                scoped = family_rows if specific == "All" else family_rows[family_rows.job_title.eq(specific)]
+                source_ids = scoped.source_id
+                selected_title_demand = skill_counts(skills[skills.source_id.isin(source_ids)], source_ids.nunique())
+                selected_title_label = specific if specific != "All" else (family if family != "All" else "all selected advertisements")
+                featured_result_chart(
+                    "skill_label", "job_ads", "Top requested skills", source_ids.nunique(),
+                    lambda: result_count_chart(selected_title_demand, "skill_label", "job_ads",
+                                               f"Top skills for {selected_title_label}",
+                                               order=order, limit=min(limit, 10)),
+                    key="selected_title",
+                )
+                st.caption(f"Selected group: {selected_title_label} · {source_ids.nunique():,} advertisements. Percentages use these ads as the denominator.")
+                if 0 < source_ids.nunique() < 10:
+                    st.caption("Small group; treat this ranking as descriptive for these advertisements, not a stable estimate for the occupation.")
+                if len(selected_title_demand) > min(limit, 10):
+                    evidence_tables("View all skills for this selection", {"": selected_title_demand},
+                                    key="result_all_title_skills", order=order, label="skill_label", value="job_ads",
+                                    note="The searchable table includes every chartable skill for the selected group, not only the displayed bars.")
+            @st.fragment
+            def geographical_distribution():
+                st.subheader("Geographical distribution", icon=":material/location_on:")
+                locations = geography["location_evidence"]
+                focused_locations = locations[locations.source_id.isin(source_ids)]
+                region_options = sorted(value for value in focused_locations.region.unique() if value)
+                if st.session_state.get("result_region", "All") not in ["All", *region_options]:
+                    st.session_state["result_region"] = "All"
+                selected_region = st.selectbox("Region", ["All", *region_options], key="result_region")
+                if selected_region == "All":
+                    st.session_state["result_city"] = "All"
+                    location_rows = focused_locations[focused_locations.region.ne("")]
+                    count_field = "region"
+                    denominator_for_locations = source_ids.nunique()
+                    location_title = "Advertisements by Philippine region"
+                    area_rows = location_rows
+                else:
+                    region_rows = focused_locations[focused_locations.region.eq(selected_region)]
+                    city_options = sorted(value for value in region_rows.locality.unique() if value)
+                    if st.session_state.get("result_city", "All") not in ["All", *city_options]:
+                        st.session_state["result_city"] = "All"
+                    selected_city = st.selectbox("City or municipality", ["All", *city_options], key="result_city")
+                    locality_rows = region_rows[region_rows.locality.ne("")]
+                    location_rows = locality_rows if selected_city == "All" else locality_rows[locality_rows.locality.eq(selected_city)]
+                    count_field = "locality"
+                    denominator_for_locations = region_rows.source_id.nunique()
+                    location_title = f"Cities and municipalities in {selected_region}"
+                    area_rows = region_rows if selected_city == "All" else region_rows[region_rows.locality.eq(selected_city)]
+                location_counts = location_rows.groupby(count_field).source_id.nunique().rename("job_ads").reset_index()
+                if denominator_for_locations:
+                    location_counts["job_ads_pct"] = location_counts.job_ads / denominator_for_locations * 100
+                else:
+                    location_counts["job_ads_pct"] = float("nan")
+                location_ids = area_rows.source_id
+                location_skill_counts = skill_counts(skills[skills.source_id.isin(location_ids)], location_ids.nunique())
+                with st.container(border=True, key="job_market_featured_geography"):
+                    location_chart_col, skill_chart_col, insight_col = st.columns([1.05, 1.2, .9], vertical_alignment="center")
+                    with location_chart_col:
+                        location_figure = result_count_chart(location_counts, count_field, "job_ads", location_title,
+                                                             order=order, limit=limit)
+                    with skill_chart_col:
+                        skill_figure = result_count_chart(location_skill_counts, "skill_label", "job_ads",
+                                                          "Skills in the selected geographical area", order=order, limit=min(limit, 10))
+                    with insight_col:
+                        locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
+                        location_summary = "No classifiable location is available in this selection."
+                        if not locations_shown.empty:
+                            maximum = int(locations_shown.job_ads.max())
+                            leaders = locations_shown.loc[locations_shown.job_ads.eq(maximum), count_field].tolist()
+                            location_summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator_for_locations:,} ads."
+                                                if len(locations_shown) == 1 else
+                                                f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator_for_locations:,} ads."
+                                                if len(leaders) == 1 else
+                                                f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator_for_locations:,} ads each.")
+                        skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads").sort_values(
+                            ["job_ads", "skill_label"], ascending=[False, True], kind="stable")
+                        skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
+                        result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
+                                       skill_top_rows, "Top Displayed Skills")
+                missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
+                unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
+                if selected_region == "All":
+                    st.caption(f"{source_ids.nunique():,} advertisements form the regional comparison denominator; {location_ids.nunique():,} have a classifiable region.")
+                else:
+                    st.caption(f"{denominator_for_locations:,} advertisements are associated with {selected_region}; exact city counts may not cover ads with region-only locations.")
+                st.caption("These are counts of collected advertisements, not population- or labor-force-adjusted employment rates.")
+                st.caption(f"Location not stated: {missing_locations:,} ads. Broad, remote or unresolved location: {unresolved_locations:,} ads.")
+                evidence_tables("View all regional or city counts", {"": location_counts.rename(columns={
+                    count_field: "Region" if selected_region == "All" else "City or municipality", "job_ads": "Job advertisements",
+                    "job_ads_pct": "Share of comparison group (%)"})}, key="result_all_location_counts")
+                evidence_tables("Location standardization evidence", {"": focused_locations}, key="result_location_standardization")
+                trend_jobs = jobs[jobs.source_id.isin(location_ids)]
+                if "posting_date_parsed" in trend_jobs:
+                    dates = pd.to_datetime(trend_jobs.posting_date_parsed, errors="coerce").dropna()
+                    monthly = dates.dt.to_period("M").astype(str).value_counts().sort_index().rename_axis("month").reset_index(name="postings")
+                    if len(monthly) > 1:
+                        coverage = px.bar(monthly, x="month", y="postings", title="Posting months represented in the dataset",
+                                          labels={"month": "Posting month", "postings": "Job advertisements"},
+                                          color_discrete_sequence=[st.get_option("theme.primaryColor")])
+                        coverage.update_traces(texttemplate="%{y:,d}", textposition="outside", cliponaxis=False,
+                                               hovertemplate="<b>%{x}</b><br>Job advertisements: %{y:,d}<extra></extra>")
+                        coverage.update_xaxes(type="category", categoryorder="array", categoryarray=monthly.month.tolist(),
+                                              title="Posting month", automargin=True)
+                        coverage.update_yaxes(**count_axis(monthly.postings.max()), rangemode="tozero",
+                                              title="Job advertisements", showgrid=False, zeroline=False)
+                        timeline_sorted = monthly.sort_values(["postings", "month"], ascending=[False, True], kind="stable")
+                        peak = timeline_sorted.iloc[0]
+                        peak_months = timeline_sorted.loc[timeline_sorted.postings.eq(peak.postings), "month"]
+                        timeline_summary = (f"{peak.month} has the most dated postings ({int(peak.postings):,} ads)."
+                                            if len(peak_months) == 1 else
+                                            f"{len(peak_months):,} displayed months tie for the most dated postings ({int(peak.postings):,} ads each).")
+                        timeline_rows = list(zip(timeline_sorted.month.head(3), timeline_sorted.postings.head(3)))
+                        featured_visual_chart(
+                            lambda: chart(coverage),
+                            timeline_summary + " This describes dataset coverage, not market growth.",
+                            timeline_rows, key="posting_timeline", insight_title="Timeline Insight",
+                            list_title="Most represented months",
+                        )
+                    elif len(monthly) == 1:
+                        result_single_metric("Posting months represented in the dataset", monthly.month.iloc[0],
+                                             monthly.postings.iloc[0], "Job advertisements",
+                                             "One month is present; this is coverage, not a time trend.",
+                                             key="result_single_posting_month")
+                    if not dates.empty:
+                        st.caption(f"Observation dates: {dates.min():%Y-%m-%d} to {dates.max():%Y-%m-%d}. {len(dates):,} ads have usable dates; {len(trend_jobs) - len(dates):,} do not. This shows collection coverage, not market growth.")
+                    else:
+                        st.caption(f"Posting dates are unavailable for all {len(trend_jobs):,} selected ads.")
+
+            geographical_distribution()
+
+        role_tabs = st.tabs(["Job titles", "Skills by occupational family", "Title and location explorer"])
+        for tab, view in zip(role_tabs, (title_overview, family_comparison, title_and_location_exploration)):
+            with tab:
+                view()
+
+    def qualifications():
+        profile = (tables if "education_level_counts" in tables else _session_cached_value(
+            "_fow_market_profile_cache", revision, lambda: job_profile_tables(jobs), ttl=None, max_entries=1))
+        coverage = profile["requirement_field_coverage"].set_index("source_field")
+        with st.container(border=True, key="job_market_qualification_summary"):
+            st.subheader("What qualifications are stated?", icon=":material/school:")
+            for row in profile["requirement_field_coverage"].itertuples():
+                label = row.source_field.removesuffix("_requirement").capitalize()
+                st.write(f"{label}: stated in {row.stated_job_ads:,} of {row.job_ads:,} ads.")
+        education = profile["education_level_counts"]
+        missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
+        stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
+        education_evidence = profile["education_level_evidence"]
+        needs_review_education = int(education_evidence.loc[
+            education_evidence.parse_status.eq("Needs review"), "source_id"
+        ].nunique())
+        education_chart = education.assign(education_level=education.education_level.replace({
+            "undergraduate / college level": "College / undergraduate",
+            "bachelor's degree": "College / undergraduate",
+        })).groupby("education_level", as_index=False, sort=False).agg(
+            job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"),
+            level_order=("level_order", "min"),
+        ).sort_values("level_order", kind="stable").reset_index(drop=True)
+        with st.container(border=True, key="job_market_education"):
+            st.subheader("Stated education requirements by level", icon=":material/bar_chart:")
+            education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
+            with education_column:
+                if len(education_chart) > 1:
+                    chart(education_bar(education_chart))
+                elif len(education_chart) == 1:
+                    level = education_chart.iloc[0]
+                    st.metric(str(level.education_level), f"{int(level.job_ads):,}",
+                              help="Distinct selected job advertisements with this stated education level.")
+                    st.caption("Job advertisements with a classifiable stated education level.")
+                else:
+                    st.info("No stated education requirement has one unambiguous level to compare in this selection.")
+            with insight_column:
+                if education_chart.empty:
+                    summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
+                elif len(education_chart) == 1:
+                    only = education_chart.iloc[0]
+                    summary = (f"Only one classifiable stated level appears in this selection: "
+                               f"{only.education_level} ({int(only.job_ads):,} ads).")
+                    top_levels = []
+                else:
+                    maximum = int(education_chart.job_ads.max())
+                    leaders = education_chart.loc[education_chart.job_ads.eq(maximum), "education_level"].astype(str).tolist()
+                    leader_text = ", ".join(leaders)
+                    classified_total = int(education_chart.job_ads.sum())
+                    if len(leaders) > 1:
+                        summary = (f"{len(leaders):,} displayed levels share the highest count "
+                                   f"({maximum:,} ads each): {leader_text}. There are {classified_total:,} "
+                                   "ads with one recognized level.")
+                    else:
+                        summary = (f"{leader_text} has the highest classified count ({maximum:,} of "
+                                   f"{classified_total:,} ads with one recognized level).")
+                    top_levels = list(education_chart.sort_values(
+                        ["job_ads", "level_order"], ascending=[False, True], kind="stable"
+                    ).loc[:, ["education_level", "job_ads"]].itertuples(index=False, name=None))
+                result_insight("Education Insight", summary, top_levels, "Classified levels")
+            stated_pct = 100 * stated_education / denominator if denominator else 0.0
+            missing_pct = 100 * missing_education / denominator if denominator else 0.0
+            st.caption(f"Not stated: {missing_education:,} of {denominator:,} selected ads ({missing_pct:.1f}%). "
+                       f"An education requirement appears in {stated_education:,} ads ({stated_pct:.1f}%), including {needs_review_education:,} "
+                       "that could not be assigned one unambiguous level and remain available in the evidence table. Not stated does not mean education was not required.")
+            evidence_tables("Education standardization evidence", {
+                "Recognized qualification levels": education.drop(columns="level_order", errors="ignore"),
+                "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")
+        with st.container(border=True, key="job_market_experience"):
+            st.subheader("Experience requirements", icon=":material/work:")
+            experience_evidence = profile["experience_year_evidence"]
+            exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
+            exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
+            if len(exact_years) >= 2:
+                exact_pct = 100 * len(exact_years) / denominator if denominator else 0
+                st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")
+            elif len(exact_years) == 1:
+                st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
+            if not profile["experience_band_counts"].empty:
+                display(profile["experience_band_counts"].drop(columns="band_order", errors="ignore").rename(
+                    columns={"experience_band": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
+            else:
+                st.html('<div class="fow-experience-empty"><span class="material-symbols-rounded" aria-hidden="true">assignment</span>'
+                        '<h4>No numerical requirement falls unambiguously within a single experience band.</h4></div>')
+            st.caption("Bands include only numerical requirements contained entirely within one interval. Spanning, open-ended and descriptive requirements remain in the evidence table rather than being forced into a band.")
+            years = profile["experience_year_counts"]
+            if years.empty:
+                st.info("No unambiguous experience-year requirement is available in the source fields. Missing years are not treated as zero experience.")
+            else:
+                display(years.rename(columns={"requirement": "Experience requirement", "job_ads": "Job advertisements", "job_ads_pct": "Share of selected ads (%)"}))
+            st.caption("Year summaries use explicit experience fields only. Missing and ambiguous wording is excluded from the numeric summary and retained below. A stated number is not assumed to be an upper hiring limit.")
+            evidence_tables("Requirement fields and parsing evidence", {
+                "Education requirements": profile["education_requirement_counts"],
+                "Experience requirements": profile["experience_requirement_counts"],
+                "Year parsing": profile["experience_year_evidence"],
+                "Experience bands": profile["experience_band_evidence"]}, key="result_requirement_evidence")
+            evidence_tables("Potential requirements found in advertisement text", {"": profile["requirement_evidence"]},
+                            key="result_requirement_candidates", note="Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")
+
+    @st.fragment
+    def framework_demand():
+        order, limit = result_chart_options(key_prefix="result_psf")
+        st.subheader("How does observed demand relate to PSF-AAI?")
+        st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
+        def prepare_psf_links():
+            columns = [key for key in ("source_id", "psf_competency", "psf_job_role", "status", "normalized_skill") if key in tables["psf_mapping"]]
+            mappings = chart_mapping_rows(tables["psf_mapping"][columns].drop_duplicates())
+            if mappings.empty:
+                return mappings
+            linked = mappings.loc[mappings.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) &
+                                  mappings.psf_competency.fillna("").ne("")].copy()
+            for field in ("psf_competency", "psf_job_role"):
+                values = linked[field].fillna("")
+                linked[field] = values.map({v: normalize_text(v) for v in values.unique()})
+            # Chart counts use distinct advertisements. Keep phrase evidence
+            # in its source table after screening, outside the chart cache.
+            return linked.drop(columns="normalized_skill", errors="ignore").drop_duplicates()
+        all_linked = _session_cached_value("_fow_psf_links", revision, prepare_psf_links,
+                                          ttl=None, max_entries=1, clone=lambda value: value)
+        if not all_linked.empty:
+            reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
+            if "competency_name" not in reference:
+                reference = reference.rename(columns={"psf_competency": "competency_name"})
+            role_options = sorted({role for value in all_linked.psf_job_role.unique()
+                                   for role in value.split("; ") if role})
+            with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
+                if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
+                    st.session_state["result_psf_role"] = "All"
+                role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
+            linked = all_linked
+            if role != "All":
+                linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
+                linked["psf_job_role"] = role
+            role_denominator = linked.source_id.nunique()
+            def prepare_psf_charts():
+                available = {"psf_chart_demand", "psf_role_competency_demand"}.issubset(tables)
+                psf_views = (tables if role == "All" and available else
+                             psf_demand_tables(linked, jobs, reference,
+                                              denominator=role_denominator if role != "All" else denominator))
+                roles = linked.assign(psf_job_role=linked.psf_job_role.fillna("").str.split("; ")).explode("psf_job_role")
+                roles = roles[roles.psf_job_role.ne("")]
+                roles = roles.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
+                roles["job_ads_pct"] = roles.job_ads / denominator * 100 if denominator else float("nan")
+                return psf_views["psf_chart_demand"], roles, psf_views["psf_role_competency_demand"]
+            cache_key = digest([VERSION, revision, role, denominator])
+
+            competence, roles, cells = _session_cached_value(
+                "_fow_psf_chart_cache", cache_key, prepare_psf_charts, ttl=None, max_entries=4,
+                clone=lambda value: value)
+            competency_tab, role_tab, heatmap_tab = st.tabs(
+                ["Competency demand", "Reference roles", "Role–competency heatmap"])
+            with competency_tab:
+                if not competence.empty:
+                    featured_result_chart(
+                        "psf_competency", "job_ads", "Most linked competency",
+                        role_denominator if role != "All" else denominator,
+                        lambda: result_count_chart(competence, "psf_competency", "job_ads",
+                                                   "PSF-AAI competencies linked to employer demand",
+                                                   order=order, limit=limit),
+                        key="psf_competencies",
+                    )
+                st.caption("Counts describe distinct selected advertisements with existing ALIGNED or PARTIALLY ALIGNED researcher-reviewed links. Percentages use all selected ads, or the selected role's ads when a role filter is active. Role links can overlap.")
+            with role_tab:
+                with st.container(border=True, key="job_market_featured_psf_roles"):
+                    role_chart_column, distribution_column = st.columns([3.2, 1], vertical_alignment="center")
+                    with role_chart_column:
+                        role_figure = result_count_chart(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", order=order, limit=limit)
+                    with distribution_column:
+                        result_role_distribution(_plotted_counts(role_figure, "psf_job_role", "job_ads"))
+            with heatmap_tab:
+                if not cells.empty:
+                    with st.container(border=True, key="job_market_featured_psf_heatmap"):
+                        _competency_heatmap_view(cells, roles, competence, limit)
+                else:
+                    st.info("No role-level PSF-AAI competency evidence is available for this selection.")
+        else:
+            st.info("No PSF-AAI mapping evidence is available for this selection.")
+
+    with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute"):
+        st.subheader("Results Section", icon=":material/bar_chart:")
+        if action_button("Export results", icon=":material/download:", key="results_export", type="primary"):
+            st.switch_page("pages/14_Reports.py")
+    skills_tab, roles_tab, qualifications_tab, psf_tab = st.tabs(
+        ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"], key="result_sections")
+    with skills_tab:
+        overview_tab, explore_tab = st.tabs(["Skill overview", "Explore skills"])
+        with overview_tab:
+            skill_overview()
+        with explore_tab:
+            explore_skills()
+    with roles_tab:
+        roles_and_locations()
+    with qualifications_tab:
+        qualifications()
+    with psf_tab, st.container(key="job_market_section_psf_aai"):
+        framework_demand()
     evidence_tables("Selected job records", {"": lambda: tables["normalized_jobs"] if "normalized_jobs" in tables else analysis_job_values(jobs)},
                     key="job_market_source_records", note="Lowercase analysis values. Source IDs and case-sensitive links are preserved; original evidence is available in Reports.")
 
 
 def _unmapped_results(tables, meta):
     st.caption("A missing PSF-AAI match does not establish a framework gap. Recurring phrases remain candidates for researcher review.")
-    order, limit = result_chart_options()
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     views = tables if "chart_skill_occurrences" in tables else skill_chart_tables(skills, jobs)
     revision = st.session_state.get("_fow_loaded_bundle_revision")
@@ -2775,25 +2785,30 @@ def _unmapped_results(tables, meta):
             status = "Researcher review required" if len(counts) else "No unmapped labels to review"
             st.html('<div class="fow-unmapped-status"><span class="material-symbols-rounded" aria-hidden="true">manage_search</span>'
                     f'<div><strong>{escape(status)}</strong><p>Unmapped does not establish an emerging skill.</p></div></div>')
-    raw = tables["unmapped_skills"]
-    for key, title, shown, insight_heading in (
-        ("unmapped_evidence", "Unmapped skill evidence", counts, "Most frequent unmapped skill"),
-        ("unmapped_recurring", "Recurring unmapped phrases for review", recurring, "Recurring unmapped skill"),
-    ):
-        with st.container(border=True, key=f"{key}_panel"):
-            if shown.empty:
-                st.subheader(title, icon=":material/bar_chart:" if key == "unmapped_evidence" else ":material/manage_search:")
-                st.info("No chartable unmapped skills in the active dataset." if key == "unmapped_evidence" else
-                        f"No chartable unmapped labels meet the {threshold}-advertisement review threshold.")
-            else:
-                featured_result_chart("skill_label", "job_ads", insight_heading, denominator,
-                    lambda shown=shown, title=title: result_count_chart(shown, "skill_label", "job_ads", title,
-                                                                     order=order, limit=limit), key=key)
-            evidence_tables("Unmapped evidence (detailed)" if key == "unmapped_evidence" else "Recurring phrases (detailed)",
-                            {"": lambda key=key, shown=shown: raw if key == "unmapped_evidence" or raw.empty else
-                             raw.loc[raw.normalized_skill.map(chart_skill_key).isin(shown.normalized_skill)].copy()},
-                            icon=":material/table_view:", key=f"{key}_details", order=order,
-                            label="employer_skill", value="employer_demand_count")
+    @st.fragment
+    def unmapped_charts():
+        order, limit = result_chart_options()
+        raw = tables["unmapped_skills"]
+        for key, title, shown, insight_heading in (
+            ("unmapped_evidence", "Unmapped skill evidence", counts, "Most frequent unmapped skill"),
+            ("unmapped_recurring", "Recurring unmapped phrases for review", recurring, "Recurring unmapped skill"),
+        ):
+            with st.container(border=True, key=f"{key}_panel"):
+                if shown.empty:
+                    st.subheader(title, icon=":material/bar_chart:" if key == "unmapped_evidence" else ":material/manage_search:")
+                    st.info("No chartable unmapped skills in the active dataset." if key == "unmapped_evidence" else
+                            f"No chartable unmapped labels meet the {threshold}-advertisement review threshold.")
+                else:
+                    featured_result_chart("skill_label", "job_ads", insight_heading, denominator,
+                        lambda shown=shown, title=title: result_count_chart(shown, "skill_label", "job_ads", title,
+                                                                         order=order, limit=limit), key=key)
+                evidence_tables("Unmapped evidence (detailed)" if key == "unmapped_evidence" else "Recurring phrases (detailed)",
+                                {"": lambda key=key, shown=shown: raw if key == "unmapped_evidence" or raw.empty else
+                                 raw.loc[raw.normalized_skill.map(chart_skill_key).isin(shown.normalized_skill)].copy()},
+                                icon=":material/table_view:", key=f"{key}_details", order=order,
+                                label="employer_skill", value="employer_demand_count")
+
+    unmapped_charts()
     st.caption("Wording variants share one chart label; each advertisement counts once per label. Detailed evidence retains original unmapped rows for audit, including groups excluded from the charts. Charts omit mapped groups; full evidence remains exportable.")
     st.info(f"Review candidates require at least {threshold} distinct advertisements and NOT MAPPED status. Rejected or unreviewed fragments are not counted as employer skills. Recurrence alone does not establish emergence.", icon=":material/info:")
 
@@ -2804,17 +2819,22 @@ REPORT_AUXILIARY_TABLES = (
       for name in ("per_class", "confusion", "predictions")),
     *(f"quality_{kind}" for kind in FIELDS),
 )
-REPORT_AUXILIARY_TTL = 60
+
+def _load_report_tables():
+    revisions = storage.frame_revisions(REPORT_AUXILIARY_TABLES)
+    root = str(storage.ROOT)
+    saved_root, saved_revisions, saved_tables = st.session_state.get("_fow_report_auxiliary", (None, {}, {}))
+    tables = {
+        name: saved_tables[name] if saved_root == root and name in saved_tables and saved_revisions[name] == revisions[name]
+        else storage.read_frame(name)
+        for name in REPORT_AUXILIARY_TABLES
+    }
+    st.session_state["_fow_report_auxiliary"] = (root, revisions, tables)
+    return tables
 
 
-def _report_auxiliary_cache():
-    cached = st.session_state.get("_fow_report_auxiliary")
-    revision = (str(storage.ROOT), st.session_state.get("_fow_loaded_bundle_revision"),
-                REPORT_AUXILIARY_TABLES)
-    return cached[2] if cached and cached[0] == revision and time.monotonic() < cached[1] else None
-
-
-def report_deliverables(tables, meta, *, prepared=True):
+@st.fragment
+def report_deliverables(tables, meta):
     with st.container(key="reports_deliverables_heading", gap="xsmall"):
         st.html('<header class="fow-deliverables-heading">'
                 '<span class="material-symbols-rounded" aria-hidden="true">description</span>'
@@ -2837,8 +2857,7 @@ def report_deliverables(tables, meta, *, prepared=True):
                 st.html(f'<div class="fow-deliverable-icon"><span class="material-symbols-rounded" aria-hidden="true">{icon}</span></div>')
                 st.markdown(f"#### {title}")
                 st.write(description)
-                st.download_button(label, content if prepared or key == "metadata" else b"", filename, mime,
-                                   key=f"report_download_{key}", disabled=not prepared and key != "metadata",
+                st.download_button(label, content, filename, mime, key=f"report_download_{key}",
                                    type="primary" if key == "excel" else "secondary", icon=":material/download:",
                                    width="stretch", on_click="ignore")
         with st.container(border=True, key="report_deliverable_snapshot", width="stretch", gap="small"):
@@ -2846,7 +2865,7 @@ def report_deliverables(tables, meta, *, prepared=True):
             st.markdown("#### Report Snapshot")
             st.write("Save these research files together on this host.")
             save_snapshot = action_button("Save snapshot locally", key="save_report_snapshot", icon=":material/download:",
-                                          width="stretch", disabled=not prepared)
+                                          width="stretch")
     if save_snapshot:
         with st.spinner("Preparing the complete report snapshot…"):
             workbook = export_excel(tables, meta)
@@ -2877,74 +2896,69 @@ def research_page(page):
     loading_kind = {"Job Market Analysis": "market", "Employer–PSF Alignment": "alignment",
                     "PSF Mapping": "mapping", "Unmapped / Emerging Skills": "unmapped", "Reports": "reports"}[page]
     loading_cards = 3 if page == "Employer–PSF Alignment" else 4 if page == "Job Market Analysis" else None
-    loading_view = st.session_state.get("result_section", "Skills") if page == "Job Market Analysis" else "selected" if st.session_state.get("psf_review_occurrence_choice") else None
+    loading_view = ("Skills" if page == "Job Market Analysis" else
+                    "selected" if page == "PSF Mapping" and st.session_state.get("psf_review_occurrence_choice") else None)
     with loading_content("research_results_content", loading_kind, cards=loading_cards, view=loading_view,
-                         rows=st.session_state.get("result_chart_limit", 15)) as content:
+                         rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
         if not current_analysis():
             return
         tables, meta = filtered_bundle()
-        jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
-        demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
         active_reference = storage.read_frame("cleaned_psf_aai") if page in {"PSF Mapping", "Employer–PSF Alignment"} else None
         if page == "Reports":
             meta = dict(meta, chart_view_settings={
                 "order": st.session_state.get("result_chart_order", "Highest demand"),
                 "job_title_view": st.session_state.get("result_title_view", "Most common job titles"),
                 "items_per_chart": st.session_state.get("result_chart_limit", 15),
-                "focused_job_title": st.session_state.get("result_focus_job_title"),
-                "focused_location": st.session_state.get("result_focus_location"),
+                "role_chart_order": st.session_state.get("result_roles_order", "Highest demand"),
+                "psf_chart_order": st.session_state.get("result_psf_order", "Highest demand"),
+                "focused_job_title": st.session_state.get("result_specific_title"),
+                "focused_location": st.session_state.get("result_region"),
                 "note": "Display settings do not limit the complete exported tables or selected-job denominator.",
             })
-            tables["corrections"] = corrections()
-            def load_report_tables(*, refresh=False):
-                extras = None if refresh else _report_auxiliary_cache()
-                if extras is None:
-                    extras = {name: storage.read_frame(name) for name in REPORT_AUXILIARY_TABLES}
-                    revision = (str(storage.ROOT), st.session_state.get("_fow_loaded_bundle_revision"),
-                                REPORT_AUXILIARY_TABLES)
-                    st.session_state["_fow_report_auxiliary"] = (revision, time.monotonic() + REPORT_AUXILIARY_TTL, extras)
-                tables.update(extras)
-                return tables
-            cached = _report_auxiliary_cache()
-            if cached is not None:
-                tables.update(cached)
+            tables = {**tables, "corrections": corrections(), **_load_report_tables()}
         with content():
-            _research_results_content(page, tables, meta, active_reference,
-                                      load_report_tables if page == "Reports" else None)
+            _research_results_content(page, tables, meta, active_reference)
 
 
-@st.fragment
-def _research_results_content(page, tables, meta, active_reference, load_report_tables=None):
+def _research_results_content(page, tables, meta, active_reference):
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
         _job_market_results(tables, meta, revision=st.session_state.get("_fow_loaded_bundle_revision"))
     elif page == "PSF Mapping":
-        with st.container(border=True, key="psf_mapping_review_panel"):
-            psf_mapping_review(skills, jobs, active_reference,
-                               tables["psf_mapping"], tables["psf_mapping_reviews"])
-        with st.container(border=True, key="psf_mapping_demand_panel"):
-            with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
-                section_heading("Competency demand", "bar_chart",
-                                "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
-            order, limit = result_chart_options()
-            competence = tables["psf_competency_demand"]
-            if not competence.empty:
-                plot_competence = tables.get("psf_chart_demand")
-                if plot_competence is None:
-                    revision = st.session_state.get("_fow_loaded_bundle_revision")
-                    build_demand = lambda: psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
-                    plot_competence = (_session_cached_value("_fow_psf_mapping_demand", revision, build_demand,
-                                                             ttl=None, max_entries=1, clone=lambda value: value)
-                                       if revision else build_demand())
-                with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
-                    with st.container(key="psf_mapping_demand_chart", width="stretch"):
-                        plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
-                    with st.container(key="psf_mapping_demand_insight", width="stretch"):
-                        psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique(), order=order)
-            display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
-        evidence_tables("Occurrence-level mapping evidence", {"": tables["psf_mapping"]}, icon=":material/layers:",
-                        key="psf_mapping_evidence", order=order, label="psf_competency")
+        @st.fragment
+        def review_links():
+            with st.container(border=True, key="psf_mapping_review_panel"):
+                psf_mapping_review(skills, jobs, active_reference,
+                                   tables["psf_mapping"], tables["psf_mapping_reviews"])
+
+        @st.fragment
+        def competency_demand():
+            with st.container(border=True, key="psf_mapping_demand_panel"):
+                with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
+                    section_heading("Competency demand", "bar_chart",
+                                    "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
+                order, limit = result_chart_options()
+                competence = tables["psf_competency_demand"]
+                if not competence.empty:
+                    plot_competence = tables.get("psf_chart_demand")
+                    if plot_competence is None:
+                        revision = st.session_state.get("_fow_loaded_bundle_revision")
+                        build_demand = lambda: psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
+                        plot_competence = (_session_cached_value("_fow_psf_mapping_demand", revision, build_demand,
+                                                                 ttl=None, max_entries=1, clone=lambda value: value)
+                                           if revision else build_demand())
+                    with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
+                        with st.container(key="psf_mapping_demand_chart", width="stretch"):
+                            plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
+                        with st.container(key="psf_mapping_demand_insight", width="stretch"):
+                            psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique(), order=order)
+                display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
+            evidence_tables("Occurrence-level mapping evidence", {"": tables["psf_mapping"]}, icon=":material/layers:",
+                            key="psf_mapping_evidence", order=order, label="psf_competency")
+
+        review_links()
+        competency_demand()
     elif page == "Employer–PSF Alignment":
         st.caption("Thresholds are researcher-configurable heuristics, not official PSF standards. Default: ≥0.80 aligned; ≥0.60 partially aligned; lower scores not mapped. Missing reference: unclassified.")
         has_range = ("range_of_application" in active_reference and
@@ -2956,53 +2970,46 @@ def _research_results_content(page, tables, meta, active_reference, load_report_
                 if rates.get(field) is not None:
                     with st.container(key=f"alignment_metric_{field}"):
                         st.metric(field.replace("_", " ").title(), f"{rates[field]:.1f}%", icon=f":material/{icon}:")
-        order, limit = result_chart_options()
-        with st.container(border=True, key="employer_psf_status_panel"):
-            status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
-                                        "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)
-            status_chart.update_traces(texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
-                                       textfont=dict(color="#171923", size=12))
-            maximum = max((max(trace.x) for trace in status_chart.data if len(trace.x)), default=0)
-            status_chart.update_xaxes(range=[0, max(1, maximum * 1.05)])
-            with st.container(horizontal=True, key="alignment_chart_and_insight", gap="medium", vertical_alignment="center"):
-                with st.container(key="alignment_status_chart", width="stretch"):
-                    chart(status_chart)
-                with st.container(key="alignment_status_insight", width="stretch"):
-                    alignment_status_insight(status_chart)
-        evidence_tables("Phrase-level results and PSF-AAI basis", {
-            "Phrase–competency evidence groups": alignment, "Occurrence-level employer demand": demand},
-            icon=":material/layers:", key="employer_psf_evidence", order=order,
-            label="employer_skill", value="employer_demand_count")
+        @st.fragment
+        def alignment_chart():
+            order, limit = result_chart_options()
+            with st.container(border=True, key="employer_psf_status_panel"):
+                status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
+                                            "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)
+                status_chart.update_traces(texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
+                                           textfont=dict(color="#171923", size=12))
+                maximum = max((max(trace.x) for trace in status_chart.data if len(trace.x)), default=0)
+                status_chart.update_xaxes(range=[0, max(1, maximum * 1.05)])
+                with st.container(horizontal=True, key="alignment_chart_and_insight", gap="medium", vertical_alignment="center"):
+                    with st.container(key="alignment_status_chart", width="stretch"):
+                        chart(status_chart)
+                    with st.container(key="alignment_status_insight", width="stretch"):
+                        alignment_status_insight(status_chart)
+            evidence_tables("Phrase-level results and PSF-AAI basis", {
+                "Phrase–competency evidence groups": alignment, "Occurrence-level employer demand": demand},
+                icon=":material/layers:", key="employer_psf_evidence", order=order,
+                label="employer_skill", value="employer_demand_count")
+
+        alignment_chart()
         with st.container(key="employer_psf_denominators"):
             st.info(meta["denominators"], icon=":material/info:")
     elif page == "Unmapped / Emerging Skills":
         _unmapped_results(tables, meta)
     elif page == "Reports":
-        if _report_auxiliary_cache() is None:
-            for name in REPORT_AUXILIARY_TABLES:
-                tables.pop(name, None)
-        count = len(tables) + sum(name not in tables for name in REPORT_AUXILIARY_TABLES)
-        downloads = st.expander(f"Individual research tables ({count})", key="individual_exports", icon=":material/database:", on_change="rerun")
-        if downloads.open and any(name not in tables for name in REPORT_AUXILIARY_TABLES):
-            with st.spinner("Preparing complete report tables…"):
-                load_report_tables()
-        prepared = all(name in tables for name in REPORT_AUXILIARY_TABLES)
-        if prepared:
-            st.success("Complete report tables are ready for download.")
-            if action_button("Refresh report tables", key="refresh_report_tables"):
-                with st.spinner("Refreshing report tables…"):
-                    load_report_tables(refresh=True)
-        else:
-            st.info("Prepare the full research tables to enable the report files and snapshot.")
-            if action_button("Prepare report tables", key="prepare_report_tables"):
-                with st.spinner("Preparing complete report tables…"):
-                    load_report_tables()
-                prepared = True
-        if downloads.open:
-            with downloads:
-                for name, frame in tables.items():
-                    st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
-        report_deliverables(tables, meta, prepared=prepared)
+        _report_table_downloads(tables)
+        report_deliverables(tables, meta)
+
+
+@st.fragment
+def _report_table_downloads(tables):
+    downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports",
+                            icon=":material/database:", on_change="rerun")
+    if downloads.open:
+        with downloads:
+            for name, frame in tables.items():
+                st.download_button(name + ".csv", lambda frame=frame: export_csv(frame),
+                                   name + ".csv", "text/csv", key="download_" + name, on_click="ignore")
+
 
 def feedback():
     page_intro("Feedback", "Record corrections and usability feedback while preserving the original predictions.")

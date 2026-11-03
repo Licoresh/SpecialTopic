@@ -795,7 +795,6 @@ def test_correction_and_report_save_actions(ui_workspace, jobs, taxonomy):
     assert not feedback.exception and not feedback.error
     assert (ui_workspace/"data/feedback/corrections.csv").exists()
     reports = page_app("Reports")
-    reports.button(key="prepare_report_tables").click().run(timeout=60)
     assert not reports.exception and not reports.error
     reports.button(key="save_report_snapshot").click().run(timeout=60)
     assert not reports.exception and not reports.error

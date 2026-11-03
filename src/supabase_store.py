@@ -315,6 +315,22 @@ def state_version(name: str, token: str):
     return rows[0]["updated_at"] if rows else None
 
 
+@session_cached
+def state_versions(names: tuple[str, ...], token: str):
+    values = ",".join('"' + name.replace('"', '\\"') + '"' for name in names)
+    rows = _request("GET", "/rest/v1/app_state", token=token,
+                    params={"name": f"in.({values})", "select": "name,updated_at"}) or []
+    revisions = {row["name"]: row["updated_at"] for row in rows}
+    # A fresh revision check must not pair a new revision with an older cached payload.
+    cache = session_state().get("_supabase_state_payloads", {})
+    url = configuration()[0]
+    for name in names:
+        key = (url, token, name)
+        if key in cache and cache[key][1] != revisions.get(name):
+            cache.pop(key)
+    return revisions
+
+
 def read_state(name: str, token: str):
     # Recheck access and revision on the normal read-cache schedule. Large
     # immutable payloads only need downloading when their saved revision changes.

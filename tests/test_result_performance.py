@@ -3,6 +3,7 @@ from dataclasses import replace
 from unittest.mock import Mock
 
 import pandas as pd
+import pytest
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.local_script_runner import LocalScriptRunner
 from streamlit.runtime.scriptrunner_utils.script_requests import ScriptRequests
@@ -263,11 +264,7 @@ def test_family_heatmap_filter_redraws_only_its_fragment(monkeypatch):
     monkeypatch.setattr(ui, "chart", plotted)
     monkeypatch.setattr(ui, "ranked_bar", builder)
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Job Market Analysis')").run(timeout=30)
-    app.button_group(key="result_section").select("Roles and locations").run(timeout=30)
     assert not app.exception and not app.error
-    assert app.selectbox(key="result_roles_display").value == "Job titles"
-    assert not app.multiselect
-    app.selectbox(key="result_roles_display").select("Skills by occupational family").run(timeout=30)
     reads, bundles, builds = current.call_count, bundle.call_count, builder.call_count
     plotted.reset_mock()
     app.multiselect(key="result_skill_family_heatmap_families").set_value(["analytics"])
@@ -366,15 +363,38 @@ def test_reports_expander_does_not_reload_shared_tables(monkeypatch):
     monkeypatch.setattr(ui, 'filtered_bundle', bundle)
     monkeypatch.setattr(ui.storage, 'read_frame', reads)
     monkeypatch.setattr(ui, 'corrections', lambda: pd.DataFrame())
-    monkeypatch.setattr(ui, 'report_deliverables', lambda tables, meta, *, prepared: None)
+    monkeypatch.setattr(ui, 'report_deliverables', lambda tables, meta: None)
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run(timeout=30)
     assert not app.exception and not app.error
     initial_reads = reads.call_count
-    assert initial_reads == 0
+    assert initial_reads == len(ui.REPORT_AUXILIARY_TABLES)
     app.session_state['individual_exports'] = True
     _run_fragment(app, monkeypatch, 'individual_exports')
     assert reads.call_count == len(ui.REPORT_AUXILIARY_TABLES)
     assert len(app.get('download_button')) > 0
     _run_fragment(app, monkeypatch, 'individual_exports')
     assert reads.call_count == len(ui.REPORT_AUXILIARY_TABLES)
+    assert current.call_count == bundle.call_count == 1
+
+
+@pytest.mark.parametrize("key,value", [("result_explore_skill", "collaboration"), ("result_chart_order", "Alphabetical")])
+def test_skill_explore_and_order_only_redraw_their_own_panels(monkeypatch, key, value):
+    current = Mock(return_value=True)
+    bundle = Mock(return_value=(result_tables(), {}))
+    plotted = Mock()
+    monkeypatch.setattr(ui, "current_analysis", current)
+    monkeypatch.setattr(ui, "filtered_bundle", bundle)
+    monkeypatch.setattr(ui, "chart", plotted)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Job Market Analysis')").run(timeout=30)
+    assert not app.exception and not app.error
+    plotted.reset_mock()
+    app.selectbox(key=key).set_value(value)
+    _run_fragment(app, monkeypatch, key)
+    if key == "result_explore_skill":
+        assert any(metric.label == "Advertisements requesting this skill" and metric.value == "1" for metric in app.metric)
+        plotted.assert_not_called()  # One occupational family is shown as a metric.
+    else:
+        assert plotted.call_count
+        assert {call.args[0].layout.title.text for call in plotted.call_args_list} <= {
+            "Employer-requested skills", "Technical skills", "Enabling and interpersonal skills", "Broad competency areas"}
     assert current.call_count == bundle.call_count == 1
