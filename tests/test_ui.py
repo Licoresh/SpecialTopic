@@ -78,6 +78,20 @@ def test_populated_pages(title, ui_workspace, jobs, taxonomy, labeled):
     assert not app.exception, [e.message for e in app.exception]
     assert not app.error, [e.value for e in app.error]
 
+
+@pytest.mark.parametrize("legacy_cleaning_record", [False, True])
+def test_extraction_warns_when_new_upload_is_not_active(ui_workspace, jobs, legacy_cleaning_record):
+    storage.save_frame("cleaned_jobs", jobs)
+    cleaning = {"timestamp": "2020-01-01T00:00:00Z", "row_count": len(jobs)}
+    if not legacy_cleaning_record:
+        cleaning["dataset_hash"] = jobs._dataset_hash.iloc[0]
+    storage.save_json("cleaning_jobs", cleaning)
+    storage.archive_raw(b"description\nnew data", "jobs.csv", "jobs")
+    app = page_app("Competency Extraction")
+    assert not app.exception
+    assert any("A newer raw job file is waiting" in item.value and "3 job ads" in item.value
+               for item in app.warning)
+
 def test_training_selection_and_evaluation(ui_workspace, labeled):
     save_annotations(labeled, "Synthetic reviewer")
     app = page_app("ML Training")
@@ -781,9 +795,15 @@ def test_correction_and_report_save_actions(ui_workspace, jobs, taxonomy):
     assert not feedback.exception and not feedback.error
     assert (ui_workspace/"data/feedback/corrections.csv").exists()
     reports = page_app("Reports")
-    reports.button[0].click().run(timeout=60)
+    reports.button(key="prepare_report_tables").click().run(timeout=60)
     assert not reports.exception and not reports.error
-    assert len(list((ui_workspace/"outputs/reports").glob("*/research_results.xlsx"))) == 1
+    reports.button(key="save_report_snapshot").click().run(timeout=60)
+    assert not reports.exception and not reports.error
+    snapshots = list((ui_workspace/"outputs/reports").glob("*/research_results.xlsx"))
+    assert len(snapshots) == 1
+    assert all((snapshots[0].parent / f"{name}.csv").exists() for name in ui.REPORT_AUXILIARY_TABLES)
+    assert (snapshots[0].parent / "job_title_counts.csv").exists()
+    assert (snapshots[0].parent / "education_level_counts.csv").exists()
 
 
 def test_individual_csv_exports_are_deferred_until_download(ui_workspace, jobs, taxonomy, monkeypatch):
@@ -948,7 +968,7 @@ def test_load_saved_results_opens_results_after_ui_update_without_extraction(ui_
     storage.save_frame("cleaned_psf_aai", taxonomy)
     run_extraction()
     metadata = storage.read_json("extraction_metadata", {})
-    metadata["signature"] = digest(workflow._extraction_inputs() | {"version": "2.0.65"})
+    metadata["signature"] = digest(workflow._legacy_extraction_inputs() | {"version": "2.0.65"})
     metadata.pop("pipeline_version")
     metadata.pop("software_version")
     storage.save_json("extraction_metadata", metadata)

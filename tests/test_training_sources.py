@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
-from src import storage, ui
+from src import storage, training_sources, ui
 from src.labeling import save_annotations
 from src.training_sources import (inspect_training_folder, resolve_training_file, training_candidates,
                                   select_training_file, ANNOTATION_COLUMNS)
@@ -33,6 +33,21 @@ def test_content_based_discovery_and_candidate_context(workspace):
     assert len(candidates) == 2
     assert candidates.loc[candidates.source_id.eq("TEST-PH-1"), "original_text"].iloc[0] == "SQL; Python"
     assert storage.read_frame("labeled_competencies").empty
+
+
+def test_generated_candidates_are_not_scanned_for_implicit_training_source(workspace, monkeypatch):
+    pack(workspace)
+    generated = workspace / "train/derived/postings_test/candidate_phrases.csv"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("phrase,label\nsynthetic phrase,\n", encoding="utf-8")
+    original = training_sources._has_reviewed_rows
+
+    def inspect(path, modified, size):
+        assert "derived" not in Path(path).parts
+        return original(path, modified, size)
+
+    monkeypatch.setattr(training_sources, "_has_reviewed_rows", inspect)
+    assert resolve_training_file(workspace) == workspace / "train/labeled_competencies.csv"
 
 
 def test_training_taxonomy_uses_bundled_psf_default_when_no_upload_exists(workspace):

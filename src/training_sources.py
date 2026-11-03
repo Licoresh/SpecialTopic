@@ -83,6 +83,26 @@ def inspect_training_folder(root):
         records.append(record)
     return records
 
+
+@lru_cache(maxsize=64)
+def _has_reviewed_rows(path, modified, size):
+    try:
+        if Path(path).suffix.lower() == ".xlsx":
+            frame = read_source_table(path)
+            return ({"phrase", "label"}.issubset(frame.columns)
+                    and bool((frame.phrase.str.strip().ne("") & frame.label.str.strip().ne("")).any()))
+        with Path(path).open(encoding="utf-8-sig", newline="") as source:
+            reader = csv.reader(source)
+            columns = [column.strip() for column in next(reader, [])]
+            if not {"phrase", "label"}.issubset(columns):
+                return False
+            phrase, label = columns.index("phrase"), columns.index("label")
+            return any(len(row) == len(columns) and row[phrase].strip() and row[label].strip()
+                       for row in reader)
+    except (OSError, ValueError, csv.Error):
+        return False
+
+
 def resolve_training_file(root, create=True):
     root = Path(root)
     folder = root / "train"
@@ -94,8 +114,16 @@ def resolve_training_file(root, create=True):
         if not selected.is_relative_to(folder.resolve()) or not selected.is_file():
             raise ValueError("The selected training file is missing or outside ./train. Select an existing labeled file on ML Training.")
         return selected
-    inventory = inspect_training_folder(root)
-    populated = [folder / item["filename"] for item in inventory if item["purpose"] == "labeled phrases"]
+    # Generated posting batches are draft candidates, not an implicit training source.
+    populated = []
+    for path in sorted(folder.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in {".csv", ".xlsx"}:
+            continue
+        if "derived" in path.relative_to(folder).parts:
+            continue
+        stat = path.stat()
+        if _has_reviewed_rows(str(path.resolve()), stat.st_mtime_ns, stat.st_size):
+            populated.append(path)
     if len(populated) > 1:
         raise ValueError("Multiple populated labeled files were detected in ./train. Select the intended training file on ML Training.")
     if populated:

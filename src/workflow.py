@@ -23,10 +23,17 @@ _LEGACY_COMPATIBLE_VERSIONS = {1: tuple(f"2.0.{patch}" for patch in range(60, 66
 
 def _extraction_inputs():
     return {"datasets": {k: frame_hash(storage.read_frame("cleaned_"+k)) for k in ("jobs", "psf_aai")},
-            "active_uploads": {k:v["hash"] for k,v in storage.read_json("uploads", {}).items() if k in ("jobs", "psf_aai")},
-            "column_mappings": {k:storage.read_json("mapping_"+k, {}) for k in ("jobs", "psf_aai")},
             "annotations": frame_hash(storage.read_frame("labeled_competencies")),
             "settings": storage.settings(), "model": storage.read_json("selected_model", {})}
+
+
+def _legacy_extraction_inputs(inputs=None):
+    """Recognize saved runs made before pending uploads were separated from active data."""
+    return (inputs if inputs is not None else _extraction_inputs()) | {
+        "active_uploads": {k: v["hash"] for k, v in storage.read_json("uploads", {}).items()
+                           if k in ("jobs", "psf_aai")},
+        "column_mappings": {k: storage.read_json("mapping_" + k, {}) for k in ("jobs", "psf_aai")},
+    }
 
 
 def input_signature():
@@ -42,10 +49,17 @@ def extraction_freshness(metadata):
     inputs = _extraction_inputs()
     signature = digest(inputs | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
     if metadata.get("pipeline_version") is not None:
-        return signature, (metadata["pipeline_version"] == EXTRACTION_PIPELINE_VERSION
-                           and metadata.get("signature") == signature)
+        if metadata["pipeline_version"] != EXTRACTION_PIPELINE_VERSION:
+            return signature, False
+        if metadata.get("signature") == signature:
+            return signature, True
+        legacy = _legacy_extraction_inputs(inputs)
+        return signature, metadata.get("signature") == digest(legacy | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
     saved = metadata.get("signature")
-    return signature, any(saved == digest(inputs | {"version": version})
+    if not saved:
+        return signature, False
+    legacy = _legacy_extraction_inputs(inputs)
+    return signature, any(saved == digest(legacy | {"version": version})
                           for version in _LEGACY_COMPATIBLE_VERSIONS.get(EXTRACTION_PIPELINE_VERSION, ()))
 
 
@@ -65,17 +79,29 @@ def run_extraction(progress=None, on_prepared=None):
     signature = input_signature()
     retry_signature = _extraction_retry_signature(signature)
     settings = storage.settings()
-    for kind, upload in storage.read_json("uploads", {}).items():
-        if kind not in ("jobs", "psf_aai"):
-            continue
+    uploads = storage.read_json("uploads", {})
+    for kind in ("jobs", "psf_aai"):
         cleaned = storage.read_frame("cleaned_" + kind)
-        if cleaned.empty or "_dataset_hash" not in cleaned or not cleaned._dataset_hash.eq(upload["hash"]).all():
-            raise ValueError(f"The active {kind} upload has not been mapped and cleaned. Complete these steps before extraction.")
-        if kind == "jobs" and not storage.read_json("cleaning_jobs", {}).get("philippine_aai_scope_reviewed", False):
+        if kind == "psf_aai" and (cleaned.empty or cleaned.attrs.get("reference_source") == "bundled_default"):
+            continue
+        hashes = cleaned["_dataset_hash"].astype(str).unique() if "_dataset_hash" in cleaned else []
+        if cleaned.empty or len(hashes) != 1 or not hashes[0]:
+            raise ValueError(f"No valid cleaned {kind} dataset is saved. Review Data Quality and save it before extraction.")
+        cleaning = storage.read_json("cleaning_" + kind, {})
+        if cleaning.get("dataset_hash") and cleaning["dataset_hash"] != hashes[0]:
+            raise ValueError(f"The saved {kind} cleaning record does not match the cleaned dataset. Save the cleaned dataset again.")
+        upload = uploads.get(kind, {})
+        if upload and not cleaning:
+            raise ValueError(f"The {kind} dataset has no saved cleaning review. Complete Data Quality before extraction.")
+        if kind == "jobs" and (upload or cleaning) and not cleaning.get("philippine_aai_scope_reviewed", False):
             raise ValueError("Review the job sources for Philippine provenance and AI/analytics relevance on Data Quality before extraction.")
         mapped = storage.read_frame("mapped_" + kind)
-        if mapped.empty or storage.read_json("cleaning_"+kind, {}).get("source_hash") != frame_hash(mapped):
+        mapped_is_active = (not mapped.empty and "_dataset_hash" in mapped
+                            and mapped._dataset_hash.astype(str).eq(hashes[0]).all())
+        if mapped_is_active and cleaning and cleaning.get("source_hash") != frame_hash(mapped):
             raise ValueError(f"The {kind} column mapping changed or has not been cleaned. Save its cleaned dataset again.")
+        if upload and upload.get("hash") != hashes[0]:
+            progress(.02, f"A newer {kind} upload is pending; using the saved cleaned dataset")
     taxonomy = storage.read_frame("cleaned_psf_aai")
     matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"]) if not taxonomy.empty else None
     model_path = ROOT / "models/competency_classifier.joblib"

@@ -41,12 +41,26 @@ def test_input_to_workbook(workspace, jobs, taxonomy, labeled):
     assert len(filtered["cleaned_jobs"]) == 1
     assert filtered["employer_skill_demand"].employer_demand_pct.eq(100).all()
 
-def test_changed_upload_requires_cleaning(workspace, jobs):
+def test_pending_upload_does_not_replace_saved_cleaned_jobs(workspace, jobs):
     storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("mapped_jobs", jobs)
+    from src.utils import frame_hash
+    storage.save_json("cleaning_jobs", {"dataset_hash": jobs._dataset_hash.iloc[0],
+                                       "source_hash": frame_hash(jobs),
+                                       "philippine_aai_scope_reviewed": True})
     before = input_signature()
     storage.archive_raw(b"description\nnew data", "jobs.csv", "jobs")
-    assert input_signature() != before
-    with pytest.raises(ValueError, match="mapped and cleaned"):
+    assert input_signature() == before
+    extracted = run_extraction()
+    assert not extracted.empty
+    assert set(extracted.source_id) <= set(jobs.source_id)
+
+
+def test_cleaning_record_must_match_active_cleaned_jobs(workspace, jobs):
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_json("cleaning_jobs", {"dataset_hash": "another-dataset",
+                                       "philippine_aai_scope_reviewed": True})
+    with pytest.raises(ValueError, match="cleaning record does not match"):
         run_extraction()
 
 

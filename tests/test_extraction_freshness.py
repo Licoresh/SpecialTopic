@@ -13,7 +13,7 @@ def research_inputs(workspace, jobs, taxonomy):
 
 
 def legacy_metadata(version="2.0.65"):
-    return {"signature": digest(workflow._extraction_inputs() | {"version": version})}
+    return {"signature": digest(workflow._legacy_extraction_inputs() | {"version": version})}
 
 
 @pytest.mark.parametrize("version", ["2.0.60", "2.0.61", "2.0.62", "2.0.63", "2.0.64", "2.0.65"])
@@ -37,7 +37,7 @@ def test_ui_release_does_not_change_extraction_freshness(research_inputs, monkey
     assert not workflow.extraction_freshness(legacy)[1]
 
 
-@pytest.mark.parametrize("kind", ["jobs", "taxonomy", "labels", "upload", "mapping", "settings", "model"])
+@pytest.mark.parametrize("kind", ["jobs", "taxonomy", "labels", "settings", "model"])
 def test_real_input_changes_still_require_extraction(research_inputs, kind):
     legacy = legacy_metadata()
     current = {"signature": workflow.input_signature(), "pipeline_version": workflow.EXTRACTION_PIPELINE_VERSION}
@@ -46,14 +46,27 @@ def test_real_input_changes_still_require_extraction(research_inputs, kind):
         storage.save_frame(name, pd.DataFrame({"synthetic": ["Changed research input"]}))
     else:
         name, value = {
-            "upload": ("uploads", {"jobs": {"hash": "Changed upload"}}),
-            "mapping": ("mapping_jobs", {"job_description": "changed column"}),
             "settings": ("settings", {"max_candidates": 100}),
             "model": ("selected_model", {"name": "Changed model"}),
         }[kind]
         storage.save_json(name, value)
     assert not workflow.extraction_freshness(legacy)[1]
     assert not workflow.extraction_freshness(current)[1]
+
+
+def test_pending_upload_and_mapping_do_not_stale_cleaned_results(research_inputs):
+    current = {"signature": workflow.input_signature(), "pipeline_version": workflow.EXTRACTION_PIPELINE_VERSION}
+    storage.save_json("uploads", {"jobs": {"hash": "pending-upload"}})
+    storage.save_json("mapping_jobs", {"job_description": "pending column"})
+    assert workflow.input_signature() == current["signature"]
+    assert workflow.extraction_freshness(current)[1]
+
+
+def test_existing_pipeline_result_stays_fresh_without_input_changes(research_inputs):
+    old = {"signature": digest(workflow._legacy_extraction_inputs() |
+                               {"pipeline_version": workflow.EXTRACTION_PIPELINE_VERSION}),
+           "pipeline_version": workflow.EXTRACTION_PIPELINE_VERSION}
+    assert workflow.extraction_freshness(old)[1]
 
 
 def test_unknown_legacy_release_is_not_assumed_compatible(research_inputs):

@@ -136,15 +136,12 @@ def test_worker_closes_its_own_http_connection(worker, monkeypatch):
 
 def test_changed_inputs_cannot_publish_extraction(workspace, monkeypatch):
     from src import workflow
-    monkeypatch.setattr(workflow, "input_signature", Mock(side_effect=["old", "new"]))
-    monkeypatch.setattr(storage, "read_json", lambda name, default=None: default)
-    monkeypatch.setattr(storage, "read_frame", lambda name: pd.DataFrame())
-    monkeypatch.setattr(workflow, "extract_skills", lambda *args, **kwargs:
-                        (pd.DataFrame({"source_id": ["TEST"]}), pd.DataFrame()))
+    monkeypatch.setattr(workflow, "input_signature", Mock(return_value="new"))
     save = Mock()
     monkeypatch.setattr(storage, "save_frame", save)
     with pytest.raises(ValueError, match="inputs changed"):
-        workflow.run_extraction()
+        workflow.publish_extraction((pd.DataFrame({"source_id": ["TEST"]}), pd.DataFrame(),
+                                     {"signature": "old"}))
     save.assert_not_called()
 
 

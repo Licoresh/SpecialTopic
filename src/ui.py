@@ -778,6 +778,7 @@ def _persist_psf_reference_files(verified=None, *, force=False):
     storage.save_json("mapping_psf_aai", {column: column for column in FIELDS["psf_aai"] if column in mapped})
     storage.save_json("cleaning_psf_aai", {
         "timestamp": timestamp(), "source_hash": frame_hash(mapped),
+        "dataset_hash": str(cleaned._dataset_hash.iloc[0]), "row_count": len(cleaned),
         "reviewer": "; ".join(sorted(verified.reviewer.astype(str).str.strip().unique())), "verified": True,
     })
     # Keep uploaded bytes archived; the verified table replaces its pending draft.
@@ -903,7 +904,8 @@ def quality():
                         storage.save_frame("cleaned_"+kind, cleaned)
                         storage.save_frame("quality_"+kind, report)
                         screening_exclusions = screening.loc[screening.exclude].set_index("source_id").exclusion_reason.to_dict() if kind == "jobs" else {}
-                        storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": mapped_source_hash, "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False, "screening_exclusions": screening_exclusions})
+                        dataset_hash = str(cleaned._dataset_hash.iloc[0]) if not cleaned.empty and "_dataset_hash" in cleaned else ""
+                        storage.save_json("cleaning_"+kind, {"timestamp": timestamp(), "removed_duplicate_ids": selected, "source_hash": mapped_source_hash, "dataset_hash": dataset_hash, "row_count": len(cleaned), "philippine_aai_scope_reviewed": scope_reviewed if kind == "jobs" else False, "screening_exclusions": screening_exclusions})
                         if kind == "jobs" and supabase_store.configured():
                             st.success("Cleaned job data and its quality report are saved to the shared workspace. Teammates can refresh to use the same dataset; the original CSV remains on the uploader’s computer.")
                         else:
@@ -949,6 +951,17 @@ def extraction():
     else:
         run_slot = st.container()
     with run_slot, content_section("Run extraction", "play_arrow", "extraction_run"):
+        active_cleaning = storage.read_json("cleaning_jobs", {})
+        pending_jobs = storage.read_json("uploads", {}).get("jobs", {})
+        active_hash = active_cleaning.get("dataset_hash")
+        newer_upload = pending_jobs and (
+            pending_jobs.get("hash") != active_hash if active_hash else
+            bool(active_cleaning.get("timestamp") and pending_jobs.get("timestamp", "") > active_cleaning["timestamp"])
+        )
+        if newer_upload:
+            count = active_cleaning.get("row_count")
+            size = f" ({count:,} job ads)" if isinstance(count, int) else ""
+            st.warning(f"A newer raw job file is waiting for Data Quality. Extraction will use the last saved cleaned dataset{size}. Save the new cleaned file before extracting it.")
         with st.container(horizontal=True, key="extraction_actions", gap="medium", vertical_alignment="center"):
             if action_button("Run extraction and classification", type="primary"):
                 uploads = storage.read_json("uploads", {})
@@ -1727,16 +1740,41 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
         return
     if "range_of_application" not in taxonomy or taxonomy.range_of_application.fillna("").astype(str).str.strip().eq("").all():
         st.caption("The active TESDA PDF has no separate Range of Application field; no range text is available to compare.")
-    occurrences = skills.drop_duplicates("extraction_id").set_index("extraction_id")
-    extraction_id = st.selectbox("Source advertisement" if prefix == "manual" else "Skill occurrence", occurrences.index.tolist(),
-                                 format_func=lambda key: f"{occurrences.loc[key, 'original_phrase']} — ad {occurrences.loc[key, 'source_id']}",
-                                 index=0 if prefix == "manual" else None, placeholder="Choose a skill occurrence",
-                                 key=f"{prefix}_review_occurrence" if prefix == "manual" else f"{prefix}_review_occurrence_choice",
-                                 help="A skill occurrence is one distinct phrase in one advertisement. Save only competencies justified by this source context; saving replaces the links for this occurrence only.")
+    if prefix == "manual":
+        occurrences = skills.drop_duplicates("extraction_id").set_index("extraction_id")
+        extraction_id = st.selectbox("Source advertisement", occurrences.index.tolist(),
+                                     format_func=lambda key: f"{occurrences.loc[key, 'original_phrase']} — ad {occurrences.loc[key, 'source_id']}",
+                                     index=0, key="manual_review_occurrence",
+                                     help="A skill occurrence is one distinct phrase in one advertisement. Save only competencies justified by this source context; saving replaces the links for this occurrence only.")
+    else:
+        # Project picker fields before deduplication so large source text never
+        # enters the widget options. Search and pages still reach every ID.
+        choices = skills[["extraction_id", "original_phrase", "source_id"]].reset_index(drop=True).drop_duplicates("extraction_id")
+        query = st.text_input("Find skill occurrence", key="psf_review_search", placeholder="Search phrase, advertisement ID, or occurrence ID").strip()
+        if query:
+            matches = choices.loc[choices.astype(str).apply(lambda column: column.str.contains(query, case=False, regex=False)).any(axis=1)]
+        else:
+            matches = choices
+        if matches.empty:
+            st.info("No skill occurrences match this search. Clear it to browse all occurrences.")
+            return
+        page_key = "psf_review_page"
+        pages = max(1, (len(matches) + 99) // 100)
+        if st.session_state.get(page_key, 1) > pages:
+            st.session_state[page_key] = 1
+        page = st.number_input("Occurrence page", min_value=1, max_value=pages, step=1, key=page_key) if pages > 1 else 1
+        visible = matches.iloc[(page - 1) * 100:page * 100]
+        labels = {row.extraction_id: f"{row.original_phrase} — ad {row.source_id}" for row in visible.itertuples(index=False)}
+        st.caption(f"Showing {len(visible):,} of {len(matches):,} matching skill occurrences.")
+        extraction_id = st.selectbox("Skill occurrence", visible.extraction_id.tolist(),
+                                     format_func=labels.__getitem__, index=None,
+                                     placeholder="Choose a skill occurrence", key="psf_review_occurrence_choice",
+                                     help="A skill occurrence is one distinct phrase in one advertisement. Save only competencies justified by this source context; saving replaces the links for this occurrence only.")
     if extraction_id is None:
         st.caption("Choose a skill occurrence to inspect its source and review competency links.")
         return
-    occurrence = occurrences.loc[extraction_id].to_dict() | {"extraction_id": extraction_id}
+    occurrence = (occurrences.loc[extraction_id].to_dict() if prefix == "manual" else
+                  skills.iloc[visible.loc[visible.extraction_id.eq(extraction_id)].index[0]].to_dict()) | {"extraction_id": extraction_id}
     source = jobs[jobs.source_id.eq(occurrence["source_id"])] if not jobs.empty else jobs
     if not source.empty:
         source_record = source.reindex(columns=[key for key in ("source_id", "job_title", "company", "url") if key in source])
@@ -2719,7 +2757,11 @@ def _unmapped_results(tables, meta):
     order, limit = result_chart_options()
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     views = tables if "chart_skill_occurrences" in tables else skill_chart_tables(skills, jobs)
-    counts = unmapped_chart_counts(views["chart_skill_occurrences"], tables["alignment_results"])
+    revision = st.session_state.get("_fow_loaded_bundle_revision")
+    build_counts = lambda: unmapped_chart_counts(views["chart_skill_occurrences"], tables["alignment_results"])
+    counts = (_session_cached_value("_fow_unmapped_counts", revision, build_counts,
+                                    ttl=None, max_entries=1, clone=lambda value: value)
+              if revision else build_counts())
     threshold = int(meta["settings"]["emerging_min_jobs"])
     recurring = counts.loc[counts.job_ads.ge(threshold)].copy()
     denominator = jobs.source_id.nunique() if "source_id" in jobs else 0
@@ -2756,7 +2798,23 @@ def _unmapped_results(tables, meta):
     st.info(f"Review candidates require at least {threshold} distinct advertisements and NOT MAPPED status. Rejected or unreviewed fragments are not counted as employer skills. Recurrence alone does not establish emergence.", icon=":material/info:")
 
 
-def report_deliverables(tables, meta):
+REPORT_AUXILIARY_TABLES = (
+    "nlp_processed", "usability",
+    *(f"evaluation_{slug}_{name}" for slug in ("nb", "lr")
+      for name in ("per_class", "confusion", "predictions")),
+    *(f"quality_{kind}" for kind in FIELDS),
+)
+REPORT_AUXILIARY_TTL = 60
+
+
+def _report_auxiliary_cache():
+    cached = st.session_state.get("_fow_report_auxiliary")
+    revision = (str(storage.ROOT), st.session_state.get("_fow_loaded_bundle_revision"),
+                REPORT_AUXILIARY_TABLES)
+    return cached[2] if cached and cached[0] == revision and time.monotonic() < cached[1] else None
+
+
+def report_deliverables(tables, meta, *, prepared=True):
     with st.container(key="reports_deliverables_heading", gap="xsmall"):
         st.html('<header class="fow-deliverables-heading">'
                 '<span class="material-symbols-rounded" aria-hidden="true">description</span>'
@@ -2779,14 +2837,16 @@ def report_deliverables(tables, meta):
                 st.html(f'<div class="fow-deliverable-icon"><span class="material-symbols-rounded" aria-hidden="true">{icon}</span></div>')
                 st.markdown(f"#### {title}")
                 st.write(description)
-                st.download_button(label, content, filename, mime, key=f"report_download_{key}",
+                st.download_button(label, content if prepared or key == "metadata" else b"", filename, mime,
+                                   key=f"report_download_{key}", disabled=not prepared and key != "metadata",
                                    type="primary" if key == "excel" else "secondary", icon=":material/download:",
                                    width="stretch", on_click="ignore")
         with st.container(border=True, key="report_deliverable_snapshot", width="stretch", gap="small"):
             st.html('<div class="fow-deliverable-icon"><span class="material-symbols-rounded" aria-hidden="true">photo_camera</span></div>')
             st.markdown("#### Report Snapshot")
             st.write("Save these research files together on this host.")
-            save_snapshot = action_button("Save snapshot locally", key="save_report_snapshot", icon=":material/download:", width="stretch")
+            save_snapshot = action_button("Save snapshot locally", key="save_report_snapshot", icon=":material/download:",
+                                          width="stretch", disabled=not prepared)
     if save_snapshot:
         with st.spinner("Preparing the complete report snapshot…"):
             workbook = export_excel(tables, meta)
@@ -2835,28 +2895,26 @@ def research_page(page):
                 "focused_location": st.session_state.get("result_focus_location"),
                 "note": "Display settings do not limit the complete exported tables or selected-job denominator.",
             })
-            tables.update(job_profile_tables(jobs))
             tables["corrections"] = corrections()
-            def load_report_tables():
-                extras = {
-                    "nlp_processed": storage.read_frame("nlp_processed"),
-                    "usability": storage.read_frame("usability"),
-                }
-                for slug in ("nb", "lr"):
-                    for report_name in ("per_class", "confusion", "predictions"):
-                        extras[f"evaluation_{slug}_{report_name}"] = storage.read_frame(
-                            f"evaluation_{slug}_{report_name}"
-                        )
-                for kind in FIELDS:
-                    extras["quality_"+kind] = storage.read_frame("quality_"+kind)
-                return extras
-            tables.update(load_report_tables())
+            def load_report_tables(*, refresh=False):
+                extras = None if refresh else _report_auxiliary_cache()
+                if extras is None:
+                    extras = {name: storage.read_frame(name) for name in REPORT_AUXILIARY_TABLES}
+                    revision = (str(storage.ROOT), st.session_state.get("_fow_loaded_bundle_revision"),
+                                REPORT_AUXILIARY_TABLES)
+                    st.session_state["_fow_report_auxiliary"] = (revision, time.monotonic() + REPORT_AUXILIARY_TTL, extras)
+                tables.update(extras)
+                return tables
+            cached = _report_auxiliary_cache()
+            if cached is not None:
+                tables.update(cached)
         with content():
-            _research_results_content(page, tables, meta, active_reference)
+            _research_results_content(page, tables, meta, active_reference,
+                                      load_report_tables if page == "Reports" else None)
 
 
 @st.fragment
-def _research_results_content(page, tables, meta, active_reference):
+def _research_results_content(page, tables, meta, active_reference, load_report_tables=None):
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
@@ -2874,7 +2932,11 @@ def _research_results_content(page, tables, meta, active_reference):
             if not competence.empty:
                 plot_competence = tables.get("psf_chart_demand")
                 if plot_competence is None:
-                    plot_competence = psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
+                    revision = st.session_state.get("_fow_loaded_bundle_revision")
+                    build_demand = lambda: psf_demand_tables(tables["psf_mapping"], jobs, active_reference)["psf_chart_demand"]
+                    plot_competence = (_session_cached_value("_fow_psf_mapping_demand", revision, build_demand,
+                                                             ttl=None, max_entries=1, clone=lambda value: value)
+                                       if revision else build_demand())
                 with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
                     with st.container(key="psf_mapping_demand_chart", width="stretch"):
                         plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
@@ -2916,12 +2978,31 @@ def _research_results_content(page, tables, meta, active_reference):
     elif page == "Unmapped / Emerging Skills":
         _unmapped_results(tables, meta)
     elif page == "Reports":
-        downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports", icon=":material/database:", on_change="rerun")
+        if _report_auxiliary_cache() is None:
+            for name in REPORT_AUXILIARY_TABLES:
+                tables.pop(name, None)
+        count = len(tables) + sum(name not in tables for name in REPORT_AUXILIARY_TABLES)
+        downloads = st.expander(f"Individual research tables ({count})", key="individual_exports", icon=":material/database:", on_change="rerun")
+        if downloads.open and any(name not in tables for name in REPORT_AUXILIARY_TABLES):
+            with st.spinner("Preparing complete report tables…"):
+                load_report_tables()
+        prepared = all(name in tables for name in REPORT_AUXILIARY_TABLES)
+        if prepared:
+            st.success("Complete report tables are ready for download.")
+            if action_button("Refresh report tables", key="refresh_report_tables"):
+                with st.spinner("Refreshing report tables…"):
+                    load_report_tables(refresh=True)
+        else:
+            st.info("Prepare the full research tables to enable the report files and snapshot.")
+            if action_button("Prepare report tables", key="prepare_report_tables"):
+                with st.spinner("Preparing complete report tables…"):
+                    load_report_tables()
+                prepared = True
         if downloads.open:
             with downloads:
                 for name, frame in tables.items():
                     st.download_button(name + ".csv", lambda frame=frame: export_csv(frame), name + ".csv", "text/csv", key="download_"+name, on_click="ignore")
-        report_deliverables(tables, meta)
+        report_deliverables(tables, meta, prepared=prepared)
 
 def feedback():
     page_intro("Feedback", "Record corrections and usability feedback while preserving the original predictions.")

@@ -171,6 +171,87 @@ def test_review_queue_preparation_projects_job_metadata_without_losing_evidence(
     pd.testing.assert_frame_equal(jobs, before)
 
 
+def test_psf_picker_reaches_later_occurrences_without_unbounded_options():
+    app = AppTest.from_string('''
+import pandas as pd
+from src.ui import psf_mapping_review
+skills = pd.DataFrame({
+    "extraction_id": [f"occ-{i}" for i in range(230)],
+    "source_id": [f"ad-{i}" for i in range(230)],
+    "original_phrase": [f"Synthetic phrase {i}" for i in range(230)],
+    "original_text": [f"Synthetic evidence {i}" for i in range(230)],
+})
+jobs = pd.DataFrame({"source_id": skills.source_id, "job_title": "Synthetic job"})
+taxonomy = pd.DataFrame({"competency_id": ["TEST-1"], "competency_name": ["Synthetic skill"]})
+empty = pd.DataFrame(columns=["extraction_id"])
+psf_mapping_review(skills, jobs, taxonomy, empty, empty)
+''').run(timeout=30)
+    assert not app.exception and not app.error
+    picker = app.selectbox(key="psf_review_occurrence_choice")
+    assert len(picker.options) == 100 and picker.value is None
+    app.number_input(key="psf_review_page").set_value(3).run(timeout=30)
+    picker = app.selectbox(key="psf_review_occurrence_choice")
+    assert not app.exception and len(picker.options) == 30
+    picker.select_index(29).run(timeout=30)
+    assert not app.exception and not app.error
+    assert app.selectbox(key="psf_review_occurrence_choice").value == "occ-229"
+    assert app.dataframe[0].value["Source ad ID"].tolist() == ["ad-229"]
+    assert any("Synthetic evidence 229" in item.value for item in app.get("text"))
+    app.text_input(key="psf_review_search").set_value("occ-229").run(timeout=30)
+    assert not app.exception and not app.error
+    assert len(app.selectbox(key="psf_review_occurrence_choice").options) == 1
+    app.text_input(key="psf_review_search").set_value("no such occurrence").run(timeout=30)
+    assert not app.exception and not app.error
+    assert any("No skill occurrences match" in item.value for item in app.info)
+
+
+def test_result_counts_reuse_analysis_revision_and_refresh_after_change(monkeypatch):
+    tables = result_tables()
+    tables["alignment_results"] = pd.DataFrame({"normalized_skill": ["sql"], "status": ["NOT MAPPED"]})
+    tables["unmapped_skills"] = pd.DataFrame({"normalized_skill": ["sql"], "employer_skill": ["SQL"],
+                                               "employer_demand_count": [2]})
+    counted = Mock(wraps=ui.unmapped_chart_counts)
+    monkeypatch.setattr(ui, "unmapped_chart_counts", counted)
+    monkeypatch.setattr(ui, "current_analysis", lambda: True)
+    monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {"settings": {"emerging_min_jobs": 2}}))
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('Unmapped / Emerging Skills')")
+    app.session_state["_fow_loaded_bundle_revision"] = "synthetic-revision-1"
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    assert counted.call_count == 1
+    assert {item.label: item.value for item in app.metric}["Unmapped skill labels"] == "1"
+    app.run(timeout=30)
+    assert not app.exception and counted.call_count == 1
+    tables["alignment_results"].loc[0, "status"] = "ALIGNED"
+    app.session_state["_fow_loaded_bundle_revision"] = "synthetic-revision-2"
+    app.run(timeout=30)
+    assert not app.exception and not app.error and counted.call_count == 2
+    assert {item.label: item.value for item in app.metric}["Unmapped skill labels"] == "0"
+
+
+def test_psf_mapping_chart_aggregate_reuses_analysis_revision(monkeypatch):
+    tables = result_tables()
+    tables["psf_competency_demand"] = pd.DataFrame({"psf_competency": ["Programming"], "job_ad_count": [1]})
+    tables["psf_mapping_reviews"] = pd.DataFrame(columns=["extraction_id"])
+    reference = pd.DataFrame({"competency_id": ["TEST-1"], "competency_name": ["Programming"],
+                              "job_role": ["Analyst"]})
+    build = Mock(wraps=ui.psf_demand_tables)
+    monkeypatch.setattr(ui, "psf_demand_tables", build)
+    monkeypatch.setattr(ui.storage, "read_frame", lambda name: reference)
+    monkeypatch.setattr(ui, "current_analysis", lambda: True)
+    monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {}))
+    monkeypatch.setattr(ui, "psf_mapping_review", lambda *args: None)
+    app = AppTest.from_string("from src.ui import research_page\nresearch_page('PSF Mapping')")
+    app.session_state["_fow_loaded_bundle_revision"] = "synthetic-revision-1"
+    app.run(timeout=30)
+    assert not app.exception and not app.error and build.call_count == 1
+    app.run(timeout=30)
+    assert not app.exception and not app.error and build.call_count == 1
+    app.session_state["_fow_loaded_bundle_revision"] = "synthetic-revision-2"
+    app.run(timeout=30)
+    assert not app.exception and not app.error and build.call_count == 2
+
+
 def test_family_heatmap_filter_redraws_only_its_fragment(monkeypatch):
     tables = result_tables()
     current = Mock(return_value=True)
@@ -285,13 +366,15 @@ def test_reports_expander_does_not_reload_shared_tables(monkeypatch):
     monkeypatch.setattr(ui, 'filtered_bundle', bundle)
     monkeypatch.setattr(ui.storage, 'read_frame', reads)
     monkeypatch.setattr(ui, 'corrections', lambda: pd.DataFrame())
-    monkeypatch.setattr(ui, 'report_deliverables', lambda tables, meta: None)
+    monkeypatch.setattr(ui, 'report_deliverables', lambda tables, meta, *, prepared: None)
     app = AppTest.from_string("from src.ui import research_page\nresearch_page('Reports')").run(timeout=30)
     assert not app.exception and not app.error
     initial_reads = reads.call_count
-    assert initial_reads > 0
+    assert initial_reads == 0
     app.session_state['individual_exports'] = True
     _run_fragment(app, monkeypatch, 'individual_exports')
-    assert reads.call_count == initial_reads
-    assert current.call_count == bundle.call_count == 1
+    assert reads.call_count == len(ui.REPORT_AUXILIARY_TABLES)
     assert len(app.get('download_button')) > 0
+    _run_fragment(app, monkeypatch, 'individual_exports')
+    assert reads.call_count == len(ui.REPORT_AUXILIARY_TABLES)
+    assert current.call_count == bundle.call_count == 1
