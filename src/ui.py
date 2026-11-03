@@ -2019,7 +2019,8 @@ def result_insight(title, summary, rows, list_title="Top 3"):
         for name, count in rows[:3]
     )
     icon = {"Title Insight": "workspace_premium", "Heatmap Insight": "bar_chart", "Selection Insight": "target",
-            "Location Insight": "location_on", "Education Insight": "menu_book", "Timeline Insight": "schedule"}.get(title, "lightbulb")
+            "Location Insight": "location_on", "Education Insight": "menu_book", "Experience Insight": "work_history",
+            "Timeline Insight": "schedule"}.get(title, "lightbulb")
     st.html(
         '<aside class="fow-key-insight" aria-label="' + escape(title) + '">'
         f'<h3><span class="material-symbols-rounded" aria-hidden="true">{icon}</span>{escape(title)}</h3><p>{escape(summary)}</p>'
@@ -2631,15 +2632,35 @@ def _job_market_content(tables, meta, revision=None):
             elif len(exact_years) == 1:
                 st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
             experience_bands = profile["experience_band_counts"]
-            if len(experience_bands) > 1:
-                chart(experience_bar(experience_bands))
-            elif len(experience_bands) == 1:
-                band = experience_bands.iloc[0]
-                st.metric(str(band.experience_band), f"{int(band.job_ads):,}",
-                          help="Distinct selected job advertisements with a clear experience requirement in this band.")
-            else:
-                st.html('<div class="fow-experience-empty"><span class="material-symbols-rounded" aria-hidden="true">assignment</span>'
-                        '<h4>No numerical requirement falls unambiguously within a single experience band.</h4></div>')
+            experience_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
+            with experience_column:
+                if len(experience_bands) > 1:
+                    chart(experience_bar(experience_bands))
+                elif len(experience_bands) == 1:
+                    band = experience_bands.iloc[0]
+                    st.html('<style>.st-key-job_market_experience [data-testid="stMetricValue"]{color:var(--fow-accent)!important}</style>')
+                    st.metric(str(band.experience_band), f"{int(band.job_ads):,}",
+                              help="Distinct selected job advertisements with a clear experience requirement in this band.")
+                else:
+                    st.html('<div class="fow-experience-empty"><span class="material-symbols-rounded" aria-hidden="true">assignment</span>'
+                            '<h4>No numerical requirement falls unambiguously within a single experience band.</h4></div>')
+            with insight_column:
+                if experience_bands.empty:
+                    summary, top_bands = ("No selected advertisement falls within a displayed experience band. Review the source-linked evidence for open-ended, spanning, or ambiguous wording.", [])
+                else:
+                    highest = int(experience_bands.job_ads.max())
+                    leaders = experience_bands.loc[experience_bands.job_ads.eq(highest), "experience_band"].astype(str).tolist()
+                    if len(leaders) > 1:
+                        summary = f"{', '.join(leaders)} share the highest displayed count, with {highest:,} ads each."
+                    else:
+                        leader = experience_bands.loc[experience_bands.experience_band.eq(leaders[0])].iloc[0]
+                        share = 100 * int(leader.job_ads) / denominator if denominator else 0.0
+                        summary = (f"{leaders[0]} is the most represented displayed band, appearing in "
+                                   f"{int(leader.job_ads):,} of {denominator:,} selected ads ({share:.1f}%).")
+                    top_bands = list(experience_bands.sort_values(
+                        ["job_ads", "band_order"], ascending=[False, True], kind="stable"
+                    ).loc[:, ["experience_band", "job_ads"]].itertuples(index=False, name=None))
+                result_insight("Experience Insight", summary, top_bands, "Displayed bands")
             st.caption("Bands use explicit experience fields or clear duration wording in the advertisement. Spanning, open-ended and conflicting requirements remain in source-linked evidence for review; text-derived wording is not promoted into the explicit source field.")
             years = profile["experience_analysis_year_counts"]
             if years.empty:

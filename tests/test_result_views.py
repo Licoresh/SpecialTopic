@@ -523,6 +523,14 @@ def test_experience_summary_uses_only_exact_single_value_requirements(monkeypatc
     assert any("median 3 years (observed range 2–4)" in item.value and "2 of 4 selected ads" in item.value for item in app.caption)
     assert any("Ranges and open-ended wording are excluded" in item.value for item in app.caption)
     assert any("Not stated does not mean education was not required" in item.value for item in app.caption)
+    content = html_content(app).casefold()
+    assert "experience insight" in content and "share the highest displayed count" in content
+
+    tables["cleaned_jobs"]["experience_requirement"] = ["3 years"] * 4
+    app.run(timeout=30)
+    content = html_content(app).casefold()
+    assert "3–5 years is the most represented displayed band, appearing in 4 of 4 selected ads (100.0%)" in content
+    assert "var(--fow-accent)" in content
 
 def test_psf_role_filter_limits_multi_role_links_and_heatmap(monkeypatch):
     tables = result_tables()
