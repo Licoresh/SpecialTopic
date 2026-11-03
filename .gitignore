@@ -24,5 +24,4 @@ train/*.csv
 # Local project notes and design references; keep application documentation.
 *.md
 !/README.md
-!/METHODOLOGY.md
 /DESIGN_REFERENCE_*

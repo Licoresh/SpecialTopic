@@ -11,8 +11,9 @@ SPACE = re.compile(r"\s+")
 JOB_LOWERCASE_FIELDS = set(FIELDS["jobs"]) - {"job_id", "posting_date", "url", "collected_at_utc"}
 DERIVED_FIELDS = {"original_text", "cleaned_text", "empty_text", "posting_date_parsed",
                   "empty_job_description", "education_detected", "experience_detected"}
-EDUCATION = re.compile(r"\b(?:bachelor(?:['’]s)?(?:\s+degree)?|master(?:['’]s)?(?:\s+degree)?|doctoral(?:\s+degree)?|doctorate|ph\.?d\.?|undergraduate|associate(?:['’]s)?\s+degree|high\s+school|certification)\b", re.I)
-EXPERIENCE = re.compile(r"\b\d+(?:\s*[-–]\s*\d+)?\+?\s*(?:years?|yrs?)\s+(?:(?:of|relevant|professional|work|related|prior)\s+){0,3}experience\b", re.I)
+EDUCATION = re.compile(r"\b(?:bachelor(?:['’]s)?(?:\s+degree)?|master(?:['’]s)?(?:\s+degree)?|doctoral(?:\s+degree)?|doctorate|ph\.?d\.?|undergraduate|associate(?:['’]s)?\s+degree|high\s+school|senior\s+high(?:\s+school)?|shs|grade\s*1[12]|college(?:\s+(?:graduate|level|degree))?|vocational(?:\s+graduate)?|technical[ -]?vocational|certification)\b", re.I)
+_DURATION_NUMBER = r"(?:\d+(?:\.\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?"
+EXPERIENCE = re.compile(rf"\b{_DURATION_NUMBER}\s*(?:(?:[-–]|\bto\b)\s*{_DURATION_NUMBER})?\+?\s*(?:years?|yrs?)\s*['’]?\s+(?:(?:of|relevant|professional|work|related|prior)\s+){0,3}experience\b", re.I)
 
 def clean_text(value):
     if value is None or pd.isna(value):

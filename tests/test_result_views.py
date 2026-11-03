@@ -38,9 +38,9 @@ def result_tables():
 def result_app(monkeypatch, tables, page="Job Market Analysis"):
     figures = []
     original = ui.chart
-    def capture(figure):
+    def capture(figure, **kwargs):
         figures.append(figure)
-        original(deepcopy(figure))
+        original(deepcopy(figure), **kwargs)
     monkeypatch.setattr(ui, "chart", capture)
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
     monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {"settings": {"emerging_min_jobs": 2}}))
@@ -60,14 +60,15 @@ def html_content(app):
 
 def test_job_market_preloads_every_section_on_entry(monkeypatch):
     app, figures = result_app(monkeypatch, result_tables())
-    tabs = {tab.label: tab for tab in app.tabs}
-    assert tabs["Skill overview"].get("plotly_chart")
-    assert tabs["Explore skills"].selectbox(key="result_explore_skill").value == "sql"
-    assert tabs["Job titles"].get("plotly_chart")
-    assert tabs["Skills by occupational family"].get("plotly_chart")
-    assert tabs["Title and location explorer"].get("plotly_chart")
-    assert any(metric.label == "College / undergraduate" for metric in tabs["Qualifications"].metric)
-    assert any(metric.label == "programming" for metric in tabs["Competency demand"].metric)
+    labels = [tab.label for tab in app.tabs]
+    assert labels == ["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand"]
+    for key in ("result_psf_role",):
+        assert app.selectbox(key=key).value == "All"
+    assert any(metric.label == "College / undergraduate" for metric in app.metric)
+    titles = {figure.layout.title.text for figure in figures}
+    assert "Most common job titles" in titles
+    assert "Top requested skills by occupational family" in titles
+    assert any("Reference roles" in str(item.value) for item in app.subheader)
     assert "fow-section-transition" not in html_content(app)
 
 
@@ -183,7 +184,7 @@ def test_timeline_and_family_insights_acknowledge_ties_while_education_compares_
     assert not app.exception and not app.error
     education_figure = figure_with_title(figures, None)
     education = education_figure.data[0]
-    assert dict(zip(education.y, education.x)) == {"College / undergraduate": 2, "master's degree": 2}
+    assert dict(zip(education.y, education.x)) == {"College / undergraduate": 2, "Postgraduate": 2}
     assert not education_figure.layout.title.text
     assert "not stated" not in [str(label).casefold() for label in education.y]
     assert "2 displayed levels share the highest count" in html_content(app).casefold()
@@ -234,13 +235,14 @@ def test_education_graph_compares_classified_levels_and_reports_missing_below(mo
     pd.testing.assert_frame_equal(tables["cleaned_jobs"], original)
 
 
-def test_experience_band_table_uses_readable_labels_and_hides_sort_key(monkeypatch):
+def test_experience_band_chart_uses_readable_labels_and_whole_number_counts(monkeypatch):
     tables = result_tables()
     tables["cleaned_jobs"]["experience_requirement"] = ["2 years", "3 years", "2 years", "3 years"]
-    app, _ = result_app(monkeypatch, tables)
-    bands = next(frame.value for frame in app.dataframe if "Experience requirement" in frame.value.columns
-                 and "1–2 years" in frame.value["Experience requirement"].astype(str).tolist())
-    assert bands.columns.tolist() == ["Experience requirement", "Job advertisements", "Share of selected ads (%)"]
+    app, figures = result_app(monkeypatch, tables)
+    assert not app.exception and not app.error
+    bands = next(figure for figure in figures if set(figure.data[0].y) == {"1–2 years", "3–5 years"})
+    assert dict(zip(bands.data[0].y, bands.data[0].x)) == {"1–2 years": 2, "3–5 years": 2}
+    assert bands.data[0].texttemplate == "%{x:,d}"
 
 
 def test_alphabetical_chart_order_and_linked_psf_counts(monkeypatch):
@@ -337,11 +339,13 @@ def test_psf_tabs_preload_and_reuse_prepared_all_role_summaries(monkeypatch):
     tables.update(psf_demand_tables(tables["psf_mapping"], tables["cleaned_jobs"], pd.DataFrame()))
     builder = Mock(side_effect=AssertionError("All-role summaries are already available"))
     monkeypatch.setattr(ui, "psf_demand_tables", builder)
-    app, _ = result_app(monkeypatch, tables)
-    tabs = {tab.label: tab for tab in app.tabs}
-    assert tabs["Competency demand"].metric
-    assert tabs["Reference roles"].metric
-    assert tabs["Role–competency heatmap"].metric
+    app, figures = result_app(monkeypatch, tables)
+    assert not app.exception and not app.error
+    assert any(metric.label == "programming" for metric in app.metric)
+    titles = {figure.layout.title.text for figure in figures}
+    assert any("Competency demand" in str(item.value) for item in app.subheader)
+    assert any("Reference roles" in str(item.value) for item in app.subheader)
+    assert any("Role–competency heatmap" in str(item.value) for item in app.subheader)
     builder.assert_not_called()
 
 
@@ -384,7 +388,7 @@ def test_incomplete_psf_chart_group_can_retry(monkeypatch, tmp_path):
     fail[0] = False
     app.run(timeout=30)
     assert not app.exception and not app.error
-    assert any(tab.label == "Role–competency heatmap" for tab in app.tabs)
+    assert any("Role–competency heatmap" in str(item.value) for item in app.subheader)
 
 
 def test_specific_titles_stay_alphabetical_and_grouped_view_is_auditable(monkeypatch):

@@ -37,7 +37,10 @@ def test_text_matches_are_candidate_evidence_and_not_inferred_into_explicit_coun
     assert tables["education_requirement_counts"].iloc[0].requirement == "not stated"
     evidence = tables["requirement_evidence"]
     assert set(evidence.requirement_type) == {"Education", "Experience"}
-    assert evidence.evidence_status.eq("Text mention candidate; researcher should verify context").all()
+    assert set(evidence.evidence_status) == {
+        "Text mention candidate; researcher should verify context",
+        "Text evidence; researcher should verify context",
+    }
     assert evidence.source_id.eq("SYNTHETIC-3").all()
     assert evidence.url.eq("https://example.invalid/synthetic-3").all()
 
@@ -110,6 +113,56 @@ def test_ambiguous_experience_clauses_remain_for_review():
     assert evidence.min_years.isna().all() and evidence.max_years.isna().all()
     assert tables["experience_year_counts"].empty
     assert tables["requirement_field_coverage"].set_index("source_field").loc["experience_requirement", "stated_job_ads"] == len(values)
+
+
+def test_text_experience_recognizes_written_years_and_keeps_source_evidence():
+    jobs = pd.DataFrame([{
+        "source_id": "SYNTHETIC-ROLE-1", "job_title": "Data Analyst",
+        "qualifications": "<ul><li>Two years of college</li><li>Seven years of experience in a similar role</li></ul>",
+        "experience_requirement": "", "url": "https://example.invalid/role-1",
+    }])
+    original = jobs.copy(deep=True)
+
+    tables = job_profile_tables(jobs)
+
+    candidates = tables["experience_text_year_evidence"]
+    assert len(candidates) == 1
+    candidate = candidates.iloc[0]
+    assert candidate.source_id == "SYNTHETIC-ROLE-1"
+    assert candidate.source_field == "qualifications"
+    assert candidate.url == "https://example.invalid/role-1"
+    assert candidate.parse_status == "Parsed stated years"
+    assert candidate.min_years == candidate.max_years == 7
+    assert "Seven years of experience" in candidate.evidence
+    assert "college" not in candidate.evidence.casefold()
+
+    analysis = tables["experience_analysis_year_evidence"].iloc[0]
+    assert analysis.evidence_origin == "text fallback"
+    assert analysis.parse_status == "Parsed stated years"
+    assert tables["experience_band_counts"].experience_band.tolist() == ["6–10 years"]
+    pd.testing.assert_frame_equal(jobs, original)
+
+
+def test_conflicting_text_experience_durations_stay_out_of_bands():
+    jobs = pd.DataFrame([{
+        "source_id": "SYNTHETIC-ROLE-2", "job_title": "Data Analyst",
+        "qualifications": "Seven years of relevant experience.",
+        "job_description": "Five years of experience in a similar role is preferred.",
+        "experience_requirement": "", "url": "https://example.invalid/role-2",
+    }])
+
+    tables = job_profile_tables(jobs)
+
+    candidates = tables["experience_text_year_evidence"]
+    assert len(candidates) == 2
+    assert candidates.source_id.eq("SYNTHETIC-ROLE-2").all()
+    assert candidates.parse_status.str.startswith("Parsed").all()
+    combined = tables["experience_analysis_year_evidence"].iloc[0]
+    assert combined.parse_status == "Needs review"
+    assert pd.isna(combined.min_years) and pd.isna(combined.max_years)
+    assert tables["experience_band_counts"].empty
+    assert len(tables["experience_band_evidence"]) == 1
+    assert tables["experience_band_evidence"].iloc[0].band_status == "Needs review"
 
 
 def test_empty_profile_retains_export_schemas():

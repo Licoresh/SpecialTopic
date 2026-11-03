@@ -103,7 +103,11 @@ def export_research_report(tables, metadata):
         ("education_level_evidence", "Education normalization evidence and review flags"),
         ("experience_requirement_counts", "Experience requirements stated in source fields"),
         ("requirement_field_coverage", "Requirement-field coverage (missing values remain missing)"),
-        ("experience_year_counts", "Unambiguous experience-year expressions in source fields"),
+        ("experience_year_counts", "Unambiguous experience-year expressions in explicit fields"),
+        ("experience_text_year_counts", "Unambiguous experience durations parsed from advertisement text"),
+        ("experience_analysis_year_counts", "Combined experience-year summary"),
+        ("experience_text_year_evidence", "Text-derived experience evidence for researcher verification"),
+        ("experience_analysis_year_evidence", "Combined experience parsing evidence"),
         ("experience_band_counts", "Bounded experience groups"),
         ("experience_band_evidence", "Experience grouping basis and unresolved requirements"),
         ("job_title_family_counts", "Alphabetical specific titles within occupational families"),
@@ -126,10 +130,10 @@ def export_research_report(tables, metadata):
         lines.extend(["### Chart phrase-clarity audit", "",
             f"{len(chart_review):,} source occurrences were withheld from the skill charts by conservative phrase-clarity rules. Original evidence and saved researcher labels remain unchanged. Review these phrases before interpreting them as skills; the screen cannot detect every ambiguity.", "",
             markdown_table(chart_review.drop(columns=["original_text"], errors="ignore").head(100)), ""])
-    years = tables.get("experience_year_evidence")
+    years = tables.get("experience_analysis_year_evidence")
     if years is not None and not years.empty:
         lines.extend(["### Experience-year parsing evidence", "",
-            "Only explicit experience fields contribute to parsed-year summaries. Missing and ambiguous rows stay visible here and are not treated as zero. Parsed stated years describe wording, not an inferred hiring limit.", "",
+            "An explicit experience field takes precedence. When it is missing, one clear duration clause may be parsed from qualifications or advertisement text; text-derived clauses retain their source field and URL for researcher verification. Ambiguous and missing rows are not treated as zero. Parsed stated years describe wording, not an inferred hiring limit.", "",
             markdown_table(years.head(250)), ""])
     evidence = tables.get("requirement_evidence")
     if evidence is not None and not evidence.empty:

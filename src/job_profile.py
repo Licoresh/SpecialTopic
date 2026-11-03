@@ -1,5 +1,6 @@
 """Descriptive job-title and qualification evidence from selected job ads."""
 
+import html
 import re
 
 import pandas as pd
@@ -11,9 +12,28 @@ _MISSING = {"", "not stated", "not specified", "not provided", "not available", 
             "unknown", "none", "null", "nil", "no information", "no info", "not applicable",
             "n/a", "na", "-", "—"}
 _JOB_CODE_PREFIX = re.compile(r"^\s*[A-Z]{2,6}\d{4,}\s*[-–—:]\s*", re.I)
-_YEARS = re.compile(r"(?<![\w.])(?P<low>\d+(?:\.\d+)?)\s*(?:(?:[-–—]|to)\s*(?P<high>\d+(?:\.\d+)?))?\s*(?P<plus>\+)?\s*(?:years?|yrs?)\b", re.I)
+_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+    "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?)"
+_YEARS = re.compile(rf"(?<![\w.])(?P<low>{_NUMBER_TOKEN})\s*(?:(?:[-–—]|\bto\b)\s*(?P<high>{_NUMBER_TOKEN}))?\s*(?P<plus>\+)?\s*(?:years?|yrs?)\b", re.I)
 _OTHER_UNITS = re.compile(r"\b(?:months?|mos?|weeks?|days?)\b", re.I)
 _NO_EXPERIENCE = re.compile(r"\bno\s+(?:(?:prior|previous|work|professional)\s+)*experience\s+(?:is\s+)?(?:required|necessary|needed)\b", re.I)
+_EDUCATION_DURATION_AFTER = re.compile(
+    r"\b(?:years?|yrs?)\s+(?:of|in)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:college|university|school|education|academic(?:\s+study)?|degree|course|study|"
+    r"undergraduate|graduate|vocational|shs|senior\s+high|grade\s*\d+)\b", re.I)
+_EDUCATION_DURATION_BEFORE = re.compile(
+    r"\b(?:college|university|school|education|academic(?:\s+study)?|degree|course|study)\s+(?:for\s+)?$", re.I)
+_EXPERIENCE_CONTEXT = re.compile(r"\b(?:experience|experienced|employment|work\s+history|worked|working|career|tenure|professional\s+background)\b", re.I)
+_ROLE_DURATION_CONTEXT = re.compile(r"\b(?:years?|yrs?)\s+(?:of\s+(?:this\s+)?(?:job|role|position|profession|industry|field)|as\s+(?:an?\s+)?|in\s+(?:the\s+)?(?:(?:same|similar|related|relevant|previous)\s+)?(?:job|role|position|field|industry))\b", re.I)
+_QUALIFICATION_CONTEXT = re.compile(r"\b(?:relevant|professional|related|prior|proven|minimum|at\s+least|must\s+have|required|requirement)\b", re.I)
+_TEXT_REQUIREMENT_FIELDS = ("qualifications", "job_description", "required_skills", "preferred_skills")
 _TITLE_ROLE_RULES = {
     "data analyst": r"\bdata(?:\s+analytics)?\s+analysts?\b",
     "data scientist": r"\bdata\s+scientists?\b",
@@ -144,10 +164,12 @@ def _common_job_title_tables(jobs):
 
 _EDUCATION_LEVELS = [
     ("high school", r"\bhigh\s+school\b"),
-    ("senior high school", r"\b(?:senior\s+high\s+school|shs|grade\s*12)\b"),
-    ("undergraduate / college level", r"\b(?:undergraduate|college[ -]level|college\s+undergrad(?:uate)?)\b"),
+    ("senior high school", r"\b(?:senior\s+high(?:\s+school)?|shs|grade\s*1[12])\b"),
+    ("vocational / technical", r"\b(?:technical[ -]?vocational|vocational(?:\s+(?:graduate|qualification|course))?|tesda\s+certification)\b"),
+    ("undergraduate / college level", r"\b(?:undergrad(?:uate)?|college(?:[ -](?:level|graduate|graduated|degree))?|college\s+undergrad(?:uate)?|2(?:nd|\s*nd)\s+year\s+college\s+level)\b"),
     ("associate degree", r"\bassociate(?:['’]s)?\s+(?:degree|of)\b"),
     ("bachelor's degree", r"\b(?:bachelor(?:['’]?s)?|baccalaureate|b\.?\s*sc\.?|b\.?s\.?|b\.?a\.?)\b"),
+    ("postgraduate degree", r"\bpostgraduate\s+(?:degree|qualification)\b"),
     ("master's degree", r"\b(?:master(?:['’]?s)?|m\.?\s*sc\.?|m\.?s\.?|m\.?a\.?|mba)\b"),
     ("doctoral degree", r"\b(?:doctorate|doctoral|doctor\s+of|ph\.?\s*d\.?)\b"),
 ]
@@ -163,7 +185,7 @@ def _education_tables(jobs):
         levels = [name for name, pattern in _EDUCATION_LEVELS if re.search(pattern, text)]
         if "senior high school" in levels and "high school" in levels:
             levels.remove("high school")
-        status = "Not stated" if _missing(text) else "Needs review"
+        status = "Not stated" if _education_missing(text) else "Needs review"
         level = ""
         # Alternatives, preferences and negated credentials are not a minimum degree.
         conditional = re.search(r"\b(?:preferred|preferably|optional|not required|no degree|equivalent experience)\b", text)
@@ -179,6 +201,14 @@ def _education_tables(jobs):
     denominator = len(jobs)
     summary["job_ads_pct"] = (100 * pd.to_numeric(summary.job_ads) / denominator).round(1) if denominator else 0.0
     return summary.sort_values("level_order", kind="stable").reset_index(drop=True), evidence
+
+
+def _education_missing(value):
+    text = normalize_text(value)
+    return _missing(text) or bool(re.fullmatch(
+        r"(?:educ(?:ation(?:al)?)?\s+)?(?:level\s+)?not\s+specified|not\s+specified\s+(?:education\s+)?level",
+        text,
+    ))
 
 
 def _experience_bands(evidence, denominator):
@@ -261,8 +291,8 @@ def _experience_years(value):
     upper = bool(re.search(r"\b(?:up to|at most|maximum(?: of)?|max\.?)\s*$", text[:match.start()], re.I))
     if re.search(r"\bor\b", re.sub(r"\bor (?:more|above)\b", "", remainder, flags=re.I), re.I) or (lower and upper):
         return "", None, None, "Needs review"
-    low = float(match["low"])
-    high = float(match["high"]) if match["high"] else None
+    low = _year_number(match["low"])
+    high = _year_number(match["high"]) if match["high"] else None
     if high is not None:
         if high < low or lower or upper:
             return "", None, None, "Needs review"
@@ -272,6 +302,19 @@ def _experience_years(value):
     if upper:
         return f"up to {low:g} years", None, low, "Parsed maximum"
     return f"{low:g} years stated", low, low, "Parsed stated years"
+
+
+def _year_number(value):
+    text = clean_text(value).casefold().replace("-", " ")
+    try:
+        return float(text)
+    except ValueError:
+        parts = text.split()
+        if len(parts) == 2 and parts[0] in _NUMBER_WORDS and parts[1] in _NUMBER_WORDS:
+            return float(_NUMBER_WORDS[parts[0]] + _NUMBER_WORDS[parts[1]])
+        if len(parts) == 2 and parts[0] == "one" and parts[1] == "hundred":
+            return 100.0
+        return float(_NUMBER_WORDS.get(text, 0))
 
 
 def experience_phrase_reason(value):
@@ -304,7 +347,8 @@ def _experience_tables(jobs):
     summary["job_ads_pct"] = (100 * pd.to_numeric(summary.job_ads) / denominator).round(1) if denominator else 0.0
     coverage = []
     for field in ("education_requirement", "experience_requirement"):
-        missing = jobs.get(field, pd.Series("", index=jobs.index)).map(_missing)
+        missing_check = _education_missing if field == "education_requirement" else _missing
+        missing = jobs.get(field, pd.Series("", index=jobs.index)).map(missing_check)
         stated = int((~missing).sum())
         coverage.append({"source_field": field, "stated_job_ads": stated,
                          "not_stated_job_ads": int(missing.sum()), "job_ads": len(jobs),
@@ -312,12 +356,107 @@ def _experience_tables(jobs):
     return summary, evidence, pd.DataFrame(coverage)
 
 
-def _requirements(jobs, field, patterns=()):
+def _experience_text_candidates(job):
+    """Find source clauses that clearly state a duration of work or role experience."""
+    candidates = []
+    for field in _TEXT_REQUIREMENT_FIELDS:
+        raw = job.get(field, "")
+        raw = "" if raw is None or pd.isna(raw) else str(raw)
+        # Preserve list and paragraph boundaries before clean_text collapses whitespace.
+        raw = html.unescape(raw)
+        raw = re.sub(r"(?i)<\s*/?\s*(?:br|p|li|ul|ol|div|tr|h[1-6])\b[^>]*>", "\n", raw)
+        raw = re.sub(r"[\r\n]+|[•▪◦●]+", "\n", raw)
+        clauses = []
+        for block in raw.splitlines():
+            block = clean_text(block).lstrip("-–—* ")
+            if block:
+                clauses.extend(re.split(r"(?<=[.!?;])\s+", block))
+        for clause in clauses:
+            clause = clean_text(clause)
+            if not clause:
+                continue
+            for match in _YEARS.finditer(clause):
+                left = clause[max(0, match.start() - 90):match.start()]
+                right = clause[match.end():min(len(clause), match.end() + 90)]
+                local_context = f"{left} {match.group()} {right}"
+                # Exclude durations that describe years of schooling, degrees or courses,
+                # without discarding a nearby experience clause in the same sentence.
+                if (_EDUCATION_DURATION_AFTER.search(f"{match.group()} {right}")
+                        or _EDUCATION_DURATION_BEFORE.search(left)):
+                    continue
+                has_experience_context = bool(_EXPERIENCE_CONTEXT.search(local_context)
+                                              or _ROLE_DURATION_CONTEXT.search(local_context))
+                qualification_duration = field == "qualifications" and bool(_QUALIFICATION_CONTEXT.search(local_context))
+                if not (has_experience_context or qualification_duration):
+                    continue
+                phrase = clean_text(match.group())
+                candidates.append({
+                    "source_id": clean_text(job.get("source_id", "")),
+                    "job_title": clean_text(job.get("job_title", "")),
+                    "candidate_phrase": phrase,
+                    "original_requirement": clean_text(clause),
+                    "source_field": field,
+                    "evidence": clean_text(clause),
+                    "url": clean_text(job.get("url", "")),
+                })
+    # A clause repeated in multiple imported text fields remains one requirement.
+    unique = {}
+    for row in candidates:
+        key = (normalize_text(row["candidate_phrase"]), normalize_text(row["original_requirement"]))
+        unique.setdefault(key, row)
+    return list(unique.values())
+
+
+def _experience_text_tables(jobs):
+    candidate_rows, analysis_rows = [], []
+    for index, job in jobs.iterrows():
+        source_id = clean_text(job.get("source_id", str(index)))
+        explicit = job.get("experience_requirement", "")
+        if not _missing(explicit):
+            continue
+        candidates = _experience_text_candidates(job)
+        parsed = []
+        for candidate in candidates:
+            label, minimum, maximum, status = _experience_years(candidate["original_requirement"])
+            candidate_rows.append({**candidate, "requirement": label, "min_years": minimum,
+                                   "max_years": maximum, "parse_status": status,
+                                   "evidence_status": "Text evidence; researcher should verify context"})
+            parsed.append((label, minimum, maximum, status, candidate))
+        if not parsed:
+            continue
+        signatures = {(item[1], item[2], item[3]) for item in parsed if item[3].startswith("Parsed")}
+        all_parsed = all(item[3].startswith("Parsed") for item in parsed)
+        consistent = all_parsed and len(signatures) == 1
+        first = parsed[0]
+        if consistent:
+            label, minimum, maximum, status = first[:4]
+            source_fields = "; ".join(dict.fromkeys(item[4]["source_field"] for item in parsed))
+            original = " | ".join(dict.fromkeys(item[4]["original_requirement"] for item in parsed))
+        else:
+            label, minimum, maximum, status = "", None, None, "Needs review"
+            source_fields = "; ".join(dict.fromkeys(item[4]["source_field"] for item in parsed))
+            original = " | ".join(dict.fromkeys(item[4]["original_requirement"] for item in parsed))
+        analysis_rows.append({
+            "source_id": source_id, "job_title": clean_text(job.get("job_title", "")),
+            "original_requirement": original, "requirement": label,
+            "min_years": minimum, "max_years": maximum, "parse_status": status,
+            "source_field": source_fields, "url": clean_text(job.get("url", "")),
+            "evidence": original, "evidence_origin": "text fallback",
+        })
+    candidate_columns = ["source_id", "job_title", "candidate_phrase", "original_requirement", "requirement",
+                         "min_years", "max_years", "parse_status", "source_field", "evidence", "url", "evidence_status"]
+    analysis_columns = ["source_id", "job_title", "original_requirement", "requirement", "min_years", "max_years",
+                        "parse_status", "source_field", "url", "evidence", "evidence_origin"]
+    return pd.DataFrame(candidate_rows, columns=candidate_columns), pd.DataFrame(analysis_rows, columns=analysis_columns)
+
+
+def _requirements(jobs, field, patterns=(), missing_check=None):
     """Return explicit-field distribution plus traceable text evidence candidates."""
     if jobs.empty:
         return (pd.DataFrame(columns=["requirement", "job_ads"]),
                 pd.DataFrame(columns=["source_id", "job_title", "requirement_type", "phrase", "source_field", "evidence", "url"]))
 
+    missing_check = missing_check or _missing
     explicit_rows = []
     evidence_rows = []
     for _, job in jobs.iterrows():
@@ -325,8 +464,9 @@ def _requirements(jobs, field, patterns=()):
         title = clean_text(job.get("job_title", ""))
         url = clean_text(job.get("url", ""))
         explicit = clean_text(job.get(field, ""))
-        explicit_rows.append({"source_id": source_id, "requirement": "Not stated" if _missing(explicit) else explicit})
-        if not _missing(explicit):
+        is_missing = missing_check(explicit)
+        explicit_rows.append({"source_id": source_id, "requirement": "Not stated" if is_missing else explicit})
+        if not is_missing:
             evidence_rows.append({"source_id": source_id, "job_title": title,
                                   "requirement_type": field.removesuffix("_requirement").title(),
                                   "phrase": explicit, "source_field": field,
@@ -364,12 +504,41 @@ def job_profile_tables(jobs):
     titles = _counts(title_sources, "job_title", "job_ads").sort_values("job_title", kind="stable").reset_index(drop=True)
     families = _counts(job_ads, "job_family", "job_ads")
     locations = _counts(job_ads, "location", "job_ads")
-    education, education_evidence = _requirements(job_ads, "education_requirement", (EDUCATION,))
+    education, education_evidence = _requirements(job_ads, "education_requirement", (EDUCATION,), _education_missing)
     experience, experience_evidence = _requirements(job_ads, "experience_requirement", (EXPERIENCE,))
     evidence = pd.concat([education_evidence, experience_evidence], ignore_index=True)
     years, year_evidence, coverage = _experience_tables(job_ads)
+    year_evidence = year_evidence.copy()
+    year_evidence["evidence_origin"] = "explicit field"
+    text_year_evidence, text_analysis_evidence = _experience_text_tables(job_ads)
+    if not text_year_evidence.empty:
+        text_requirement_evidence = text_year_evidence[["source_id", "job_title", "candidate_phrase", "source_field", "evidence", "url", "evidence_status"]].copy()
+        text_requirement_evidence = text_requirement_evidence.rename(columns={"candidate_phrase": "phrase"})
+        text_requirement_evidence["requirement_type"] = "Experience"
+        evidence = pd.concat([evidence, text_requirement_evidence], ignore_index=True, sort=False)
+    text_source_ids = set(text_analysis_evidence.source_id) if not text_analysis_evidence.empty else set()
+    year_evidence["evidence"] = year_evidence["original_requirement"]
+    explicit_analysis_evidence = year_evidence.loc[~year_evidence.source_id.isin(text_source_ids)].copy()
+    if text_analysis_evidence.empty:
+        analysis_year_evidence = explicit_analysis_evidence.reset_index(drop=True)
+    elif explicit_analysis_evidence.empty:
+        analysis_year_evidence = text_analysis_evidence.reset_index(drop=True)
+    else:
+        for frame in (explicit_analysis_evidence, text_analysis_evidence):
+            for column in ("min_years", "max_years"):
+                frame[column] = pd.to_numeric(frame[column], errors="coerce").astype(float)
+        analysis_year_evidence = pd.concat(
+            [explicit_analysis_evidence, text_analysis_evidence], ignore_index=True, sort=False
+        )
+    text_parsed = text_year_evidence[text_year_evidence.parse_status.str.startswith("Parsed")]
+    analysis_parsed = analysis_year_evidence[analysis_year_evidence.parse_status.str.startswith("Parsed")]
+    text_year_counts = _counts(text_parsed, "requirement", "job_ads")
+    analysis_year_counts = _counts(analysis_parsed, "requirement", "job_ads")
+    denominator = job_ads.source_id.nunique() if "source_id" in job_ads else len(job_ads)
+    for counts in (text_year_counts, analysis_year_counts):
+        counts["job_ads_pct"] = (100 * pd.to_numeric(counts.job_ads) / denominator).round(1) if denominator else 0.0
     education_levels, education_level_evidence = _education_tables(job_ads)
-    experience_bands, experience_band_evidence = _experience_bands(year_evidence, len(job_ads))
+    experience_bands, experience_band_evidence = _experience_bands(analysis_year_evidence, len(job_ads))
     tables = {"job_title_counts": titles,
               "common_job_title_counts": common_titles,
               "common_job_title_evidence": common_title_evidence,
@@ -382,6 +551,10 @@ def job_profile_tables(jobs):
               "requirement_evidence": evidence,
               "experience_year_counts": years,
               "experience_year_evidence": year_evidence,
+              "experience_text_year_counts": text_year_counts,
+              "experience_text_year_evidence": text_year_evidence,
+              "experience_analysis_year_counts": analysis_year_counts,
+              "experience_analysis_year_evidence": analysis_year_evidence,
               "requirement_field_coverage": coverage,
               "education_level_counts": education_levels,
               "education_level_evidence": education_level_evidence,

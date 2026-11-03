@@ -156,6 +156,23 @@ def education_bar(frame):
     return fig
 
 
+def experience_bar(frame):
+    """Show only experience bands supported by unambiguous source evidence."""
+    data = frame.sort_values("band_order", kind="stable")
+    fig = px.bar(data, x="job_ads", y="experience_band", orientation="h", custom_data=["job_ads_pct"],
+                 labels={"experience_band": "Experience requirement", "job_ads": "Job advertisements"})
+    fig.update_traces(marker_color=st.get_option("theme.primaryColor"), texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
+                      hovertemplate="<b>%{y}</b><br>Job advertisements: %{x:,d}<br>Share of selected ads: %{customdata[0]:.1f}%<extra></extra>")
+    maximum = data.job_ads.max() if not data.empty else 0
+    fig.update_xaxes(**count_axis(maximum), range=[0, max(1, maximum * 1.18)], title="Job advertisements",
+                     showgrid=False, zeroline=False)
+    fig.update_yaxes(categoryorder="array", categoryarray=data.experience_band.tolist(), autorange="reversed",
+                     title=None, showgrid=False)
+    fig.update_layout(height=max(300, 145 + 42 * len(data)), showlegend=False,
+                      margin=dict(l=20, r=45, t=65, b=35))
+    return fig
+
+
 def heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denominators=None,
             share_label="Share within row group", denominator_label="Row-group advertisements", transpose=False):
     if matrix.empty:
