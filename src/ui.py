@@ -37,7 +37,7 @@ from .geography import location_tables
 from .alignment import STATUSES, ALIGNMENT_COLUMNS
 from .skill_extraction import EXTRACTION_COLUMNS
 from .psf_reviews import REVIEW_TABLE, save_mapping_review, prepare_mapping_review, occurrence_hash
-from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar, experience_bar, job_title_trend
+from .visualization import bar, distribution, heatmap, count_axis, ranked_bar, education_bar, job_title_trend
 from .reporting import export_csv, export_excel, export_html, export_research_report
 from .utils import timestamp, frame_hash, digest
 from .readiness import (assess_research_readiness, source_overlap,
@@ -53,6 +53,35 @@ from . import background_tasks
 
 MANUAL_REVIEW_COLUMNS = ["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"]
 _CHART_DOWNLOAD_TARGET = ContextVar("chart_download_target", default=None)
+
+
+def _expander_icon(title):
+    """Choose a stable semantic icon for expandable rows without an explicit icon."""
+    label = str(title).casefold()
+    if any(word in label for word in ("source", "evidence", "advertisement text")):
+        return ":material/source:"
+    if any(word in label for word in ("review", "label", "annotation", "correction")):
+        return ":material/rate_review:"
+    if any(word in label for word in ("how to", "how ", "guide", "methodology", "read the")):
+        return ":material/menu_book:"
+    if any(word in label for word in ("setting", "configuration", "threshold", "advanced", "batch tools")):
+        return ":material/tune:"
+    if any(word in label for word in ("upload", "import", "map uploaded")):
+        return ":material/upload_file:"
+    if any(word in label for word in ("validation", "quality", "duplicate", "checks", "disagreements")):
+        return ":material/fact_check:"
+    if any(word in label for word in ("training", "model", "evaluation", "reproducibility")):
+        return ":material/model_training:"
+    if any(word in label for word in ("table", "count", "records", "files", "export", "summaries")):
+        return ":material/table_view:"
+    return ":material/description:"
+
+
+def _icon_expander(title, **kwargs):
+    """Render expanders with a semantic maroon icon while respecting explicit choices."""
+    if kwargs.get("icon") is None:
+        kwargs["icon"] = _expander_icon(title)
+    return st.expander(title, **kwargs)
 
 
 @contextmanager
@@ -350,7 +379,7 @@ def display(frame, *, key=None):
 @st.fragment
 def evidence_tables(title, tables, *, key, order=None, label=None, value=None, note=None, icon=None):
     """Open and page evidence without rebuilding surrounding charts or reading sources."""
-    panel = st.expander(title, key=key, icon=icon, on_change="rerun")
+    panel = _icon_expander(title, key=key, icon=icon, on_change="rerun")
     if panel.open:
         with panel:
             if note:
@@ -361,44 +390,6 @@ def evidence_tables(title, tables, *, key, order=None, label=None, value=None, n
                 frame = frame() if callable(frame) else frame
                 display(ordered_result_table(frame, label, order, value) if order else frame,
                         key=f"{key}_page_{index}")
-
-
-@st.fragment
-def outside_experience_evidence(evidence, jobs):
-    count = evidence.source_id.nunique()
-    if not st.toggle(f"Show the {count:,} {'ad' if count == 1 else 'ads'} outside these bands",
-                     key="result_unbanded_experience"):
-        return
-    reasons = {
-        "Parsed minimum": "Minimum only; no upper limit is stated.",
-        "Parsed maximum": "Maximum only; no minimum is stated.",
-        "Parsed range": "The range does not fit entirely inside one displayed band.",
-        "Parsed stated years": "The stated duration is outside the configured bands.",
-        "Needs review": "Wording needs review; one unambiguous numerical duration could not be established.",
-    }
-    shown = evidence.drop_duplicates("source_id").copy()
-    employers = jobs.drop_duplicates("source_id").set_index("source_id").get("company", pd.Series(dtype=str))
-    shown["Employer"] = shown.source_id.map(employers).fillna("").replace("", "Not stated")
-    shown["Why outside the bands"] = shown.parse_status.map(reasons).fillna("Available wording does not establish one numerical band.")
-    separate_durations = shown.parse_status.eq("Needs review") & shown.requirement.fillna("").ne("")
-    shown.loc[separate_durations, "Why outside the bands"] = "Separate duration clauses were converted; review their contexts before assigning one band."
-    shown["Converted duration"] = shown.requirement.fillna("").replace("", "Not resolved")
-    shown["Minimum years"] = pd.to_numeric(shown.min_years, errors="coerce")
-    shown["Maximum years"] = pd.to_numeric(shown.max_years, errors="coerce")
-    shown = shown.rename(columns={"source_id": "Source ad ID", "job_title": "Job title",
-                                   "original_requirement": "Original experience wording", "url": "Source URL"})
-    shown = shown[["Job title", "Employer", "Converted duration", "Minimum years", "Maximum years",
-                   "Original experience wording", "Why outside the bands", "Source ad ID", "Source URL"]]
-    st.caption("Written numbers are converted to years. A blank minimum or maximum is unknown. Separate durations retain their individual contexts in the parsing evidence below.")
-    st.dataframe(shown, hide_index=True, width="stretch", column_config={
-        "Original experience wording": st.column_config.TextColumn(width="large"),
-        "Why outside the bands": st.column_config.TextColumn(width="large"),
-        "Source URL": st.column_config.LinkColumn(display_text="Open original ad")},
-        alt=f"{count} job advertisements with experience wording outside the numerical bands")
-    with st.container(horizontal=True, horizontal_alignment="right"):
-        st.download_button("Download these ads (CSV)", data=lambda: export_csv(shown),
-                           file_name="experience-outside-bands.csv", mime="text/csv",
-                           on_click="ignore", key="unbanded_experience_download", icon=":material/download:")
 
 
 def _paginate_frame(frame, page, page_size=100):
@@ -765,7 +756,7 @@ def upload(kind=None):
                 header_changes = frame.attrs.get("header_changes", [])
                 if header_changes:
                     st.info("Repeated or blank column headers were given unique names for mapping. The uploaded source remains unchanged.")
-                    with st.expander(f"Review {len(header_changes)} adjusted column header(s)"):
+                    with _icon_expander(f"Review {len(header_changes)} adjusted column header(s)"):
                         display(pd.DataFrame(header_changes))
                 display(frame.head(50))
                 st.caption(f"{len(frame):,} rows. Preview shows at most 50.")
@@ -781,7 +772,7 @@ def upload(kind=None):
                 visible = [column for column in ("dataset", "filename", "timestamp") if column in manifest_view]
                 st.caption("Saved source files")
                 display(manifest_view[visible])
-    with st.expander("Map uploaded columns", expanded=True):
+    with _icon_expander("Map uploaded columns", expanded=True):
         column_mapping(kind)
 
 def column_mapping(kind="jobs"):
@@ -803,7 +794,7 @@ def column_mapping(kind="jobs"):
         with content():
             st.caption("Columns are matched automatically using saved choices, standard names, common aliases and conservative spelling similarity. Review the prefilled fields, then save. Ambiguous columns stay unassigned.")
             st.info(f"{sum(bool(value) for value in suggested.values())} of {len(suggested)} fields matched. Missing optional fields can remain blank.")
-            with st.expander("Automatic matching details"):
+            with _icon_expander("Automatic matching details"):
                 display(pd.DataFrame(evidence))
                 st.caption("Scores measure header similarity, not validated mapping accuracy. Source content is not sent to an AI service.")
             mapping_fields = (("competency_id", "competency_name", "range_of_application") if kind == "psf_aai"
@@ -921,7 +912,7 @@ def quality():
                 screening = frame.reindex(columns=["source_id", "job_title", "company", "location", "url"]).copy()
                 screening["exclude"] = screening.source_id.isin(prior)
                 screening["exclusion_reason"] = screening.source_id.map(prior).fillna("")
-                screen = st.expander("Screen advertisements and document exclusions", key="quality_screening", on_change="rerun")
+                screen = _icon_expander("Screen advertisements and document exclusions", key="quality_screening", on_change="rerun")
                 if screen.open:
                     with screen:
                         st.caption("Exclude ads outside the Philippine AI/analytics scope or without sufficient evidence. Each exclusion needs a reason. The original upload stays archived.")
@@ -954,12 +945,12 @@ def quality():
                         blank = cleaned[["required_skills", "preferred_skills"]].fillna("").astype(str).apply(lambda col: col.str.strip().eq("")).all(axis=1).sum()
                         notes.append(f"Both dedicated skill fields are blank in {int(blank):,} of {len(cleaned):,} {'ad' if len(cleaned) == 1 else 'ads'}. Skills may still be present in the advertisement text.")
                     content_note("Data quality insights", f"This preview contains {len(cleaned):,} {'record' if len(cleaned) == 1 else 'records'} after the selected exclusions and duplicate removals.", items=notes, icon="fact_check")
-                    details = st.expander("Detailed quality checks", icon=":material/fact_check:", key="quality_report_details", on_change="rerun")
+                    details = _icon_expander("Detailed quality checks", icon=":material/fact_check:", key="quality_report_details", on_change="rerun")
                     if details.open:
                         with details:
                             display(report_view)
                     if kind == "jobs":
-                        coverage = st.expander("Job-title, location and requirement summaries", key="quality_job_summaries", on_change="rerun")
+                        coverage = _icon_expander("Job-title, location and requirement summaries", key="quality_job_summaries", on_change="rerun")
                         if coverage.open:
                             with coverage:
                                 preview = job_profile_tables(cleaned)
@@ -967,7 +958,7 @@ def quality():
                                 st.caption("Result summaries combine case, Unicode and spacing variants. Original fields remain unchanged. Missing requirements stay missing; ambiguous experience wording is retained for review.")
                                 display(preview["experience_year_evidence"].drop(columns=["url"], errors="ignore"))
                     if potential:
-                        duplicates = st.expander("Potential duplicate evidence", key="quality_duplicate_evidence", on_change="rerun")
+                        duplicates = _icon_expander("Potential duplicate evidence", key="quality_duplicate_evidence", on_change="rerun")
                         if duplicates.open:
                             with duplicates:
                                 display(frame[frame.source_id.isin(potential)])
@@ -975,7 +966,7 @@ def quality():
                         st.caption("Lowercase cleaned job values (source IDs, dates and case-sensitive links keep their original identity).")
                         with content_section("Cleaned data preview", "table_view", "quality_preview"):
                             display(analysis_job_values(cleaned).head(100))
-                        original = st.expander("Original source evidence", key="quality_original_evidence", on_change="rerun")
+                        original = _icon_expander("Original source evidence", key="quality_original_evidence", on_change="rerun")
                         if original.open:
                             with original:
                                 display(frame.head(100))
@@ -1008,7 +999,7 @@ def quality():
 
 def extraction():
     page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
-    with st.expander("How extraction works", expanded=False):
+    with _icon_expander("How extraction works", expanded=False):
         st.write("Previously approved labels are attached when a normalized phrase matches the reviewed dataset. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
     if storage.read_json("uploads", {}).get("psf_aai") and _local_verified_psf_available():
         st.warning("Your reviewed PSF-AAI framework is saved on this computer but has not reached the shared workspace.")
@@ -1153,10 +1144,10 @@ def _auto_retraining_control():
 def labeling():
     page_intro("Review and label phrases", "Choose a category and one or more PSF-AAI competencies together in the manual review table.")
     review_content = st.container()
-    source_tools = st.expander("Sources and batch tools", icon=":material/settings:", key="review_source_tools", on_change="rerun")
+    source_tools = _icon_expander("Sources and batch tools", icon=":material/settings:", key="review_source_tools", on_change="rerun")
     if source_tools.open:
         with source_tools:
-            with st.expander("Optional: add remote job sources"):
+            with _icon_expander("Optional: add remote job sources"):
                 st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
                 if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
                     from .himalayas_feed import fetch_philippines_jobs
@@ -1171,11 +1162,11 @@ def labeling():
                         st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
                         if report["new_rows_added"]:
                             st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
-            with st.expander("Local AI drafts — batch tools"):
+            with _icon_expander("Local AI drafts — batch tools"):
                 st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
                 if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
                     _start_processing("Generate local drafts", background_tasks.suggest_local, storage.ROOT)
-            with st.expander("Prepare candidates from posting CSVs"):
+            with _icon_expander("Prepare candidates from posting CSVs"):
                 from .posting_import import prepare_posting_candidates, COUNTRY_RULE
                 posting_files = [item["filename"] for item in inspect_training_folder(storage.ROOT)
                                  if item["purpose"] == "job-ad source data" and item["filename"].lower().endswith(".csv")
@@ -1264,7 +1255,7 @@ def labeling():
                     if account_reviewer or supabase_store.configured():
                         reviewer = account_reviewer
                     else:
-                        with st.expander("Reviewer details"):
+                        with _icon_expander("Reviewer details"):
                             reviewer = st.text_input("Reviewer ID", key="label_reviewer")
                     _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train)
 
@@ -1456,7 +1447,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                         changed = set(selected) != set(original)
                         if not mapping_available or not (selected or not saved.empty or changed):
                             continue
-                        with st.expander(f"Evidence: {row['Phrase']} — ad {row['Source advertisement']}", expanded=changed):
+                        with _icon_expander(f"Evidence: {row['Phrase']} — ad {row['Source advertisement']}", expanded=changed):
                             if not occurrence or not str(occurrence.get("original_text", "")).strip():
                                 st.warning("This advertisement's source text is unavailable on this device. Ask the admin to open Team updates → Restore shared ad evidence on the computer with the original uploads, then refresh this review table.")
                             else:
@@ -1612,7 +1603,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                         _auto_train_after_review(labels, auto_train)
                     uploaded = None
                     if not supabase_store.configured():
-                        with st.expander("Import team annotations", icon=":material/upload:"):
+                        with _icon_expander("Import team annotations", icon=":material/upload:"):
                             st.caption("Merge reviewed files from teammates. Reviewer IDs and timestamps are preserved; resolve any category conflicts before importing.")
                             uploaded = st.file_uploader("Import teammate-reviewed CSV/XLSX (preserves reviewer IDs and timestamps)", type=["csv", "xlsx"])
                     imported = load_data(uploaded.getvalue(), uploaded.name) if uploaded else pd.DataFrame()
@@ -1622,7 +1613,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                         st.success("Teammate annotations merged. Original reviewer IDs and timestamps were preserved; rows without source provenance will not qualify for training.")
                         _auto_train_after_review(labels, auto_train)
                     if not labels.empty:
-                        with st.expander("Saved category annotations"):
+                        with _icon_expander("Saved category annotations"):
                             display(labels)
                     st.download_button("Download reviewed training data", export_csv(labels), "labeled_competencies.csv", "text/csv")
                     # End polling only when it cannot interrupt a manual decision. Otherwise
@@ -1646,7 +1637,7 @@ def training():
         with loading_content("training_sources", "pending") as content:
             inventory = load_data_with_skeleton(lambda: inspect_training_folder(storage.ROOT), height=140)
             with content():
-                with st.expander("Detected files in ./train"):
+                with _icon_expander("Detected files in ./train"):
                     display(pd.DataFrame(inventory))
                 try:
                     path = resolve_training_file(storage.ROOT)
@@ -1703,10 +1694,10 @@ def training():
             if validation["errors"]:
                 st.info("Training unavailable: " + " ".join(validation["errors"]))
                 st.write(f"At least {validation.get('additional_distinct_labels_needed', 30)} more distinct usable labels needed; {validation.get('additional_classes_needed', 2)} additional classes needed. Each class must have five examples with source IDs, reviewer and timestamp.")
-            with st.expander("Dataset validation details"):
+            with _icon_expander("Dataset validation details"):
                 st.json(validation)
             config = VECTORIZER_CONFIG | {"max_features": int(max_features)}
-            with st.expander("Advanced training settings", expanded=False):
+            with _icon_expander("Advanced training settings", expanded=False):
                 st.json({"TF-IDF": config, "holdout_fraction": fraction, "random_state": 42,
                          "Logistic Regression": {"max_iter": 1000, "class_weight": "balanced"},
                          "Multinomial Naive Bayes": {"alpha": 1.0}, "include_irrelevant": include_irrelevant})
@@ -1732,7 +1723,7 @@ def training():
 
 def evaluation():
     page_intro("Evaluate models", "Review model evaluation only when the holdout represents independent job-ad sources.")
-    with st.expander("How to read the evaluation metrics", expanded=False):
+    with _icon_expander("How to read the evaluation metrics", expanded=False):
         st.markdown("**Precision** is the share of a model's category predictions that are correct. **Recall** is the share of actual items in a category that the model finds. **F1-score** balances precision and recall. Macro F1 weighs categories equally; Weighted F1 accounts for category frequency.")
     with loading_content("evaluation_eligibility", "evaluation") as content:
         metadata, metrics = load_data_with_skeleton(
@@ -1807,9 +1798,9 @@ def evaluation():
                     result_heatmap(matrix, "Model Confusion Matrix — actual rows, predicted columns")
                     display(per_class)
                     display(predictions)
-                    with st.expander("Stratified cross-validation (training partition only)"):
+                    with _icon_expander("Stratified cross-validation (training partition only)"):
                         st.json(metadata["cross_validation_results"][choice])
-                    with st.expander("Reproducibility metadata"):
+                    with _icon_expander("Reproducibility metadata"):
                         st.json(metadata)
                     phrase = st.text_input("Phrase to classify with the saved selected model")
                     if action_button("Predict competency category", disabled=not phrase.strip()):
@@ -1878,7 +1869,7 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
         st.dataframe(source_record, width="stretch", hide_index=True, row_height=38 if prefix == "manual" else 30, height=100 if prefix == "manual" else 70,
                      column_config={"Source URL": st.column_config.LinkColumn("Source URL")},
                      alt="Source advertisement record for the selected competency review")
-    with st.expander("Source advertisement text", expanded=prefix == "manual"):
+    with _icon_expander("Source advertisement text", expanded=prefix == "manual"):
         st.text(str(occurrence.get("original_text", "")))
     if occurrence.get("pending_extraction") is True:
         st.info("This candidate is not in the current extraction. Saved links enter analysis only after the same occurrence is extracted and accepted. Changed evidence will require another review.")
@@ -1962,16 +1953,26 @@ def analysis_workflow():
             '<h2>Analysis Pipeline</h2><ol>' + cards + '</ol></section>')
 
 
-def result_chart_options(*, key_prefix="result_chart"):
+def _chart_order_note(order, limit):
+    note = f"Up to {limit} aggregated categories per chart. Full evidence tables are paginated and exportable. "
+    if order == "Highest demand":
+        return note + "Darker bars mark the highest count, including ties."
+    if order == "Lowest demand":
+        return note + "Darker bars mark the lowest displayed count, including ties."
+    return note + "Alphabetical order supports label lookup, rather than demand ranking."
+
+
+def result_chart_options(*, key_prefix="result_chart", note_below=False):
     with st.container(horizontal=True, gap="medium", vertical_alignment="bottom", key=f"result_chart_controls_{key_prefix}"):
         with st.container(horizontal=True, key=f"result_chart_selectors_{key_prefix}"):
             order = st.selectbox("Chart order", ["Alphabetical", "Highest demand", "Lowest demand"], index=1, key=f"{key_prefix}_order")
             limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key=f"{key_prefix}_limit")
+        if not note_below:
+            with st.container(key=f"result_chart_note_{key_prefix}"):
+                st.caption(_chart_order_note(order, limit))
+    if note_below:
         with st.container(key=f"result_chart_note_{key_prefix}"):
-            st.caption(f"Up to {limit} aggregated categories per chart. Full evidence tables are paginated and exportable. " +
-                       ("Darker bars mark the highest count, including ties." if order == "Highest demand" else
-                        "Darker bars mark the lowest displayed count, including ties." if order == "Lowest demand" else
-                        "Alphabetical order supports label lookup, rather than demand ranking."))
+            st.caption(_chart_order_note(order, limit))
     return order, limit
 
 
@@ -1991,7 +1992,8 @@ def result_single_metric(title, label, value, unit, detail, *, key):
         st.caption(" · ".join(part for part in (unit, detail) if part))
 
 
-def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False, downloads=True):
+def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False,
+                       downloads=True, show_heading=True):
     if frame.empty:
         st.caption("No evidence for this chart in the current selection.")
         return
@@ -2019,9 +2021,9 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
             trace.update(marker_color=["#99043B" if count == maximum else "#958277" for count in trace.x])
     if len(frame) != 1:
         if downloads:
-            chart(figure)
+            chart(figure, show_heading=show_heading)
         else:
-            chart(figure, downloads=False)
+            chart(figure, downloads=False, show_heading=show_heading)
         return figure
     category = figure.data[0].y[0]
     count = figure.data[0].x[0]
@@ -2124,16 +2126,28 @@ def result_insight(title, summary, rows, list_title="Top 3"):
     )
 
 
-def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Key Insight", list_title="Top 3"):
+def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Key Insight", list_title="Top 3",
+                          heading=None, heading_icon=":material/bar_chart:", render_insight=None, download_slot=None):
     """Use the reference's single chart-and-insight card without changing data."""
-    embedded = key in {"titles", "family_heatmap", "selected_title", "title_timeline"}
+    embedded = key in {"titles", "family_heatmap", "selected_title", "title_timeline", "psf_competency_demand"}
     with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
-        download_slot = card_download_slot()
+        if download_slot is not None:
+            if heading:
+                st.subheader(heading, icon=heading_icon)
+        elif heading:
+            heading_column, download_slot = st.columns([3.2, 1], vertical_alignment="center")
+            with heading_column:
+                st.subheader(heading, icon=heading_icon)
+        else:
+            download_slot = card_download_slot()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
         with chart_column, chart_download_target(download_slot):
-            render_chart()
+            figure = render_chart()
         with insight_column:
-            result_insight(insight_title, summary, rows, list_title)
+            if render_insight:
+                render_insight(figure)
+            else:
+                result_insight(insight_title, summary, rows, list_title)
 
 
 def result_role_distribution(roles):
@@ -2396,7 +2410,7 @@ def _job_market_content(tables, meta, revision=None):
                                   lambda: plot(broad, "category_group", "job_ads", "Broad competency areas"),
                                   key="broad_competency_areas")
             st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
-        with st.expander("How technical and enabling categories are determined"):
+        with _icon_expander("How technical and enabling categories are determined"):
             st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
             st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
             st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
@@ -2696,6 +2710,7 @@ def _job_market_content(tables, meta, revision=None):
         qualification_charts(profile)
 
     def qualification_charts(profile):
+        order, limit = result_chart_options(key_prefix="result_qualifications")
         coverage = profile["requirement_field_coverage"].set_index("source_field")
         education_stated = int(coverage.loc["education_requirement", "stated_job_ads"])
         experience_evidence = profile["experience_analysis_year_evidence"]
@@ -2703,17 +2718,10 @@ def _job_market_content(tables, meta, revision=None):
         experience_observed = int(experience_evidence.loc[
             experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"
         ].nunique())
-        band_evidence = profile["experience_band_evidence"]
-        banded_ids = set(band_evidence.loc[band_evidence.band_status.eq("Banded"), "source_id"])
-        observed_ids = set(experience_evidence.loc[
-            experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"])
-        unbanded_evidence = band_evidence.loc[band_evidence.source_id.isin(observed_ids - banded_ids)]
-        banded_count, unbanded_count = len(banded_ids), len(observed_ids - banded_ids)
         with st.container(border=True, key="job_market_qualification_summary"):
             st.subheader("What qualifications are stated?", icon=":material/school:")
             st.write(f"Education: stated in {education_stated:,} of {denominator:,} ads.")
-            st.write(f"Experience: identified in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text. "
-                     f"{banded_count:,} fit numerical bands; {unbanded_count:,} remain outside those bands.")
+            st.write(f"Experience: identified in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text.")
         education = profile["education_level_counts"]
         missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
         stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
@@ -2732,55 +2740,67 @@ def _job_market_content(tables, meta, revision=None):
             job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"),
             level_order=("level_order", "min"),
         ).sort_values("level_order", kind="stable").reset_index(drop=True)
-        with st.container(border=True, key="job_market_education"):
-            st.subheader("Stated education requirements by level", icon=":material/bar_chart:")
-            education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
-            with education_column:
-                if len(education_chart) > 1:
-                    chart(education_bar(education_chart), title="Stated education requirements by level")
-                elif len(education_chart) == 1:
-                    level = education_chart.iloc[0]
-                    st.metric(str(level.education_level), f"{int(level.job_ads):,}",
-                              help="Distinct selected job advertisements with this stated education level.")
-                    st.caption("Job advertisements with a classifiable stated education level.")
+        with st.container(key="job_market_education"):
+            if education_chart.empty:
+                summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
+            elif len(education_chart) == 1:
+                only = education_chart.iloc[0]
+                summary = (f"Only one classifiable stated level appears in this selection: "
+                           f"{only.education_level} ({int(only.job_ads):,} ads).")
+                top_levels = []
+            else:
+                maximum = int(education_chart.job_ads.max())
+                leaders = education_chart.loc[education_chart.job_ads.eq(maximum), "education_level"].astype(str).tolist()
+                leader_text = ", ".join(leaders)
+                classified_total = int(education_chart.job_ads.sum())
+                if len(leaders) > 1:
+                    summary = (f"{len(leaders):,} displayed levels share the highest count "
+                               f"({maximum:,} ads each): {leader_text}. There are {classified_total:,} "
+                               "ads with one recognized level.")
                 else:
-                    st.info("No stated education requirement has one unambiguous level to compare in this selection.")
-            with insight_column:
-                if education_chart.empty:
-                    summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
-                elif len(education_chart) == 1:
-                    only = education_chart.iloc[0]
-                    summary = (f"Only one classifiable stated level appears in this selection: "
-                               f"{only.education_level} ({int(only.job_ads):,} ads).")
-                    top_levels = []
-                else:
-                    maximum = int(education_chart.job_ads.max())
-                    leaders = education_chart.loc[education_chart.job_ads.eq(maximum), "education_level"].astype(str).tolist()
-                    leader_text = ", ".join(leaders)
-                    classified_total = int(education_chart.job_ads.sum())
-                    if len(leaders) > 1:
-                        summary = (f"{len(leaders):,} displayed levels share the highest count "
-                                   f"({maximum:,} ads each): {leader_text}. There are {classified_total:,} "
-                                   "ads with one recognized level.")
-                    else:
-                        summary = (f"{leader_text} has the highest classified count ({maximum:,} of "
-                                   f"{classified_total:,} ads with one recognized level).")
-                    top_levels = list(education_chart.sort_values(
-                        ["job_ads", "level_order"], ascending=[False, True], kind="stable"
-                    ).loc[:, ["education_level", "job_ads"]].itertuples(index=False, name=None))
-                result_insight("Education Insight", summary, top_levels, "Classified levels")
+                    summary = (f"{leader_text} has the highest classified count ({maximum:,} of "
+                               f"{classified_total:,} ads with one recognized level).")
+                top_levels = list(education_chart.sort_values(
+                    ["job_ads", "level_order"], ascending=[False, True], kind="stable"
+                ).loc[:, ["education_level", "job_ads"]].itertuples(index=False, name=None))
+            if len(education_chart) > 1:
+                featured_visual_chart(
+                    lambda: chart(education_bar(education_chart), title="Stated education requirements by level",
+                                  show_heading=False),
+                    summary, top_levels, key="education", insight_title="Education Insight",
+                    list_title="Classified levels", heading="Stated education requirements by level",
+                )
+            else:
+                with st.container(border=True, key="job_market_featured_education_summary"):
+                    st.subheader("Stated education requirements by level", icon=":material/bar_chart:")
+                    education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
+                    with education_column:
+                        if len(education_chart) == 1:
+                            level = education_chart.iloc[0]
+                            st.metric(str(level.education_level), f"{int(level.job_ads):,}",
+                                      help="Distinct selected job advertisements with this stated education level.")
+                            st.caption("Job advertisements with a classifiable stated education level.")
+                        else:
+                            st.info("No stated education requirement has one unambiguous level to compare in this selection.")
+                    with insight_column:
+                        result_insight("Education Insight", summary, top_levels, "Classified levels")
             stated_pct = 100 * stated_education / denominator if denominator else 0.0
             missing_pct = 100 * missing_education / denominator if denominator else 0.0
             st.caption(f"Not stated: {missing_education:,} of {denominator:,} selected ads ({missing_pct:.1f}%). "
                        f"An education requirement appears in {stated_education:,} ads ({stated_pct:.1f}%), including {needs_review_education:,} "
                        "that could not be assigned one unambiguous level and remain available in the evidence table. Not stated does not mean education was not required.")
+            education_fields = profile["education_requirement_counts"].rename(columns={
+                "requirement": "Education requirement", "job_ads": "Job advertisements",
+                "job_ads_pct": "Share of selected ads (%)",
+            })
+            with _icon_expander("Education requirement counts", expanded=False):
+                st.caption("‘Not stated’ is shown for coverage and is excluded from the stated-level comparison above.")
+                display(education_fields, key="result_education_requirement_counts")
             evidence_tables("Education standardization evidence", {
                 "Recognized qualification levels": education.drop(columns="level_order", errors="ignore"),
                 "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")
-        with st.container(border=True, key="job_market_experience"):
-            st.subheader("Experience requirements", icon=":material/work:")
-            st.caption(f"{experience_observed:,} ads with identified experience = {banded_count:,} in numerical bands + "
-                       f"{unbanded_count:,} outside numerical bands. No experience requirement identified: {denominator - experience_observed:,} ads.")
+        with st.container(key="job_market_experience"):
+            st.caption(f"No experience duration identified in {denominator - experience_observed:,} of {denominator:,} selected ads.")
             exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
             exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
             if len(exact_years) >= 2:
@@ -2789,44 +2809,49 @@ def _job_market_content(tables, meta, revision=None):
             elif len(exact_years) == 1:
                 st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
             durations = profile["experience_duration_counts"]
-            shown = durations.head(15)
-            experience_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
-            with experience_column:
-                if len(shown) > 1:
-                    chart(experience_bar(shown.rename(columns={"requirement": "experience_band"})
-                                         .assign(band_order=range(len(shown))), title="Stated experience durations"))
-                elif len(shown) == 1:
-                    duration = shown.iloc[0]
-                    st.html('<style>.st-key-job_market_experience [data-testid="stMetricValue"]{color:var(--fow-accent)!important}</style>')
-                    st.metric(str(duration.requirement), f"{int(duration.job_ads):,}",
-                              help="Distinct selected job advertisements that mention this duration.")
-                else:
-                    st.info("No clear experience duration was found in this selection.")
-            with insight_column:
-                summary = "No experience durations could be compared in this selection."
-                top_durations = list(shown.head(3)[["requirement", "job_ads"]].itertuples(index=False, name=None))
-                if top_durations:
-                    label, highest = top_durations[0]
-                    ties = int(shown.job_ads.eq(highest).sum())
-                    summary = (f"{ties:,} displayed durations share the highest count ({highest:,} ads each)."
-                               if ties > 1 else f"{label.capitalize()} is the most frequent duration shown "
-                               f"({highest:,} of {denominator:,} selected ads).")
-                result_insight("Experience Insight", summary, top_durations, "Displayed durations")
-            st.caption("Each ad counts once per stated duration and may appear in several bars. "
-                       "Open minimums and ranges keep their wording. Numerical bands below only include durations that fit one band.")
-            if len(durations) > len(shown):
-                st.caption(f"Showing the {len(shown):,} most frequent of {len(durations):,} stated durations.")
-            if unbanded_count:
-                outside_experience_evidence(unbanded_evidence, jobs)
+            shown = ordered_result_table(durations, "requirement", order, "job_ads").head(limit)
+            summary = "No experience durations could be compared in this selection."
+            top_durations = list(shown.head(3)[["requirement", "job_ads"]].itertuples(index=False, name=None))
+            if top_durations:
+                label, highest = top_durations[0]
+                ties = int(shown.job_ads.eq(highest).sum())
+                summary = (f"{ties:,} displayed durations share the highest count ({highest:,} ads each)."
+                           if ties > 1 else f"{label.capitalize()} is the most frequent duration shown "
+                           f"({highest:,} of {denominator:,} selected ads).")
+            if len(shown) > 1:
+                featured_visual_chart(
+                    lambda: result_count_chart(shown, "requirement", "job_ads", "Experience duration distribution",
+                                               order=order, limit=limit, show_heading=False),
+                    summary, top_durations, key="experience", insight_title="Experience Insight",
+                    list_title="Displayed durations", heading="Experience requirements",
+                    heading_icon=":material/work:",
+                )
+            else:
+                with st.container(border=True, key="job_market_featured_experience_summary"):
+                    st.subheader("Experience requirements", icon=":material/work:")
+                    chart_column, insight_column = st.columns([3.2, 1.2], vertical_alignment="center")
+                    with chart_column:
+                        if not shown.empty:
+                            result_count_chart(shown, "requirement", "job_ads", "Experience duration distribution",
+                                               order=order, limit=limit, downloads=False, show_heading=False)
+                        else:
+                            st.info("No experience durations could be compared in this selection.")
+                    with insight_column:
+                        result_insight("Experience Insight", summary, top_durations, "Displayed durations")
+            duration_table = durations.rename(columns={
+                "requirement": "Experience requirement", "job_ads": "Job advertisements",
+                "job_ads_pct": "Share of selected ads (%)",
+            })
+            with _icon_expander("Parsed experience duration counts", expanded=False):
+                st.caption("Parsed from source fields and job-ad text. Each ad counts once per duration and may appear in multiple rows; ranges and open minimums retain their stated bounds.")
+                display(duration_table, key="result_experience_duration_counts")
             evidence_tables("Requirement fields and parsing evidence", {
-                "Education requirements": profile["education_requirement_counts"],
-                "Experience requirements": profile["experience_requirement_counts"],
                 "Explicit experience-field parsing": profile["experience_year_evidence"],
                 "Text-derived duration candidates": profile["experience_text_year_evidence"],
                 "Combined year parsing": profile["experience_analysis_year_evidence"],
-                "Stated experience durations": durations,
                 "Numerical band counts": profile["experience_band_counts"],
-                "Experience bands": profile["experience_band_evidence"]}, key="result_requirement_evidence")
+                "Experience bands": profile["experience_band_evidence"]}, key="result_requirement_evidence",
+                note="The visible experience table above uses the same distinct-ad duration counts derived from parsed source fields and job-ad text.")
             evidence_tables("Potential requirements found in advertisement text", {"": profile["requirement_evidence"]},
                             key="result_requirement_candidates", note="Text matches are candidates for researcher verification; they do not fill missing source fields or enter confirmed year counts.")
 
@@ -3068,7 +3093,8 @@ def research_page(page):
     loading_cards = 3 if page == "Employer–PSF Alignment" else 4 if page == "Job Market Analysis" else None
     loading_view = ("Skills" if page == "Job Market Analysis" else
                     "selected" if page == "PSF Mapping" and st.session_state.get("psf_review_occurrence_choice") else None)
-    with loading_content("research_results_content", loading_kind, cards=loading_cards, view=loading_view,
+    loading_key = _research_results_loading_key(page)
+    with loading_content(loading_key, loading_kind, cards=loading_cards, view=loading_view,
                          rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
         if not current_analysis():
             return
@@ -3097,6 +3123,27 @@ def research_page(page):
             _research_results_content(page, tables, meta, active_reference)
 
 
+def _research_results_loading_key(page):
+    """Keep each results page ready until the saved extraction revision changes."""
+    metadata = storage.read_json("extraction_metadata", {}) or {}
+    extraction_revision = storage.frame_revision("extractions_original")
+    generation = digest({
+        "signature": metadata.get("signature"),
+        "pipeline_version": metadata.get("pipeline_version"),
+        "timestamp": metadata.get("timestamp"),
+        "extraction_revision": extraction_revision,
+    })[:16]
+    previous = st.session_state.get("_fow_results_loading_generation")
+    if previous != generation:
+        ready = st.session_state.setdefault("_fow_loading_ready", {})
+        st.session_state["_fow_loading_ready"] = {
+            key: value for key, value in ready.items()
+            if not str(key).startswith("research_results_content:")
+        }
+        st.session_state["_fow_results_loading_generation"] = generation
+    return f"research_results_content:{digest(page)[:10]}:{generation}"
+
+
 def _research_results_content(page, tables, meta, active_reference):
     jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
     demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
@@ -3113,9 +3160,13 @@ def _research_results_content(page, tables, meta, active_reference):
         def competency_demand():
             with st.container(border=True, key="psf_mapping_demand_panel"):
                 with st.container(key="psf_mapping_demand_heading", gap="xsmall"):
-                    section_heading("Competency demand", "bar_chart",
-                                    "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
-                order, limit = result_chart_options(key_prefix="mapping_chart")
+                    heading_column, download_column = st.columns([5, 1], vertical_alignment="center")
+                    with heading_column:
+                        section_heading("Competency demand", "bar_chart",
+                                        "Distinct advertisements and distinct skill phrases per competency. Repeated skills and multiple links do not count an advertisement twice for the same competency.")
+                    with download_column:
+                        download_slot = st.container()
+                order, limit = result_chart_options(key_prefix="mapping_chart", note_below=True)
                 competence = tables["psf_competency_demand"]
                 if not competence.empty:
                     plot_competence = tables.get("psf_chart_demand")
@@ -3125,12 +3176,20 @@ def _research_results_content(page, tables, meta, active_reference):
                         plot_competence = (_session_cached_value("_fow_psf_mapping_demand", revision, build_demand,
                                                                  ttl=None, max_entries=1, clone=lambda value: value)
                                            if revision else build_demand())
-                    with st.container(horizontal=True, key="psf_mapping_chart_and_insight", gap="medium", vertical_alignment="center"):
-                        with st.container(key="psf_mapping_demand_chart", width="stretch"):
-                            plotted = result_count_chart(plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand", order=order, limit=limit, highlight_max=True)
-                        with st.container(key="psf_mapping_demand_insight", width="stretch"):
-                            psf_competency_demand_insight(plotted, plot_competence.psf_competency.nunique(), order=order)
-                display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"))
+                    featured_visual_chart(
+                        lambda: result_count_chart(
+                            plot_competence, "psf_competency", "job_ads", "PSF-AAI competency demand",
+                            order=order, limit=limit, highlight_max=True, show_heading=False,
+                        ),
+                        "", [], key="psf_competency_demand", heading="PSF-AAI competency demand",
+                        render_insight=lambda plotted: psf_competency_demand_insight(
+                            plotted, plot_competence.psf_competency.nunique(), order=order,
+                        ),
+                        download_slot=download_slot,
+                    )
+                with _icon_expander("View all competency demand counts", expanded=False):
+                    display(ordered_result_table(competence, "psf_competency", order, "job_ad_count"),
+                            key="psf_competency_demand_table")
             evidence_tables("Occurrence-level mapping evidence", {"": tables["psf_mapping"]}, icon=":material/layers:",
                             key="psf_mapping_evidence", order=order, label="psf_competency")
 
@@ -3151,6 +3210,11 @@ def _research_results_content(page, tables, meta, active_reference):
         def alignment_chart():
             order, limit = result_chart_options(key_prefix="alignment_chart")
             with st.container(border=True, key="employer_psf_status_panel"):
+                heading_column, download_column = st.columns([5, 1], vertical_alignment="center")
+                with heading_column:
+                    st.subheader("Status of Phrase–Competency Evidence Groups", icon=":material/bar_chart:")
+                with download_column:
+                    download_slot = st.container(horizontal=True, horizontal_alignment="right")
                 status_chart = distribution(alignment.assign(status=alignment.status.map(normalize_text)), "status",
                                             "Status of Phrase–Competency Evidence Groups", limit=limit, order=order)
                 status_chart.update_traces(texttemplate="%{x:,d}", textposition="outside", cliponaxis=False,
@@ -3159,7 +3223,8 @@ def _research_results_content(page, tables, meta, active_reference):
                 status_chart.update_xaxes(range=[0, max(1, maximum * 1.05)])
                 with st.container(horizontal=True, key="alignment_chart_and_insight", gap="medium", vertical_alignment="center"):
                     with st.container(key="alignment_status_chart", width="stretch"):
-                        chart(status_chart)
+                        with chart_download_target(download_slot):
+                            chart(status_chart, show_heading=False)
                     with st.container(key="alignment_status_insight", width="stretch"):
                         alignment_status_insight(status_chart)
             evidence_tables("Phrase-level results and PSF-AAI basis", {
@@ -3179,7 +3244,7 @@ def _research_results_content(page, tables, meta, active_reference):
 
 @st.fragment
 def _report_table_downloads(tables):
-    downloads = st.expander(f"Individual research tables ({len(tables)})", key="individual_exports",
+    downloads = _icon_expander(f"Individual research tables ({len(tables)})", key="individual_exports",
                             icon=":material/database:", on_change="rerun")
     if downloads.open:
         with downloads:
@@ -3299,7 +3364,7 @@ def methodology():
                 st.markdown(introduction)
                 for index, section in enumerate(sections[1:]):
                     title, _, body = section.partition("\n")
-                    with st.expander(title, expanded=index == 0, icon=":material/menu_book:"):
+                    with _icon_expander(title, expanded=index == 0, icon=":material/menu_book:"):
                         st.markdown(body)
 
 
@@ -3407,12 +3472,12 @@ def research_readiness():
                         else:
                             st.caption("No software risks detected; researcher sign-off is still required.")
                     if not disagreements.empty:
-                        history_details = st.expander("Earlier category disagreements to review", icon=":material/history:", key="readiness_disagreements", on_change="rerun")
+                        history_details = _icon_expander("Earlier category disagreements to review", icon=":material/history:", key="readiness_disagreements", on_change="rerun")
                         if history_details.open:
                             with history_details:
                                 st.caption("These are historical saved decisions, not current training rows. Use the source evidence and your labeling protocol to decide whether follow-up is needed.")
                                 display(disagreements)
-                    checks = st.expander("Dataset and model checks", icon=":material/fact_check:", key="readiness_diagnostics", on_change="rerun")
+                    checks = _icon_expander("Dataset and model checks", icon=":material/fact_check:", key="readiness_diagnostics", on_change="rerun")
                     if checks.open:
                         with checks:
                             if validation:
@@ -3524,7 +3589,11 @@ def render(page):
     storage.initialize()
     st.session_state["_table_number"] = 0
     if st.session_state.get("_fow_current_page") != page:
-        st.session_state["_fow_loading_ready"] = {}
+        ready = st.session_state.setdefault("_fow_loading_ready", {})
+        st.session_state["_fow_loading_ready"] = {
+            key: value for key, value in ready.items()
+            if str(key).startswith("research_results_content:")
+        }
     st.session_state["_fow_first_page_render"] = st.session_state.get("_fow_rendered_page") != page
     st.session_state["_fow_current_page"] = page
     st.sidebar.caption(f"Research workspace · v{VERSION}")

@@ -490,8 +490,8 @@ body:has(.st-key-job_market_heading) [data-testid="stHeadingIcon"] { width: 28px
 body:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading)) h3 { font-size: 1.02rem; letter-spacing: -.025em; color: #171923; padding-block: .05rem .25rem; }
 body:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading)) h3 [data-testid="stIconMaterial"] { color: #8B1630; font-size: 25px; }
 .stMain [data-testid="stHeadingIcon"] { color: #86142D; font-size: 25px; }
-.stMain [data-testid="stExpander"] summary [data-testid="stExpanderIcon"] { color: #86142D; }
-[class*="st-key-job_market_featured_"], .st-key-job_market_education, .st-key-job_market_experience, .st-key-job_market_title_overview, .st-key-job_market_family_section, .st-key-job_market_title_section { padding: 1rem 1.15rem !important; border: 1px solid #D9CFCC; border-radius: 11px; background: #FCF9F7; }
+:is([data-testid="stMain"], [data-testid="stSidebar"]) [data-testid="stExpander"] details > summary :is([data-testid="stExpanderIcon"], [data-testid="stIconMaterial"]) { color: #86142D !important; }
+[class*="st-key-job_market_featured_"], .st-key-job_market_title_overview, .st-key-job_market_family_section, .st-key-job_market_title_section { padding: 1rem 1.15rem !important; border: 1px solid #D9CFCC; border-radius: 11px; background: #FCF9F7; }
 [class*="st-key-job_market_embedded_"] [data-testid="stPlotlyChart"] { box-shadow: none; background: transparent; }
 .st-key-job_market_qualification_summary { padding: 1rem 1.15rem !important; border: 1px solid #D9CFCC; border-radius: 11px; background: #FCF9F7; box-shadow: 0 1px 2px #4D102008; margin: 0; }
 [class*="st-key-job_market_featured_"] [data-testid="stPlotlyChart"] { background: transparent; box-shadow: none; }
@@ -531,7 +531,7 @@ body:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_
 body:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading)) [data-testid="stCaptionContainer"] p { line-height: 1.4; }
 @media (max-width: 1100px) { [class*="st-key-result_chart_controls_"] { flex-wrap: wrap; } [class*="st-key-result_chart_note_"] { min-width: 150px; } }
 @media (max-width: 760px) { .st-key-result_metrics { flex-wrap: wrap !important; } .st-key-result_metrics > [data-testid="stLayoutWrapper"] { flex: 1 1 calc(50% - 1rem) !important; } [class*="st-key-job_market_featured_"] [data-testid="stHorizontalBlock"] { flex-wrap: wrap; } [class*="st-key-job_market_featured_"] [data-testid="stColumn"] { width: 100% !important; flex: 1 1 100% !important; } :is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading)::before { opacity: .3; } [class*="st-key-result_chart_controls_"] > [data-testid="stLayoutWrapper"] { flex: 1 1 100%; } [class*="st-key-result_chart_note_"] { padding-block: .2rem; } }
-@media (max-width: 640px) { .stMainBlockContainer:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading)) { padding: .5rem 1rem 2rem !important; } :is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading) { margin-inline: -1rem; padding-inline: 1rem; } :is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading) h1 { font-size: 1.9rem; } .st-key-job_market_education [data-testid="stHorizontalBlock"] { flex-wrap: wrap; } .st-key-job_market_education [data-testid="stColumn"] { flex: 1 1 100% !important; width: 100% !important; } }
+@media (max-width: 640px) { .stMainBlockContainer:has(:is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading)) { padding: .5rem 1rem 2rem !important; } :is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading) { margin-inline: -1rem; padding-inline: 1rem; } :is(.st-key-page_heading, .st-key-overview_heading, .st-key-job_market_heading, .st-key-psf_mapping_heading, .st-key-employer_psf_heading) h1 { font-size: 1.9rem; } }
 """
 
 
@@ -566,11 +566,6 @@ body:has(.st-key-psf_mapping_heading) [data-testid="stWidgetLabel"] p { font-siz
 .st-key-psf_mapping_review_panel [data-testid="stFormSubmitButton"] button { padding-inline: 1.2rem; }
 .st-key-psf_mapping_demand_panel [class*="st-key-result_chart_controls_"] > [data-testid="stLayoutWrapper"]:has([class*="st-key-result_chart_selectors_"]) { flex: 2 1 0; }
 .st-key-psf_mapping_demand_panel [class*="st-key-result_chart_note_"] { min-width: 0; }
-.st-key-psf_mapping_demand_chart { padding: .6rem .7rem .2rem; border: 1px solid #E9DFD9; border-radius: 11px; background: #FEFBF8; gap: .2rem; }
-.st-key-psf_mapping_demand_chart [data-testid="stPlotlyChart"] { background: transparent; box-shadow: none; }
-.st-key-psf_mapping_demand_chart h3 { font-size: 1rem; padding: .2rem 0; }
-.st-key-psf_mapping_chart_and_insight > [data-testid="stLayoutWrapper"] { min-width: 0; flex: 2.6 1 420px; }
-.st-key-psf_mapping_chart_and_insight > [data-testid="stLayoutWrapper"]:has(.st-key-psf_mapping_demand_insight) { flex: 1 1 290px; }
 .fow-competency-demand-insight { padding: 1rem; background: #FFF8F6; border-color: #EED8D8; box-shadow: 0 3px 0 #F0DFDF; }
 .fow-competency-demand-insight h3 { color: #86142D !important; font-size: 1.1rem; line-height: 1.3; }
 .fow-competency-demand-insight h4 { display: flex; align-items: center; gap: .4rem; font-size: 1rem; }
@@ -1043,8 +1038,8 @@ RESPONSIVE_CSS = """
 @container workspace (max-width: 540px) { :is(.st-key-reports_deliverables_grid,.fow-loading--reports) { grid-template-columns: minmax(0,1fr); } }
 @container workspace (max-width: 1100px) {
  :is(.st-key-overview_metrics,.st-key-result_metrics) { grid-template-columns: repeat(2,minmax(0,1fr)); }
- :is([class*="st-key-job_market_featured_"],[class*="st-key-job_market_embedded_"],.st-key-job_market_education,.st-key-job_market_geography,.st-key-content_panel_training_distribution,.st-key-content_panel_evaluation_results) [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]) { flex-wrap: wrap; gap: 1.25rem; }
- :is([class*="st-key-job_market_featured_"],[class*="st-key-job_market_embedded_"],.st-key-job_market_education,.st-key-job_market_geography,.st-key-content_panel_training_distribution,.st-key-content_panel_evaluation_results) [data-testid="stColumn"] { flex: 1 1 100% !important; width: 100% !important; }
+ :is([class*="st-key-job_market_featured_"],[class*="st-key-job_market_embedded_"],.st-key-job_market_geography,.st-key-content_panel_training_distribution,.st-key-content_panel_evaluation_results) [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]) { flex-wrap: wrap; gap: 1.25rem; }
+ :is([class*="st-key-job_market_featured_"],[class*="st-key-job_market_embedded_"],.st-key-job_market_geography,.st-key-content_panel_training_distribution,.st-key-content_panel_evaluation_results) [data-testid="stColumn"] { flex: 1 1 100% !important; width: 100% !important; }
  .st-key-review_controls { grid-template-columns: repeat(2,minmax(0,1fr)); }
  [class*="st-key-result_chart_controls_"] { flex-wrap: wrap; }
  [class*="st-key-result_chart_controls_"] > [data-testid="stLayoutWrapper"] { flex: 1 1 240px; }
