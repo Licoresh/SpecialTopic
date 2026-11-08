@@ -29,7 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.89"
+PUBLIC_VERSION = "3.0.90"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -53,8 +53,8 @@ def _style():
     [data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]{display:none!important}
     [data-testid="stHeader"]{background:transparent;height:0}
     .stApp{background:#f8f5f2}
-    .stMainBlockContainer{max-width:1440px;padding:1rem clamp(1rem,3vw,2.5rem) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
-    .public-topbar{position:relative;isolation:isolate;display:flex;align-items:center;justify-content:space-between;gap:1rem;min-height:104px;width:100vw;margin:-1rem calc(50% - 50vw) 1rem;padding:1rem max(clamp(1rem,3vw,2.5rem),calc((100vw - 1440px)/2 + clamp(1rem,3vw,2.5rem)));overflow:hidden;border:0;border-bottom:1px solid #e6d9d7;border-radius:0;background:#f9efed}
+    .stMainBlockContainer{--public-page-pad:clamp(1rem,3vw,2.5rem);max-width:1440px;padding:1rem var(--public-page-pad) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
+    .public-topbar{position:relative;isolation:isolate;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:1rem;min-height:104px;width:calc(100% + var(--public-page-pad) + var(--public-page-pad));margin:-1rem calc(0px - var(--public-page-pad)) 1rem;padding:1rem var(--public-page-pad);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px;background:#f9efed}
     .public-topbar:after{position:absolute;z-index:-1;inset:12px 0 0 auto;width:min(36%,430px);content:"";background:url("data:image/svg+xml;base64,__HERO_ART__") right bottom/contain no-repeat;opacity:.9;pointer-events:none}
     .public-topbar img{position:relative;z-index:1;display:block;width:clamp(145px,18vw,205px);height:auto}
     .public-version{position:relative;z-index:1;padding:.35rem .7rem;border:1px solid #e6d9d7;border-radius:999px;background:#fffdfbcc;color:#78182b;font-size:.75rem;font-weight:650}
@@ -70,12 +70,12 @@ def _style():
     .public-step[data-state="complete"] b{border-color:#cce3d8;background:#edf6f1;color:#16634f}
     .public-step small{display:block;color:#62585d;font-size:.72rem;font-weight:400}
     .public-step-line{height:1px;background:#e5e3e0}
-    .st-key-public-upload-card{height:100%;min-height:350px;display:flex;flex-direction:column;justify-content:center;gap:.8rem;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
-    .st-key-public-workflow-card{height:100%;padding:clamp(1rem,2.2vw,1.4rem);border:1px solid #e6d9d7;border-radius:12px;background:#fffcfa;box-shadow:0 2px 8px #4d102007}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:260px;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:.75rem;padding:1rem!important;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%);text-align:center}
+    .st-key-public-upload-card{width:100%;height:100%;min-height:350px;display:flex;flex-direction:column;justify-content:center;gap:.8rem;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+    .st-key-public-workflow-card{width:100%;min-width:0;height:100%;padding:clamp(1rem,2.2vw,1.4rem);border:1px solid #e6d9d7;border-radius:12px;background:#fffcfa;box-shadow:0 2px 8px #4d102007}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{position:relative;box-sizing:border-box;min-height:300px;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:.75rem;padding:9rem 1rem 1rem!important;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%);text-align:center}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]>div{display:flex;flex-direction:column;align-items:center;gap:.4rem}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:hover{border-color:#78182b;background:#f7edef}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{position:relative;background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-weight:650}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:before{position:absolute;top:2rem;left:50%;display:grid;place-items:center;width:52px;height:52px;transform:translateX(-50%);border-radius:14px;background:#f7edef;color:#78182b;content:"↥";font-size:1.8rem;font-weight:700;pointer-events:none}\n    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{position:absolute;top:6rem;left:1rem;right:1rem;color:#24303d;content:"Drop your CSV file here\\A or select a file from your device";font-size:.9rem;font-weight:650;line-height:1.5;text-align:center;white-space:pre-line;pointer-events:none}\n    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:hover{border-color:#78182b;background:#f7edef}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{position:relative;background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-size:0!important;font-weight:650}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:hover{background:#5e1221;color:white}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button span{font-size:0}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:after{content:"Select CSV file  →";font-size:.86rem;font-weight:650}
@@ -131,11 +131,8 @@ def _style():
     .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
     .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
-    .st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:.85rem}
-    .st-key-public-upload-layout [data-testid="column"],.st-key-public-review-layout [data-testid="column"]{width:auto!important;flex:none!important;min-width:0}
-    @media(max-width:900px){.st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{grid-template-columns:minmax(0,1fr)}.st-key-public-upload-card{min-height:0}}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem;border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:1rem}.public-topbar:after{width:48%;opacity:.4}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
-    @media(max-width:475px){.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
+    @media(max-width:475px){.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
 
