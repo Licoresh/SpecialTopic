@@ -29,7 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.90"
+PUBLIC_VERSION = "3.0.91"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -75,10 +75,8 @@ def _style():
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{position:relative;box-sizing:border-box;min-height:300px;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:.75rem;padding:9rem 1rem 1rem!important;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%);text-align:center}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]>div{display:flex;flex-direction:column;align-items:center;gap:.4rem}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:before{position:absolute;top:2rem;left:50%;display:grid;place-items:center;width:52px;height:52px;transform:translateX(-50%);border-radius:14px;background:#f7edef;color:#78182b;content:"↥";font-size:1.8rem;font-weight:700;pointer-events:none}\n    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{position:absolute;top:6rem;left:1rem;right:1rem;color:#24303d;content:"Drop your CSV file here\\A or select a file from your device";font-size:.9rem;font-weight:650;line-height:1.5;text-align:center;white-space:pre-line;pointer-events:none}\n    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:hover{border-color:#78182b;background:#f7edef}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{position:relative;background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-size:0!important;font-weight:650}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:hover{background:#5e1221;color:white}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button span{font-size:0}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:after{content:"Select CSV file  →";font-size:.86rem;font-weight:650}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] [data-testid="stBaseButton-secondary"][aria-label=""]{display:inline-flex!important;align-items:center;justify-content:center;gap:.35rem;min-width:9rem;min-height:44px;padding:.65rem 1rem!important;border:0;border-radius:8px;background:#78182b;color:white;font-size:.86rem!important;font-weight:650;line-height:1.2;text-align:center;white-space:nowrap}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] [data-testid="stBaseButton-secondary"][aria-label=""]:hover{background:#5e1221;color:white}
     .stFormSubmitButton button,.stButton button[kind="primary"],.stDownloadButton button{min-height:44px;border-radius:8px;font-weight:650;transition:background-color .16s ease,transform .16s ease}
     .stFormSubmitButton button,.stButton button[kind="primary"]{background:#78182b;border-color:#78182b;color:#fff}
     .stButton button[kind="primary"]:hover{background:#4d1020;border-color:#4d1020;transform:translateY(-1px)}
@@ -558,7 +556,7 @@ def _process_pending_upload():
             with value:
                 percent = st.empty()
                 percent.html('<span class="public-processing-percent">0%</span>')
-            st.html('<p class="public-processing-privacy">Your upload is processed for this session and is not saved to researcher tables or project files.</p>')
+            st.html('<p class="public-processing-privacy">Your upload is processed for this session only.</p>')
 
     def update(value, text):
         percentage = min(100, max(0, int(float(value) * 100)))
@@ -639,7 +637,7 @@ def main():
                         for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                             st.session_state.pop(key, None)
             with right, st.container(key="public-workflow-card"):
-                st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your CSV is not added to researcher tables or project files.</p>')
+                st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your CSV is processed for this session only.</p>')
         with st.container(key="public-upload-footer"):
             privacy, action = st.columns([3, 1], vertical_alignment="center")
             with privacy:
@@ -711,7 +709,7 @@ def main():
                 st.html('<p class="public-workflow-note">Results depend on the structure, quality, and coverage of the uploaded dataset.</p>')
                 if not classifier_ready:
                     st.warning("The public classifier is unavailable. You can review the columns, but analysis cannot start until it is available.")
-        st.markdown('<p class="public-privacy">Your upload is processed for this session and is not saved to researcher tables or project files.</p>', unsafe_allow_html=True)
+        st.markdown('<p class="public-privacy">Your upload is processed for this session only.</p>', unsafe_allow_html=True)
         _, back, analyze = st.columns([5, 1, 1.45], gap="small")
         with back:
             if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload", width="stretch"):
