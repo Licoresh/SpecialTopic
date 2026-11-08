@@ -29,7 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.87"
+PUBLIC_VERSION = "3.0.88"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -72,10 +72,13 @@ def _style():
     .public-step-line{height:1px;background:#e5e3e0}
     .st-key-public-upload-card{height:100%;min-height:350px;display:flex;flex-direction:column;justify-content:center;gap:.8rem;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
     .st-key-public-workflow-card{height:100%;padding:clamp(1rem,2.2vw,1.4rem);border:1px solid #e6d9d7;border-radius:12px;background:#fffcfa;box-shadow:0 2px 8px #4d102007}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:260px;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%)}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:260px;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:.75rem;padding:1rem!important;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%);text-align:center}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]>div{display:flex;flex-direction:column;align-items:center;gap:.4rem}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:hover{border-color:#78182b;background:#f7edef}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-weight:650}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{position:relative;background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-weight:650}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:hover{background:#5e1221;color:white}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button span{font-size:0}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:after{content:"Select CSV file  →";font-size:.86rem;font-weight:650}
     .stFormSubmitButton button,.stButton button[kind="primary"],.stDownloadButton button{min-height:44px;border-radius:8px;font-weight:650;transition:background-color .16s ease,transform .16s ease}
     .stFormSubmitButton button,.stButton button[kind="primary"]{background:#78182b;border-color:#78182b;color:#fff}
     .stButton button[kind="primary"]:hover{background:#4d1020;border-color:#4d1020;transform:translateY(-1px)}
@@ -107,6 +110,8 @@ def _style():
     .public-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.9rem}
     .public-file-meta{color:#62585d;font-size:.8rem}
     .public-privacy{margin:.1rem 0 0;color:#62585d;font-size:.78rem}
+    .st-key-public-upload-footer{margin-top:1rem;padding-top:.75rem;border-top:1px solid #e6d9d7}
+    .st-key-public-upload-footer [data-testid="stHorizontalBlock"]{align-items:center}
     .st-key-public-processing-overlay{position:fixed!important;z-index:100000!important;inset:0!important;width:100vw!important;height:100dvh!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:clamp(1rem,5vw,3rem)!important;overflow:auto!important;background:#19171870!important;backdrop-filter:blur(2px)}
     [data-testid="stElementContainer"]:has(.st-key-public-processing-overlay){height:0!important;margin:0!important;padding:0!important}
     .st-key-public-processing-card{position:fixed!important;z-index:100001!important;top:50dvh!important;left:50vw!important;transform:translate(-50%,-50%)!important;width:min(760px,calc(100vw - 2rem))!important;max-height:calc(100dvh - 2rem);margin:0!important;padding:clamp(1.6rem,5vw,3.5rem);overflow:auto;border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
@@ -120,7 +125,7 @@ def _style():
     .public-processing-status{margin-top:1.4rem;color:#4d1020;font-size:.9rem;font-weight:650}
     .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
     .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
-    .st-key-public-processing-screen .stProgress>div>div{background:#78182b}
+    .st-key-public-processing-overlay .stProgress>div>div{background:#78182b}
     .stTabs [data-baseweb="tab-list"]{gap:.25rem;flex-wrap:nowrap;overflow-x:auto;border:1px solid #e5d7d5;border-radius:10px;background:#fff;padding:.25rem}
     .stTabs [data-baseweb="tab"]{min-height:38px;padding:.4rem clamp(.45rem,1vw,.9rem);white-space:nowrap;font-size:.78rem}
     .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
@@ -602,9 +607,6 @@ def main():
         _stage_heading(2, "Review your dataset", "Check the detected columns before beginning the analysis.", "Dataset structure")
     if st.session_state.get("public_error"):
         st.error(st.session_state["public_error"])
-    if ENGINE.get("classifierStatus") == "interim":
-        st.warning(ENGINE.get("classifierNotice") or "The public classifier is interim. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
-
     if stage == "upload":
         with st.container(key="public-upload-layout"):
             left, right = st.columns([1.65, .95], gap="medium", vertical_alignment="top")
@@ -612,8 +614,6 @@ def main():
                 uploaded = st.file_uploader("Select a CSV file", type=["csv"], key=f"public_upload_{st.session_state.get('public_upload_key', 0)}",
                                             help="Your file is processed for this session and is not added to the research workspace.",
                                             label_visibility="collapsed")
-                st.caption("CSV format · Up to 4 MB · 100,000 records")
-                st.markdown('<p class="public-privacy">Your upload stays in this browser session until you start analysis.</p>', unsafe_allow_html=True)
                 if uploaded is None and st.session_state.get("public_file_hash"):
                     for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                         st.session_state.pop(key, None)
@@ -635,9 +635,6 @@ def main():
                             content = st.session_state["public_content"]
                             preview = st.session_state["public_preview"]
                         st.success(f"{Path(uploaded.name).name} · {len(preview):,} records detected")
-                        if st.button("Review dataset", type="primary", icon=":material/arrow_forward:", key="public_review_dataset"):
-                            st.session_state["public_stage"] = "review"
-                            st.rerun()
                         with st.expander("Preview sample rows"):
                             st.dataframe(preview.head(8), width="stretch", hide_index=True)
                     except (ValueError, OSError) as exc:
@@ -646,6 +643,16 @@ def main():
                             st.session_state.pop(key, None)
             with right, st.container(key="public-workflow-card"):
                 st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your CSV is not added to researcher tables or project files.</p>')
+        with st.container(key="public-upload-footer"):
+            privacy, action = st.columns([3, 1], vertical_alignment="center")
+            with privacy:
+                st.caption("Your uploaded data stays in this browser session.")
+            with action:
+                can_continue = bool(st.session_state.get("public_file_hash")) and content is not None and preview is not None
+                if st.button("Preview next step", type="primary", icon=":material/arrow_forward:",
+                             disabled=not can_continue, key="public_preview_next", width="stretch"):
+                    st.session_state["public_stage"] = "review"
+                    st.rerun()
     else:
         if content is None or preview is None:
             st.session_state["public_stage"] = "upload"
