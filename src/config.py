@@ -1,8 +1,8 @@
 from pathlib import Path
 import os
 
-VERSION = "3.0.85"
-PUBLIC_VERSION = "3.0.97"
+VERSION = "3.0.86"
+PUBLIC_VERSION = "3.0.98"
 ROOT = Path(os.environ.get("FOW_HOME", Path(__file__).resolve().parents[1]))
 SEED = 42
 FIELDS = {

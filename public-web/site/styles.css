@@ -168,6 +168,14 @@ body[data-page="processing"] main > #processing { width: min(100%,820px); margin
 .analysis-ready p { margin-top: .12rem; color: var(--muted); font-size: .84rem; }
 .actions { flex-wrap: wrap; }
 .results-head, .dataset-line { margin-bottom: .7rem; }
+.dataset-line { display: grid; grid-template-columns: minmax(220px,1fr) minmax(0,1.8fr); align-items: center; gap: .55rem 1rem; }
+.dataset-file strong, .dataset-file small { display: block; }
+.dataset-file strong { color: var(--ink); font-size: .88rem; overflow-wrap: anywhere; }
+.dataset-file small { margin-top: .12rem; font-size: .74rem; }
+.dataset-facts { display: flex; flex-wrap: wrap; gap: .35rem; }
+.dataset-fact { display: inline-flex; align-items: baseline; gap: .3rem; min-height: 28px; padding: .3rem .55rem; border: 1px solid var(--line); border-radius: 999px; background: #fcf9f7; font-size: .7rem; line-height: 1.25; }
+.dataset-fact span { color: var(--muted); }
+.dataset-fact strong { color: var(--ink); overflow-wrap: anywhere; }
 .result-actions { justify-content: flex-end; }
 .result-actions #upload-another { margin-right: .15rem; }
 .empty { padding-block: 1.65rem; text-align: center; }
@@ -261,6 +269,7 @@ footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .4
   .chart-layout { grid-template-columns: minmax(0,1fr); }
   .intro { max-width: 69%; }
   .analysis-ready { grid-template-columns: auto minmax(0,1fr); }
+  .dataset-line { grid-template-columns: minmax(0,1fr); }
   .analysis-ready .button { grid-column: 2; }
   .workflow-card { order: 2; }
   .processing-screen { min-height: calc(100dvh - 2rem); }

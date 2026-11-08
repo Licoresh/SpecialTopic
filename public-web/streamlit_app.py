@@ -30,7 +30,7 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.97"
+PUBLIC_VERSION = "3.0.98"
 
 
 @st.cache_resource
@@ -121,6 +121,17 @@ def _style():
     .public-readiness{display:flex;justify-content:space-between;gap:1rem;margin:.9rem 0 .35rem;color:#24303d;font-size:.82rem;font-weight:700}
     .public-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.9rem}
     .public-file-meta{color:#62585d;font-size:.8rem}
+    .public-result-meta{display:flex;flex-wrap:wrap;align-items:center;gap:.55rem .8rem;min-width:0}
+    .public-result-file{display:flex;flex:1 1 270px;align-items:center;gap:.55rem;min-width:0}
+    .public-result-file-icon{display:grid;flex:0 0 38px;place-items:center;width:38px;height:38px;border-radius:10px;background:#f7edef;color:#78182b;font-size:21px}
+    .public-result-file-copy{min-width:0}
+    .public-result-file-copy strong,.public-result-file-copy small{display:block}
+    .public-result-file-copy strong{color:#24303d;font-size:.84rem;line-height:1.3;overflow-wrap:anywhere}
+    .public-result-file-copy small{margin-top:.12rem;color:#62585d;font-size:.71rem}
+    .public-result-facts{display:flex;flex:1 1 390px;flex-wrap:wrap;gap:.35rem}
+    .public-result-fact{display:inline-flex;align-items:baseline;gap:.3rem;min-height:28px;padding:.3rem .55rem;border:1px solid #e9dfdc;border-radius:999px;background:#fcf9f7;font-size:.69rem;line-height:1.25}
+    .public-result-fact span{color:#647184}
+    .public-result-fact strong{color:#24303d;font-weight:700;overflow-wrap:anywhere}
     .public-privacy{margin:.1rem 0 0;color:#62585d;font-size:.78rem}
     .st-key-public-upload-footer{margin-top:1rem;padding-top:.75rem;border-top:1px solid #e6d9d7}
     .st-key-public-upload-footer [data-testid="stHorizontalBlock"]{align-items:center}
@@ -157,7 +168,7 @@ def _style():
     .st-key-public-results-heading [data-testid="stDownloadButton"] button{min-height:44px;white-space:nowrap}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
     .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.public-result-facts{flex-basis:100%}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
     @media(max-width:475px){.st-key-public-results-heading{align-items:stretch;flex-wrap:wrap}.st-key-public-results-heading [data-testid="stDownloadButton"]{width:100%}.st-key-public-results-heading [data-testid="stDownloadButton"] button{width:100%}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
@@ -601,18 +612,22 @@ def _unmapped(result):
 
 def _results(result):
     _topbar(3)
-    file_name = result["filename"]
+    file_name = escape_html(str(result["filename"]))
     model = result["model"]
     details, actions = st.columns([3, 1], vertical_alignment="center")
     with details:
-        st.caption(f"{file_name} · {result['summary']['rows']:,} rows · {model['name']} · model {model['version']} · dataset {result['datasetHash'][:16]}")
+        facts = (("Classifier", str(model["name"])),
+                 ("Model ID", str(model["version"])),
+                 ("Dataset ID", str(result["datasetHash"][:16])))
+        fact_markup = "".join(
+            f'<span class="public-result-fact"><span>{escape_html(label)}</span><strong>{escape_html(value)}</strong></span>'
+            for label, value in facts
+        )
+        st.html(f'<div class="public-result-meta" aria-label="Analysis details"><div class="public-result-file"><span class="material-symbols-rounded public-result-file-icon" aria-hidden="true">description</span><div class="public-result-file-copy"><strong>{file_name}</strong><small>{result["summary"]["rows"]:,} rows analyzed</small></div></div><div class="public-result-facts">{fact_markup}</div></div>')
     with actions:
         if st.button("Analyze another dataset", type="primary", icon=":material/upload_file:",
                      key="public_analyze_another", width="stretch"):
             _reset()
-    if model.get("releaseStatus") == "interim":
-        st.warning(model.get("releaseNote") or "Interim classifier. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
-    st.info("This anonymous run uses the public classifier and shared analysis functions. It does not apply saved researcher-only labels, mapping reviews, or corrections.", icon=":material/info:")
     analysis_workflow()
     _metric_row(result["summary"])
 

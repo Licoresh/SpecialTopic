@@ -129,14 +129,12 @@ function engineStatus(health) {
   engineHealth = health;
   uploadLimit = Number(health.maxUploadBytes) || 4 * MB;
   const available = health.classifierAvailable === true;
-  const interim = available && health.classifierStatus === "interim";
   const badge = $("engine-badge");
   badge.dataset.state = available ? "complete" : "error";
-  badge.replaceChildren(icon(available ? "check" : "info"), document.createTextNode(interim ? "Interim classifier ready" : available ? "Research engine ready" : "Research classifier unavailable"));
+  badge.replaceChildren(icon(available ? "check" : "info"), document.createTextNode(available ? "Analysis ready" : "Research classifier unavailable"));
   $("upload-limit").textContent = `CSV files up to ${Math.floor(uploadLimit / MB)} MB are processed by the analysis server and not retained.`;
   refreshMappingStatuses();
   busy(job ? "Processing…" : "");
-  if (interim) notify(health.classifierNotice || "A temporary classifier is enabled. Results are preliminary until the research model is trained and evaluated.");
   if (!available) notify("A public classifier is not available on this server yet. You can review column mapping, but analysis is disabled until a classifier is published.", true);
 }
 
@@ -774,11 +772,27 @@ function showResults() {
     return;
   }
   const { summary, charts, filename, model, evidence } = result;
-  const version = model ? `${model.name} · ${model.version}` : "Research classifier unavailable";
-  $("result-source").textContent = `${filename} · ${integer.format(summary.rows)} source rows · ${version} · Dataset ${result.datasetHash.slice(0, 16)}`;
-  $("analysis-basis").textContent = model?.releaseStatus === "interim"
-    ? `${model.releaseNote || "Temporary classifier; results are preliminary."} Shared analysis functions were used. Saved researcher-only labels, mapping reviews, and corrections are not applied.`
-    : `Shared research engine analyzed ${integer.format(summary.ads)} ads with the research classifier and research analysis functions. Anonymous uploads use the same automated rules; saved researcher-only labels, mapping reviews, and corrections are not applied.`;
+  const source = $("result-source");
+  const file = document.createElement("div");
+  file.className = "dataset-file";
+  const filenameNode = document.createElement("strong");
+  filenameNode.textContent = filename;
+  const rowsNode = document.createElement("small");
+  rowsNode.textContent = `${integer.format(summary.rows)} rows analyzed`;
+  file.append(filenameNode, rowsNode);
+  const facts = document.createElement("div");
+  facts.className = "dataset-facts";
+  for (const [label, value] of [["Classifier", model?.name || "Unavailable"], ["Model ID", model?.version || "—"], ["Dataset ID", result.datasetHash.slice(0, 16)]]) {
+    const fact = document.createElement("span");
+    fact.className = "dataset-fact";
+    const title = document.createElement("span");
+    title.textContent = label;
+    const detail = document.createElement("strong");
+    detail.textContent = value;
+    fact.append(title, detail);
+    facts.append(fact);
+  }
+  source.replaceChildren(file, facts);
   $("metrics").replaceChildren(
     metric("Job ads", summary.ads, "work"),
     metric("Distinct chart skills", summary.chartSkills ?? charts.skills.length, "chart"),
