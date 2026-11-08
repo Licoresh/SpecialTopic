@@ -525,7 +525,7 @@ def current_analysis():
         lambda: extraction_freshness(meta), ttl=15, max_entries=1)
     st.session_state["_current_analysis_signature"] = signature
     if not current:
-        st.warning("Inputs, labels, settings or the selected model changed. Run Competency Extraction again before interpreting or exporting results.")
+        st.warning("Inputs, labels, settings or the shared released classifier changed. Run Competency Extraction again before interpreting or exporting results.")
         return False
     return True
 
@@ -614,12 +614,14 @@ def home():
                 next_title, next_copy, next_path, next_label = "Check and clean the uploaded data", "Confirm the automatic column matches, review the quality report, and save the cleaned job table.", "pages/02_Data_Quality.py", "Review data quality"
             elif not meta or not has_extractions:
                 next_title, next_copy, next_path, next_label = "Extract skill phrases", "Run the phrase extraction step on your cleaned job ads. Candidate phrases are not research labels until a reviewer checks them.", "pages/05_Competency_Extraction.py", "Open phrase extraction"
+            elif not extraction_freshness(meta)[1]:
+                next_title, next_copy, next_path, next_label = "Refresh the analysis", "Run extraction again with the current shared classifier.", "pages/05_Competency_Extraction.py", "Refresh extraction"
             elif label_count == 0:
                 next_title, next_copy, next_path, next_label = "Review candidate phrases", "Check each phrase against its source context, then confirm or change the AI category and PSF suggestion.", "pages/06_Manual_Labeling.py", "Open manual labeling"
             elif not model:
                 next_title, next_copy, next_path, next_label = "Train the research classifier", "Training becomes available when the real reviewed dataset passes the validation checks.", "pages/07_ML_Training.py", "Open model training"
             elif not meta.get("model_available", False):
-                next_title, next_copy, next_path, next_label = "Refresh the analysis", "Run extraction again to apply the current model and labels.", "pages/05_Competency_Extraction.py", "Refresh extraction"
+                next_title, next_copy, next_path, next_label = "Refresh the analysis", "Run extraction again with the current shared classifier.", "pages/05_Competency_Extraction.py", "Refresh extraction"
             else:
                 next_title, next_copy, next_path, next_label = "Explore the current analysis", "The extraction is complete. Review Research Readiness before interpreting or reporting its results.", "pages/03_Job_Market.py", "Open exploratory analysis"
 
@@ -998,9 +1000,14 @@ def quality():
                             st.success("Cleaned data and its quality report are saved on this computer. Configure Supabase to share them with teammates.")
 
 def extraction():
-    page_intro("Extract skill phrases", "Scan cleaned job ads, carry forward matching researcher-approved labels, and send new phrases to review.")
+    from .public_engine import _model
+    try:
+        shared_classifier = _model(hosted=True)
+    except ValueError:
+        shared_classifier = None
+    page_intro("Extract skill phrases", "Run the same released classifier as the public analyzer. Keep approved labels as review evidence and send new phrases to review.")
     with _icon_expander("How extraction works", expanded=False):
-        st.write("Previously approved labels are attached when a normalized phrase matches the reviewed dataset. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
+        st.write("Saved reviewer labels stay visible as audit evidence but do not override shared classifier output. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
     if storage.read_json("uploads", {}).get("psf_aai") and _local_verified_psf_available():
         st.warning("Your reviewed PSF-AAI framework is saved on this computer but has not reached the shared workspace.")
         if action_button("Sync saved PSF-AAI framework", key="sync_saved_psf_framework", type="secondary"):
@@ -1014,16 +1021,17 @@ def extraction():
                 st.warning("No PSF-AAI taxonomy is available. Discovery can run, but it cannot claim PSF matches.")
             elif taxonomy.attrs.get("reference_source") == "bundled_default":
                 st.caption("Bundled TESDA PSF-AAI reference loaded by default. A reviewed shared reference takes priority when available.")
-            if not (ROOT / "models/competency_classifier.joblib").exists():
-                st.info("No selected classifier yet. Extract initial phrases for manual labeling, then train both models and select one.")
+            if shared_classifier is None:
+                st.warning("No shared classifier release is available. Publish a classifier before running analysis.")
             else:
+                st.caption(f"Analysis uses {shared_classifier.name} · {shared_classifier.version}, the same released classifier as the public analyzer.")
                 if training_data_changed():
-                    st.warning("Training data has changed since this model was trained. Retraining is recommended.")
+                    st.warning("Training labels have changed since the research model was trained. Retrain and release it before applying those changes to analysis.")
     has_results = "_extraction_results_frame" in st.session_state
     if not has_results:
         content_metrics([
             ("PSF-AAI reference entries", f"{len(taxonomy):,}", "layers"),
-            ("Local classifier", "Available" if (ROOT / "models/competency_classifier.joblib").exists() else "Unavailable", "model_training"),
+            ("Shared classifier", "Available" if shared_classifier else "Unavailable", "model_training"),
             ("Results view", "Not loaded", "format_list_bulleted"),
         ], "extraction_start")
     if has_results:
@@ -3480,11 +3488,11 @@ def research_readiness():
                             st.caption(f"{len(shared_sources)} source ID(s) occur in both the labeled phrase data and the active analysis sample.")
                         extraction_meta = storage.read_json("extraction_metadata", {})
                         if not extraction_meta or not extraction_freshness(extraction_meta)[1]:
-                            st.warning("The saved extraction is out of date. Run Competency Extraction again after finalizing the job sample, reviewed PSF-AAI reference, and selected model before using reports.")
+                            st.warning("The saved extraction is out of date. Run Competency Extraction again after finalizing the job sample, reviewed PSF-AAI reference, and shared classifier before using reports.")
                         elif not extraction_meta.get("model_available"):
-                            st.info("The current extraction was created without the selected classifier. Rerun extraction if you intend to use classifier categories.")
+                            st.info("The current extraction was created without the shared classifier. Rerun extraction to apply classifier categories.")
                         else:
-                            st.success("The saved extraction matches the current jobs, taxonomy, labels, settings, and model.")
+                            st.success(f"The saved extraction matches the current jobs, taxonomy, labels, settings, and shared classifier ({extraction_meta.get('classifier_version', 'unknown version')}).")
                     with content_section("Where the labels came from", "source", "readiness_sources"):
                         st.caption("Counts describe saved annotation rows and distinct phrases within each posting. Several phrases from one posting still represent one job ad, not independent observations.")
                         display(profile["sources"])
@@ -3529,7 +3537,7 @@ def research_readiness():
                             else:
                                 st.info("No saved classifier metadata is available.")
                     with content_section("Recommended next actions", "checklist", "readiness_actions"):
-                        st.markdown("1. Confirm every ad meets the written Philippine AI/analytics inclusion rules; remove out-of-scope ads with a saved audit trail.\n2. Label phrases from more distinct job ads; the app's 20-source warning threshold is only a workflow flag, not a statistically justified sample-size target. More phrases from the same ads do not replace independent sources.\n3. Reconcile reviewer IDs with the actual reviewers, agree on category definitions, double-code a planned subset, and document disagreement resolution.\n4. Rerun extraction after the final study dataset, framework, and model are selected; manually verify phrases and PSF-AAI mappings against source evidence.\n5. Train only for an explicit classifier purpose and only when whole-ad holdout evaluation is possible. Keep its metrics exploratory until evaluated on untouched job-ad sources.\n6. Report job-ad counts and percentages using the number of eligible, reviewed ads as the denominator; archive source URLs, collection dates, inclusion rules, and the dataset hash.")
+                        st.markdown("1. Confirm every ad meets the written Philippine AI/analytics inclusion rules; remove out-of-scope ads with a saved audit trail.\n2. Label phrases from more distinct job ads; the app's 20-source warning threshold is only a workflow flag, not a statistically justified sample-size target. More phrases from the same ads do not replace independent sources.\n3. Reconcile reviewer IDs with the actual reviewers, agree on category definitions, double-code a planned subset, and document disagreement resolution.\n4. Rerun extraction after finalizing the study dataset and framework; verify classifier phrases and PSF-AAI mappings against source evidence.\n5. Train only for an explicit classifier purpose and only when whole-ad holdout evaluation is possible. Release the evaluated model before using it for shared analysis. Keep its metrics exploratory until evaluated on untouched job-ad sources.\n6. Report job-ad counts and percentages using the number of eligible, reviewed ads as the denominator; archive source URLs, collection dates, inclusion rules, and the dataset hash.")
                         if path:
                             st.caption(f"Audited training file: `{project_relative_path(path)}`")
 

@@ -3,9 +3,8 @@ import importlib.metadata
 import pandas as pd
 from . import storage
 from .config import ROOT, VERSION
-from .cleaning import analysis_jobs, analysis_job_values
+from .cleaning import analysis_jobs, analysis_job_values, normalize_text
 from .utils import frame_hash, digest, timestamp
-from .classification import cached_load_model
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
 from .analytics import accepted_skills, filter_frame, skill_chart_tables, psf_demand_tables
@@ -17,14 +16,15 @@ from .gap_analysis import calculate_gaps
 from .labeling import apply_corrections
 
 # Bump when extraction/matching/classification semantics change, not for UI fixes.
-EXTRACTION_PIPELINE_VERSION = 1
-_LEGACY_COMPATIBLE_VERSIONS = {1: tuple(f"2.0.{patch}" for patch in range(60, 66))}
+EXTRACTION_PIPELINE_VERSION = 2
 
 
 def _extraction_inputs():
+    classifier_path = ROOT / "public-web/site/model.json"
     return {"datasets": {k: frame_hash(storage.read_frame("cleaned_"+k)) for k in ("jobs", "psf_aai")},
             "annotations": frame_hash(storage.read_frame("labeled_competencies")),
-            "settings": storage.settings(), "model": storage.read_json("selected_model", {})}
+            "settings": storage.settings(),
+            "classifier": digest(classifier_path.read_bytes()) if classifier_path.is_file() else None}
 
 
 def _legacy_extraction_inputs(inputs=None):
@@ -43,37 +43,48 @@ def input_signature():
 def extraction_freshness(metadata):
     """Return the active signature and whether the saved inputs still match.
 
-    Old runs kept only a hash containing their app version. Reconstruct those
-    hashes for known compatible releases without rewriting the original record.
+    Old pipeline versions are stale. Only the current pipeline can use the
+    pending-upload signature compatibility check.
     """
     inputs = _extraction_inputs()
     signature = digest(inputs | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
-    if metadata.get("pipeline_version") is not None:
-        if metadata["pipeline_version"] != EXTRACTION_PIPELINE_VERSION:
-            return signature, False
-        if metadata.get("signature") == signature:
-            return signature, True
-        legacy = _legacy_extraction_inputs(inputs)
-        return signature, metadata.get("signature") == digest(legacy | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
-    saved = metadata.get("signature")
-    if not saved:
+    if metadata.get("pipeline_version") != EXTRACTION_PIPELINE_VERSION:
         return signature, False
+    if metadata.get("signature") == signature:
+        return signature, True
     legacy = _legacy_extraction_inputs(inputs)
-    return signature, any(saved == digest(legacy | {"version": version})
-                          for version in _LEGACY_COMPATIBLE_VERSIONS.get(EXTRACTION_PIPELINE_VERSION, ()))
+    return signature, metadata.get("signature") == digest(legacy | {"pipeline_version": EXTRACTION_PIPELINE_VERSION})
 
 
 def _extraction_retry_signature(signature):
-    # Local model identity guards retries on this host, not shared result freshness.
     return digest({"inputs": signature,
-                   "cleaning": {k: storage.read_json("cleaning_" + k, {}) for k in ("jobs", "psf_aai")},
-                   "published_model": storage.read_json("model_metadata", {}),
-                   "local_model": {name: digest(path.read_bytes()) if path.is_file() else None
-                                   for name in ("competency_classifier.joblib", "model_metadata.json")
-                                   for path in [ROOT / "models" / name]}})
+                   "cleaning": {k: storage.read_json("cleaning_" + k, {}) for k in ("jobs", "psf_aai")}})
+
+
+def _retain_review_labels(extracted, annotations):
+    """Keep saved labels for audit without letting them change shared predictions."""
+    if extracted.empty or annotations.empty or "label" not in annotations:
+        return extracted
+    labels = {}
+    for row in annotations.fillna("").to_dict("records"):
+        phrase = row.get("phrase") or row.get("normalized_phrase", "")
+        label = str(row.get("label", "")).strip()
+        if label:
+            labels[normalize_text(phrase)] = label
+            labels[normalize_text(row.get("normalized_phrase") or phrase)] = label
+    if not labels:
+        return extracted
+    extracted = extracted.copy()
+    extracted["human_label"] = extracted.normalized_phrase.map(lambda phrase: labels.get(normalize_text(phrase), ""))
+    reviewed = extracted.human_label.ne("")
+    extracted.loc[reviewed, "agreement"] = extracted.loc[reviewed].apply(
+        lambda row: ("Match" if row.human_label == row.model_prediction else "Mismatch") if row.model_prediction else "",
+        axis=1,
+    )
+    return extracted
+
 
 def run_extraction(progress=None, on_prepared=None):
-    from . import supabase_store
     progress = progress or (lambda value, message: None)
     progress(0., "Checking source data and review provenance")
     signature = input_signature()
@@ -104,22 +115,14 @@ def run_extraction(progress=None, on_prepared=None):
             progress(.02, f"A newer {kind} upload is pending; using the saved cleaned dataset")
     taxonomy = storage.read_frame("cleaned_psf_aai")
     matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"]) if not taxonomy.empty else None
-    model_path = ROOT / "models/competency_classifier.joblib"
-    model = cached_load_model(model_path) if model_path.exists() else None
-    from . import supabase_store
-    if supabase_store.configured():
-        from .model_training import read_model_metadata
-        import json
-        local_meta = ROOT / "models/model_metadata.json"
-        published = read_model_metadata()
-        local = json.loads(local_meta.read_text()) if local_meta.exists() else {}
-        if not published or local.get("training_timestamp") != published.get("training_timestamp"):
-            model = None
+    from .public_engine import _model
+    model = _model(hosted=True)
     annotations = storage.read_frame("labeled_competencies")
     frames, diagnostics = [], []
     for kind in ("jobs",):
         frame = storage.read_frame("cleaned_" + kind)
-        result, processed = extract_skills(frame, kind, matcher, model, annotations, stopwords=settings["stopwords"], batch_size=settings["batch_size"], max_candidates=settings["max_candidates"], progress=progress)
+        result, processed = extract_skills(frame, kind, matcher, model, None, stopwords=settings["stopwords"], batch_size=settings["batch_size"], max_candidates=settings["max_candidates"], progress=progress)
+        result = _retain_review_labels(result, annotations)
         frames.append(result)
         diagnostics.append(processed)
     populated = [frame for frame in frames if not frame.empty]
@@ -129,7 +132,9 @@ def run_extraction(progress=None, on_prepared=None):
     prepared = (output, pd.concat(diagnostics, ignore_index=True),
                 {"signature": signature, "retry_signature": retry_signature, "timestamp": timestamp(),
                  "pipeline_version": EXTRACTION_PIPELINE_VERSION, "software_version": VERSION,
-                 "taxonomy_available": matcher is not None, "model_available": model is not None})
+                 "taxonomy_available": matcher is not None, "model_available": True,
+                 "classifier_name": model.name, "classifier_version": model.version,
+                 "classifier_release_status": model.release_status})
     if on_prepared:
         on_prepared(prepared)
     return publish_extraction(prepared, progress)
@@ -234,6 +239,7 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
     tables.update(job_profile_tables(jobs))
     tables.update(location_tables(jobs))
     tables.update(psf_demand_tables(mapping, jobs, taxonomy))
+    extraction_metadata = storage.read_json("extraction_metadata", {})
     metadata = {"timestamp": timestamp(), "software_version": VERSION, "settings": cfg,
                 "dataset_counts": {"jobs": len(jobs), "psf_competencies": len(taxonomy)},
                 "research_sample": {"source": "active cleaned job upload", "selected_rows": len(jobs),
@@ -242,7 +248,10 @@ def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, sour
                                     "training_data_included": False,
                                     "note": "Training may use other sources. Findings use only selected job records; model evaluation is exported separately from Evaluate models."},
                 "uploads": {k:v for k,v in storage.read_json("uploads", {}).items() if k in ("jobs", "psf_aai")},
-                "model": {k: v for k, v in storage.read_json("selected_model", {}).items() if k != "metrics"}, "extraction": storage.read_json("extraction_metadata", {}),
+                "model": {"model_name": extraction_metadata.get("classifier_name", ""),
+                          "version": extraction_metadata.get("classifier_version", ""),
+                          "release_status": extraction_metadata.get("classifier_release_status", "")},
+                "extraction": extraction_metadata,
                 "filters": {"jobs": job_filters, "skills": skill_filters, "alignment_status": statuses},
                 "data_preparation": storage.read_json("cleaning_jobs", {}),
                 "chart_presentation": {"version": 12, "job_ad_denominator": int(jobs.source_id.nunique()) if "source_id" in jobs else 0,

@@ -30,7 +30,7 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.96"
+PUBLIC_VERSION = "3.0.97"
 
 
 @st.cache_resource

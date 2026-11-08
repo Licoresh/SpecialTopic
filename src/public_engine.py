@@ -344,7 +344,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         "rows": len(raw),
         "duplicates": 0,
         "blank": 0,
-        "chartSkills": int(demand.employer_skill.nunique()) if not demand.empty else 0,
+        "chartSkills": int(len(demand)),
         "withheldPhrases": int(withheld.normalized_phrase.nunique()) if not withheld.empty else 0,
         "referenceRoles": _reference_roles(taxonomy),
         "withLocation": int(geography["location_evidence"].loc[geography["location_evidence"].region.ne(""), "source_id"].nunique()),
