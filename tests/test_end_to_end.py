@@ -89,6 +89,39 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     assert any("Possible duplicate rows included: 1" in caption.value for caption in app.caption)
 
 
+def test_public_results_render_family_and_psf_heatmaps():
+    import json
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+    from src.public_engine import analyze_upload
+
+    content = (b"job_title,job_family,job_description\n"
+               b"Data analyst,Analytics,SQL and data analysis with Python.\n"
+               b"Machine learning engineer,Engineering,Machine learning and data engineering.")
+    mapping = {field: field for field in ("job_title", "job_family", "job_description")}
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "public-web/streamlit_app.py")
+    app.session_state["public_result"] = analyze_upload(content, "synthetic.csv", mapping, hosted=True)
+
+    def heatmap_axes():
+        assert not app.exception and not app.error
+        specs = (json.loads(chart.proto.spec) for chart in app.get("plotly_chart"))
+        return {spec["layout"]["xaxis"]["title"]["text"] for spec in specs
+                if any(trace["type"] == "heatmap" for trace in spec["data"])}
+
+    app.run(timeout=30)
+    assert heatmap_axes() == {"Occupational family", "Reference role"}
+    families = app.multiselect(key="public_family_selection")
+    chosen = families.value
+    families.set_value([]).run(timeout=30)
+    assert heatmap_axes() == {"Reference role"}
+    assert any("Select at least one occupational family" in caption.value for caption in app.caption)
+    app.multiselect(key="public_family_selection").set_value(chosen).run(timeout=30)
+    assert heatmap_axes() == {"Occupational family", "Reference role"}
+    app.multiselect(key="public_psf_heatmap_roles").set_value([]).run(timeout=30)
+    assert heatmap_axes() == {"Occupational family"}
+    assert any("Select at least one reference role" in caption.value for caption in app.caption)
+
+
 def test_pending_upload_does_not_replace_saved_cleaned_jobs(workspace, jobs):
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("mapped_jobs", jobs)

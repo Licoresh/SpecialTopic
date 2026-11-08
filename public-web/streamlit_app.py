@@ -29,9 +29,9 @@ from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, RESULT_SCHEMA_VERSION, an
 from src.ui import (analysis_workflow, featured_result_chart, featured_visual_chart, job_market_metrics, result_chart_options,
                     result_count_chart, result_heatmap, result_insight,
                     result_role_distribution)
-from src.visualization import education_bar, heatmap, job_title_trend
+from src.visualization import education_bar, job_title_trend
 
-PUBLIC_VERSION = "3.0.100"
+PUBLIC_VERSION = "3.0.101"
 
 
 @st.cache_resource
@@ -347,18 +347,18 @@ def _skills(result):
 
 def _heatmap(matrix, title, summary, rows, key, *, count_label="Job advertisements", shares=None, denominators=None,
              share_label="Share within group", denominator_label="Advertisements in group", group_label="group", transpose=False):
-    if matrix.empty:
+    if matrix.empty or not matrix.to_numpy().any():
         st.info("No chartable evidence is available for this comparison.")
         return
-    if matrix.size == 1:
+    def render():
         result_heatmap(matrix, title, count_label=count_label, share_matrix=shares, row_denominators=denominators,
                        share_label=share_label, denominator_label=denominator_label, row_group_label=group_label,
                        transpose=transpose)
-        return
-    featured_visual_chart(lambda: heatmap(matrix, title, count_label=count_label, share_matrix=shares,
-                                         row_denominators=denominators, share_label=share_label,
-                                         denominator_label=denominator_label, transpose=transpose),
-                          summary, rows, key=key, insight_title="Heatmap Insight", list_title="Top Skill × Group")
+
+    if matrix.size == 1:
+        render()
+    else:
+        featured_visual_chart(render, summary, rows, key=key, insight_title="Heatmap Insight", list_title="Top Skill × Group")
 
 
 def _roles(result):
@@ -383,7 +383,8 @@ def _roles(result):
         defaults = families[:8]
         chosen = st.multiselect("Occupational families in the heatmap", families, default=defaults, key="public_family_selection")
         if chosen:
-            matrix = pd.DataFrame(0, index=chosen, columns=skills, dtype=int)
+            matrix = pd.DataFrame(0, index=chosen, columns=skills, dtype=int).rename_axis(
+                index="occupational family", columns="skill")
             for row in charts.get("familySkillDemand", []):
                 if row["job_family"] in chosen and row["skill_label"] in skills:
                     matrix.at[row["job_family"], row["skill_label"]] = int(row["job_ads"])
@@ -403,6 +404,10 @@ def _roles(result):
                      "public_family_heatmap", shares=shares, denominators=denominators,
                      share_label="Share of family ads", denominator_label="Advertisements in family",
                      group_label="occupational family", transpose=True)
+        else:
+            st.caption("Select at least one occupational family to display the heatmap.")
+    else:
+        st.caption("The occupational family heatmap needs job family data and chartable skills.")
 
     title_families = charts.get("titleFamilies", [])
     families_for_titles = sorted({row["job_family"] for row in title_families if row.get("job_family")})
@@ -540,7 +545,8 @@ def _psf(result):
     chosen_roles = st.multiselect("Reference roles in the heatmap", role_options, default=role_options[:8], key="public_psf_heatmap_roles")
     chosen_competencies = st.multiselect("PSF-AAI competencies in the heatmap", competencies_options, default=competencies_options[:min(limit, 15)], key="public_psf_heatmap_competencies")
     if chosen_roles and chosen_competencies:
-        matrix = pd.DataFrame(0, index=chosen_roles, columns=chosen_competencies, dtype=int)
+        matrix = pd.DataFrame(0, index=chosen_roles, columns=chosen_competencies, dtype=int).rename_axis(
+            index="reference role", columns="competency")
         for row in cells:
             if row["role"] in chosen_roles and row["competency"] in chosen_competencies:
                 matrix.at[row["role"], row["competency"]] = int(row["count"])
@@ -550,6 +556,10 @@ def _psf(result):
                  [], "psf_role_competency_heatmap", shares=shares, denominators=denominators,
                  share_label="Share of role ads", denominator_label="Advertisements linked to role",
                  group_label="reference role", transpose=True)
+    elif cells:
+        st.caption("Select at least one reference role and one competency to display the heatmap.")
+    else:
+        st.caption("The PSF-AAI heatmap needs advertisements with role and competency links.")
     if charts.get("psfEvidence"):
         with st.expander("PSF-AAI reference evidence"):
             st.dataframe(pd.DataFrame(charts["psfEvidence"]), width="stretch", hide_index=True)
