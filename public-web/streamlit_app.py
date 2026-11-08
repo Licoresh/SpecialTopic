@@ -108,7 +108,8 @@ def _style():
     .public-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.9rem}
     .public-file-meta{color:#62585d;font-size:.8rem}
     .public-privacy{margin:.1rem 0 0;color:#62585d;font-size:.78rem}
-    .public-processing-screen{min-height:calc(100dvh - 5rem);display:grid;align-items:center;padding:clamp(1rem,5vw,3rem);border-radius:16px;background:linear-gradient(180deg,#4d1020 0%,#78182b 28%,#b87583 61%,#f8f5f2 100%)}
+    .st-key-public-processing-overlay{position:fixed!important;z-index:100000!important;inset:0!important;width:100vw!important;height:100dvh!important;display:grid!important;place-items:center!important;padding:clamp(1rem,5vw,3rem)!important;overflow:auto!important;background:#19171870!important;backdrop-filter:blur(2px)}
+    [data-testid="stElementContainer"]:has(.st-key-public-processing-overlay){height:0!important;margin:0!important;padding:0!important}
     .st-key-public-processing-card{width:min(100%,760px);margin:auto;padding:clamp(1.6rem,5vw,3.5rem);border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
     .public-processing-brand{display:inline-flex;align-items:center;gap:.7rem;margin-bottom:1.7rem;text-align:left}
     .public-processing-brand img{width:46px;height:48px}
@@ -125,11 +126,11 @@ def _style():
     .stTabs [data-baseweb="tab"]{min-height:38px;padding:.4rem clamp(.45rem,1vw,.9rem);white-space:nowrap;font-size:.78rem}
     .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
-    .stApp:has(.st-key-public-processing-screen) .stMainBlockContainer{max-width:100%;padding:0}
+    .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
     .st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:.85rem}
     .st-key-public-upload-layout [data-testid="column"],.st-key-public-review-layout [data-testid="column"]{width:auto!important;flex:none!important;min-width:0}
     @media(max-width:900px){.st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{grid-template-columns:minmax(0,1fr)}.st-key-public-upload-card{min-height:0}.public-hero p{max-width:76%}}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-hero{min-height:160px}.public-hero:after{width:56%;opacity:.3}.public-hero p{max-width:100%}.public-processing-screen{min-height:calc(100dvh - 1rem);padding:1rem}.st-key-public-processing-card{padding:1.5rem 1rem}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-hero{min-height:160px}.public-hero:after{width:56%;opacity:.3}.public-hero p{max-width:100%}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
     @media(max-width:475px){.public-topbar img{width:158px}.public-topline{align-items:flex-start;flex-direction:column;gap:.35rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
@@ -548,7 +549,7 @@ def _process_pending_upload():
         st.rerun()
 
     mark_uri = "data:image/svg+xml;base64," + base64.b64encode(APP_ICON.read_bytes()).decode("ascii")
-    with st.container(key="public-processing-screen"):
+    with st.container(key="public-processing-overlay"):
         with st.container(key="public-processing-card"):
             st.html(f'<div class="public-processing-brand"><img alt="" src="{mark_uri}"><span><strong>Future of Work</strong><small>MSU-IIT · Job Market Analytics</small></span></div><h1 class="public-processing-title">Analyzing your dataset</h1><p class="public-processing-copy">Applying the public classifier and shared analysis pipeline.</p>')
             message = st.empty()
@@ -588,13 +589,13 @@ def main():
         return
 
     stage = st.session_state.get("public_stage", "upload")
-    if stage == "processing":
-        _process_pending_upload()
-        return
-    if stage not in {"upload", "review"}:
+    processing = stage == "processing"
+    if stage not in {"upload", "review", "processing"}:
         st.session_state["public_stage"] = stage = "upload"
-    if stage == "review" and st.session_state.get("public_preview") is None:
+        processing = False
+    if stage in {"review", "processing"} and st.session_state.get("public_preview") is None:
         st.session_state["public_stage"] = stage = "upload"
+        processing = False
     content = st.session_state.get("public_content")
     preview = st.session_state.get("public_preview")
     mapping = dict(st.session_state.get("public_mapping", {}))
@@ -714,13 +715,15 @@ def main():
                 st.rerun()
         with analyze:
             if st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
-                          disabled=not ready, key="public_start_analysis", width="stretch"):
+                          disabled=not ready or processing, key="public_start_analysis", width="stretch"):
                 st.session_state["public_stage"] = "processing"
                 st.session_state.pop("public_error", None)
                 st.rerun()
 
     with st.container(key="public-footer"):
         st.caption(f"Future of Work · Philippine job advertisement analysis · v{VERSION}")
+    if processing:
+        _process_pending_upload()
 
 
 main()
