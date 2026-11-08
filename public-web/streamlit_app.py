@@ -29,7 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.91"
+PUBLIC_VERSION = "3.0.92"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -72,6 +72,9 @@ def _style():
     .public-step-line{height:1px;background:#e5e3e0}
     .st-key-public-upload-card{width:100%;height:100%;min-height:350px;display:flex;flex-direction:column;justify-content:center;gap:.8rem;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
     .st-key-public-workflow-card{width:100%;min-width:0;height:100%;padding:clamp(1rem,2.2vw,1.4rem);border:1px solid #e6d9d7;border-radius:12px;background:#fffcfa;box-shadow:0 2px 8px #4d102007}
+    .st-key-public-recent-upload{margin-top:.8rem;padding:.8rem 1rem;border:1px solid #e6d9d7;border-radius:10px;background:#fffcfa}
+    .public-recent-eyebrow{display:block;color:#78182b;font-size:.68rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+    .public-recent-filename{display:block;margin-top:.15rem;color:#24303d;font-size:.88rem;font-weight:700;overflow-wrap:anywhere}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{position:relative;box-sizing:border-box;min-height:300px;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:.75rem;padding:9rem 1rem 1rem!important;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%);text-align:center}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]>div{display:flex;flex-direction:column;align-items:center;gap:.4rem}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:before{position:absolute;top:2rem;left:50%;display:grid;place-items:center;width:52px;height:52px;transform:translateX(-50%);border-radius:14px;background:#f7edef;color:#78182b;content:"↥";font-size:1.8rem;font-weight:700;pointer-events:none}\n    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{position:absolute;top:6rem;left:1rem;right:1rem;color:#24303d;content:"Drop your CSV file here\\A or select a file from your device";font-size:.9rem;font-weight:650;line-height:1.5;text-align:center;white-space:pre-line;pointer-events:none}\n    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:hover{border-color:#78182b;background:#f7edef}
@@ -214,7 +217,7 @@ def _read_upload(upload):
 
 def _reset():
     st.session_state["public_upload_key"] = st.session_state.get("public_upload_key", 0) + 1
-    for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping", "public_result", "public_error", "public_stage"):
+    for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping", "public_result", "public_error", "public_stage", "public_using_recent_upload"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -609,12 +612,13 @@ def main():
                 uploaded = st.file_uploader("Select a CSV file", type=["csv"], key=f"public_upload_{st.session_state.get('public_upload_key', 0)}",
                                             help="Your file is processed for this session and is not added to the research workspace.",
                                             label_visibility="collapsed")
-                if uploaded is None and st.session_state.get("public_file_hash"):
+                if uploaded is None and st.session_state.get("public_file_hash") and not st.session_state.get("public_using_recent_upload"):
                     for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                         st.session_state.pop(key, None)
                     content = preview = None
                     mapping = {}
                 if uploaded is not None:
+                    st.session_state["public_using_recent_upload"] = False
                     try:
                         raw_content = uploaded.getvalue()
                         file_hash = hashlib.sha256(raw_content).hexdigest()
@@ -629,6 +633,13 @@ def main():
                         else:
                             content = st.session_state["public_content"]
                             preview = st.session_state["public_preview"]
+                        st.session_state["public_recent_upload"] = {
+                            "file_hash": file_hash,
+                            "filename": Path(uploaded.name).name,
+                            "content": content,
+                            "preview": preview,
+                            "mapping": dict(st.session_state.get("public_mapping", {})),
+                        }
                         st.success(f"{Path(uploaded.name).name} · {len(preview):,} records detected")
                         with st.expander("Preview sample rows"):
                             st.dataframe(preview.head(8), width="stretch", hide_index=True)
@@ -636,6 +647,25 @@ def main():
                         st.error(str(exc))
                         for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                             st.session_state.pop(key, None)
+                recent = st.session_state.get("public_recent_upload")
+                if recent and recent.get("file_hash") != st.session_state.get("public_file_hash"):
+                    with st.container(key="public-recent-upload"):
+                        info, action = st.columns([2.2, 1], vertical_alignment="center")
+                        with info:
+                            st.html(f'<span class="public-recent-eyebrow">Recent upload</span><strong class="public-recent-filename">{escape_html(recent["filename"])}</strong>')
+                            size_mb = len(recent["content"]) / (1024 * 1024)
+                            st.caption(f'{len(recent["preview"]):,} rows · {size_mb:.1f} MB · Available while this browser session is open.')
+                        with action:
+                            if st.button("Use recent upload", icon=":material/replay:", key="public_use_recent_upload", width="stretch"):
+                                st.session_state["public_upload_key"] = st.session_state.get("public_upload_key", 0) + 1
+                                st.session_state["public_file_hash"] = recent["file_hash"]
+                                st.session_state["public_filename"] = recent["filename"]
+                                st.session_state["public_content"] = recent["content"]
+                                st.session_state["public_preview"] = recent["preview"]
+                                st.session_state["public_mapping"] = dict(recent.get("mapping", {}))
+                                st.session_state["public_using_recent_upload"] = True
+                                st.session_state["public_stage"] = "review"
+                                st.rerun()
             with right, st.container(key="public-workflow-card"):
                 st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your CSV is processed for this session only.</p>')
         with st.container(key="public-upload-footer"):
@@ -684,6 +714,9 @@ def main():
                         with st.container(key=f"public-map-row-{field}"):
                             mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
                 st.session_state["public_mapping"] = mapping
+                recent = st.session_state.get("public_recent_upload")
+                if recent and recent.get("file_hash") == file_hash:
+                    recent["mapping"] = dict(mapping)
                 if duplicate_columns:
                     st.warning("A CSV column is mapped more than once. Choose each source column once to keep its evidence traceable.")
                 with st.expander("Preview sample rows"):
