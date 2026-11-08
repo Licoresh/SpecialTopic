@@ -6,12 +6,17 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="Future of Work | Public analyzer", page_icon=":material/work:",
                    layout="wide", initial_sidebar_state="collapsed")
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.config import FIELDS, VERSION
 from src.design import apply_design
@@ -23,7 +28,6 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
 from src.visualization import education_bar, heatmap, job_title_trend
 
 
-ROOT = Path(__file__).resolve().parents[1]
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
     "preferred_skills": "Preferred skills", "qualifications": "Qualifications", "job_id": "Job ID",
