@@ -24,12 +24,12 @@ from src.config import FIELDS
 from src.design import apply_design
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, health
-from src.ui import (featured_result_chart, featured_visual_chart, result_chart_options,
+from src.ui import (analysis_workflow, featured_result_chart, featured_visual_chart, result_chart_options,
                     result_count_chart, result_heatmap, result_insight,
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.93"
+PUBLIC_VERSION = "3.0.94"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -127,13 +127,16 @@ def _style():
     .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
     .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
     .st-key-public-processing-overlay .stProgress>div>div{background:#78182b}
-    .stTabs [data-baseweb="tab-list"]{gap:.25rem;flex-wrap:nowrap;overflow-x:auto;border:1px solid #e5d7d5;border-radius:10px;background:#fff;padding:.25rem}
-    .stTabs [data-baseweb="tab"]{min-height:38px;padding:.4rem clamp(.45rem,1vw,.9rem);white-space:nowrap;font-size:.78rem}
+    .stTabs [data-baseweb="tab-list"]{display:flex;gap:.3rem;flex-wrap:nowrap;overflow-x:auto;border:1px solid #e5d7d5;border-radius:10px;background:#fff;padding:.3rem}
+    .stTabs [data-baseweb="tab"]{box-sizing:border-box;flex:1 1 0;min-width:0!important;max-width:none;min-height:44px;justify-content:center;padding:.45rem .5rem;white-space:nowrap;font-size:.78rem}
     .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
+    .st-key-public-results-heading{align-items:center;justify-content:space-between;gap:1rem;margin:.35rem 0 .5rem;padding-top:.6rem;border-top:1px solid #e5e3e0}
+    .st-key-public-results-heading [data-testid="stDownloadButton"] button{min-height:44px;white-space:nowrap}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
     .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
     @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
-    @media(max-width:475px){.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
+    @media(max-width:820px){.stTabs [data-baseweb="tab-list"]{justify-content:flex-start}.stTabs [data-baseweb="tab"]{flex:0 0 auto;min-width:max-content!important;padding-inline:.7rem}}
+    @media(max-width:475px){.st-key-public-results-heading{align-items:stretch;flex-wrap:wrap}.st-key-public-results-heading [data-testid="stDownloadButton"]{width:100%}.st-key-public-results-heading [data-testid="stDownloadButton"] button{width:100%}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
 
@@ -223,12 +226,14 @@ def _reset():
 
 
 def _metric_row(summary):
-    values = [("Job ads", summary["ads"]), ("Distinct chart skills", summary["chartSkills"]),
-              ("Distinct phrases withheld", summary["withheldPhrases"]), ("PSF-AAI reference roles", summary["referenceRoles"])]
-    with st.container(horizontal=True, gap="medium", wrap=True):
-        for label, value in values:
-            with st.container(border=True, width="stretch"):
-                st.metric(label, f"{value:,}")
+    values = [("Job ads", summary["ads"], "work"),
+              ("Distinct chart skills", summary["chartSkills"], "bar_chart"),
+              ("Distinct phrases withheld", summary["withheldPhrases"], "sell"),
+              ("PSF-AAI reference roles", summary["referenceRoles"], "layers")]
+    with st.container(horizontal=True, gap="medium", key="result_metrics"):
+        for index, (label, value, icon) in enumerate(values, 1):
+            with st.container(border=True, key=f"result_metric_{index}"):
+                st.metric(label, f"{value:,}", icon=f":material/{icon}:")
 
 
 def _frame(rows, label, value, *, total=None):
@@ -521,7 +526,20 @@ def _results(result):
     if model.get("releaseStatus") == "interim":
         st.warning(model.get("releaseNote") or "Interim classifier. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
     st.info("This anonymous run uses the public classifier and shared analysis functions. It does not apply saved researcher-only labels, mapping reviews, or corrections.", icon=":material/info:")
+    analysis_workflow()
     _metric_row(result["summary"])
+
+    report_rows = []
+    for section, rows in result["charts"].items():
+        if isinstance(rows, list):
+            report_rows.extend({"section": section, **row} for row in rows)
+    with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute",
+                      key="public-results-heading"):
+        st.subheader("Results Section", icon=":material/bar_chart:")
+        if report_rows:
+            st.download_button("Export results", pd.DataFrame(report_rows).to_csv(index=False).encode("utf-8-sig"),
+                               f"{Path(file_name).stem}-results.csv", "text/csv", key="public_results_csv",
+                               type="primary", icon=":material/download:")
     tabs = st.tabs(["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand", "Alignment evidence", "Unmapped / emerging"])
     with tabs[0]: _skills(result)
     with tabs[1]: _roles(result)
@@ -529,14 +547,6 @@ def _results(result):
     with tabs[3]: _psf(result)
     with tabs[4]: _alignment(result)
     with tabs[5]: _unmapped(result)
-    report_rows = []
-    for section, rows in result["charts"].items():
-        if isinstance(rows, list):
-            for row in rows:
-                report_rows.append({"section": section, **row})
-    if report_rows:
-        st.download_button("Results CSV", pd.DataFrame(report_rows).to_csv(index=False).encode("utf-8-sig"),
-                           f"{Path(file_name).stem}-results.csv", "text/csv", key="public_results_csv")
 
 
 def _process_pending_upload():
