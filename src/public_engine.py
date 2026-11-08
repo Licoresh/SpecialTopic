@@ -52,6 +52,8 @@ class _ReleasedClassifier:
         self.weights = np.asarray(artifact["weights"], dtype=float)
         self.intercepts = np.asarray(artifact["intercepts"], dtype=float)
         self.casefold = artifact.get("casefold", {})
+        self.release_status = artifact.get("releaseStatus", "approved")
+        self.release_note = artifact.get("releaseNote", "")
         self.binary = self.kind == "logistic" and len(self.classes_) == 2
         self.research_model_name_ = self.name
 
@@ -366,7 +368,9 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         "mapping": selected,
         "summary": metrics,
         "charts": charts,
-        "model": {"version": model_version, "name": model_name, "trainedAt": trained_at},
+        "model": {"version": model_version, "name": model_name, "trainedAt": trained_at,
+                  "releaseStatus": getattr(model, "release_status", "approved"),
+                  "releaseNote": getattr(model, "release_note", "")},
         "reference": {"sourceUrl": str(taxonomy.source_url.iloc[0]) if "source_url" in taxonomy and not taxonomy.empty else "",
                       "sourceHash": str(taxonomy.source_hash.iloc[0]) if "source_hash" in taxonomy and not taxonomy.empty else "",
                       "competencies": len(taxonomy)},
@@ -388,10 +392,15 @@ def health(*, hosted=False):
     if hosted:
         path = ROOT / "public-web/site/model.json"
         try:
-            available = json.loads(path.read_text(encoding="utf-8")).get("schema") == 1
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+            available = artifact.get("schema") == 1
         except (OSError, json.JSONDecodeError):
+            artifact = {}
             available = False
     else:
+        artifact = {}
         available = (ROOT / "models/competency_classifier.joblib").is_file()
     return {"maxUploadBytes": maximum, "classifierAvailable": available,
+            "classifierStatus": artifact.get("releaseStatus", "approved") if available and hosted else "local" if available else "unavailable",
+            "classifierNotice": artifact.get("releaseNote", "") if hosted else "",
             "engine": "research", "stored": False}

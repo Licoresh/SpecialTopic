@@ -129,13 +129,15 @@ function engineStatus(health) {
   engineHealth = health;
   uploadLimit = Number(health.maxUploadBytes) || 4 * MB;
   const available = health.classifierAvailable === true;
+  const interim = available && health.classifierStatus === "interim";
   const badge = $("engine-badge");
   badge.dataset.state = available ? "complete" : "error";
-  badge.replaceChildren(icon(available ? "check" : "info"), document.createTextNode(available ? "Research engine ready" : "Research classifier unavailable"));
+  badge.replaceChildren(icon(available ? "check" : "info"), document.createTextNode(interim ? "Interim classifier ready" : available ? "Research engine ready" : "Research classifier unavailable"));
   $("upload-limit").textContent = `CSV files up to ${Math.floor(uploadLimit / MB)} MB are processed by the analysis server and not retained.`;
   refreshMappingStatuses();
   busy(job ? "Processing…" : "");
-  if (!available) notify("The research classifier is not available on this server yet. You can review column mapping, but analysis is disabled until the approved classifier is released.", true);
+  if (interim) notify(health.classifierNotice || "A temporary classifier is enabled. Results are preliminary until the research model is trained and evaluated.");
+  if (!available) notify("A public classifier is not available on this server yet. You can review column mapping, but analysis is disabled until a classifier is published.", true);
 }
 
 async function connectEngine() {
@@ -774,7 +776,9 @@ function showResults() {
   const { summary, charts, filename, model, evidence } = result;
   const version = model ? `${model.name} · ${model.version}` : "Research classifier unavailable";
   $("result-source").textContent = `${filename} · ${integer.format(summary.rows)} source rows · ${version} · Dataset ${result.datasetHash.slice(0, 16)}`;
-  $("analysis-basis").textContent = `Shared research engine analyzed ${integer.format(summary.ads)} ads with the research classifier and research analysis functions. Anonymous uploads use the same automated rules; saved researcher-only labels, mapping reviews, and corrections are not applied.`;
+  $("analysis-basis").textContent = model?.releaseStatus === "interim"
+    ? `${model.releaseNote || "Temporary classifier; results are preliminary."} Shared analysis functions were used. Saved researcher-only labels, mapping reviews, and corrections are not applied.`
+    : `Shared research engine analyzed ${integer.format(summary.ads)} ads with the research classifier and research analysis functions. Anonymous uploads use the same automated rules; saved researcher-only labels, mapping reviews, and corrections are not applied.`;
   $("metrics").replaceChildren(
     metric("Job ads", summary.ads, "work"),
     metric("Distinct chart skills", summary.chartSkills ?? charts.skills.length, "chart"),

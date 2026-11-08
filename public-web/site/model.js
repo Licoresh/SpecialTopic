@@ -2,7 +2,8 @@ const word = String.raw`[\p{L}\p{N}_]`;
 const tokenPattern = new RegExp(String.raw`(?<!${word})(?:\.net|c\+\+|c#|${word}+)(?!${word})`, "gu");
 
 export function browserClassifier(model) {
-  const {schema, version, name, trainedAt, kind, classes, terms, idf, weights, intercepts, casefold} = model;
+  const {schema, version, name, trainedAt, kind, classes, terms, idf, weights, intercepts, casefold,
+    releaseStatus, releaseNote} = model;
   if (schema !== 1 || !/^[0-9a-f]{16}$/.test(version) || typeof name !== "string"
       || !Number.isFinite(Date.parse(trainedAt)) || !["logistic", "multinomial_nb"].includes(kind)
       || !Array.isArray(classes) || classes.length < 2 || classes.length > 8 || !classes.every(label => typeof label === "string")
@@ -21,7 +22,7 @@ export function browserClassifier(model) {
   const indices = new Map(terms.map((term, index) => [term, index]));
   const folds = new Map(Object.entries(casefold));
   return {
-    version, name, trainedAt,
+    version, name, trainedAt, releaseStatus: releaseStatus || "approved", releaseNote: releaseNote || "",
     predict(phrase) {
       const text = Array.from(phrase.normalize("NFKC"), char => folds.get(char) ?? char.toLowerCase()).join("");
       const tokens = text.match(tokenPattern) ?? [];

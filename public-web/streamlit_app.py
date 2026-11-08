@@ -426,7 +426,9 @@ def _results(result):
     file_name = result["filename"]
     model = result["model"]
     st.caption(f"{file_name} · {result['summary']['rows']:,} rows · {model['name']} · model {model['version']} · dataset {result['datasetHash'][:16]}")
-    st.info("This anonymous run uses the released public classifier and shared analysis functions. It does not apply saved researcher-only labels, mapping reviews, or corrections.", icon=":material/info:")
+    if model.get("releaseStatus") == "interim":
+        st.warning(model.get("releaseNote") or "Interim classifier. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
+    st.info("This anonymous run uses the public classifier and shared analysis functions. It does not apply saved researcher-only labels, mapping reviews, or corrections.", icon=":material/info:")
     _metric_row(result["summary"])
     if st.button("Analyze another file", type="primary", icon=":material/upload_file:", key="public_analyze_another"):
         _reset()
@@ -456,6 +458,8 @@ def main():
         return
 
     _topbar(1)
+    if ENGINE.get("classifierStatus") == "interim":
+        st.warning(ENGINE.get("classifierNotice") or "A temporary classifier is enabled. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
     left, right = st.columns([1.65, 1], gap="large", vertical_alignment="top")
     with left, st.container(key="public-upload-card"):
         st.subheader("Upload your job advertisements")
@@ -475,7 +479,7 @@ def main():
                     st.session_state["public_mapping"] = _suggest_mapping(list(preview.columns))
                 st.success(f"{uploaded.name} · {len(preview):,} records detected")
                 if not ENGINE.get("classifierAvailable"):
-                    st.warning("The approved research classifier has not been released to this public app yet. You can inspect and map the file; analysis unlocks after the classifier is released.")
+                    st.warning("A public classifier is not available yet. You can inspect and map the file; analysis will unlock when a classifier is published.")
                 with st.form("public-column-mapping"):
                     st.subheader("Review your dataset")
                     st.caption("Choose which CSV column matches each field. Every selection stays editable.")

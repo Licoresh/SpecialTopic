@@ -59,7 +59,13 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
         evidence_by_text[text] = evidence
     progress(.35, "Classifying candidate phrases")
     predictions = {}
+    model_name = ""
     if model is not None:
+        model_name = getattr(model, "research_model_name_", "")
+        if not model_name:
+            model_steps = getattr(model, "named_steps", {})
+            classifier = model_steps.get("classifier") if hasattr(model_steps, "get") else None
+            model_name = type(classifier or model).__name__
         phrases = list(dict.fromkeys(normalize_text(p[1] or p[0]) for evidence in evidence_by_text.values() for p in evidence))
         if phrases:
             probabilities = model.predict_proba(phrases)
@@ -101,7 +107,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
                       "matching_method": "human_annotation" if annotation else "general_vocabulary" if normal in GENERAL else "ml_candidate" if accepted else "candidate",
                       "similarity_score": 0., "confidence": score if accepted else 0., "psf_competency": "", "competency_id": "", "psf_category": "", "job_role": "", "proficiency_level": "",
                       "ml_category": ml_cat, "ml_confidence": ml_score, "human_label": annotation["label"] if annotation else "", "model_prediction": ml_cat,
-                      "model_name": getattr(model, "research_model_name_", type(model.named_steps["classifier"]).__name__) if model is not None else "",
+                      "model_name": model_name,
                       "agreement": ("Match" if annotation["label"] == ml_cat else "Mismatch") if annotation and ml_cat else "Not Reviewed" if not annotation else "",
                       "accepted": accepted, "start_char": start, "end_char": end}
             if mapped:

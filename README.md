@@ -14,7 +14,7 @@ Run the Streamlit public edition locally from the repository root:
 
 Open [the local public analyzer](http://127.0.0.1:8502). The Streamlit edition keeps no sidebar and does not require researcher login. Uploads and results remain in the app session and are not written to researcher tables or project files.
 
-Select a CSV, confirm its editable column mapping, and explore Skills, Roles and locations, Qualifications, PSF-AAI demand, Alignment evidence, and Unmapped / emerging results. The dedicated PSF Mapping review page is not part of the public flow. The public engine uses only an explicitly released research classifier; analysis stays disabled until that artifact is available.
+Select a CSV, confirm its editable column mapping, and explore Skills, Roles and locations, Qualifications, PSF-AAI demand, Alignment evidence, and Unmapped / emerging results. The dedicated PSF Mapping review page is not part of the public flow. The current public build uses a temporary classifier exported from the local model; its evaluation metadata is not verifiable and it lacks a source-disjoint job-ad holdout. Results are preliminary until the shared research model is retrained and evaluated.
 
 To add the Streamlit edition to Community Cloud, choose repository `Licoresh/SpecialTopic`, branch `main`, and main file path `public-web/streamlit_app.py`. Keep the repository root as the app root. Community Cloud syncs later code changes from GitHub automatically; see [Streamlit's deployment guide](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy).
 
