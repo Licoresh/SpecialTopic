@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.config import FIELDS, VERSION
+from src.config import FIELDS, PUBLIC_VERSION
 from src.design import apply_design
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, health
@@ -52,18 +52,16 @@ def _style():
     [data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]{display:none!important}
     [data-testid="stHeader"]{background:transparent;height:0}
     .stApp{background:#f8f5f2}
-    .stMainBlockContainer{max-width:1440px;padding:1rem clamp(1rem,3vw,2.5rem) 4rem}
-    .public-topbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.25rem 0 1rem;border-bottom:1px solid #e5e3e0}
-    .public-topbar img{display:block;width:clamp(145px,18vw,205px);height:auto}
-    .public-version{color:#647184;font-size:.75rem}
-    .public-hero{position:relative;isolation:isolate;display:grid;align-content:center;min-height:180px;margin:0 0 1rem;padding:clamp(1.2rem,2.8vw,2rem);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px;background:#f9efed}
-    .public-hero:after{position:absolute;z-index:-1;inset:20px 0 0 auto;width:min(42%,500px);content:"";background:url("data:image/svg+xml;base64,__HERO_ART__") right bottom/contain no-repeat;opacity:.9;pointer-events:none}
-    .public-eyebrow{margin:0 0 .35rem;color:#78182b;font-size:.75rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
-    .public-hero h1{margin:.15rem 0 .55rem;color:#78182b;font-size:clamp(1.8rem,3.2vw,2.6rem);line-height:1.12;letter-spacing:-.035em}
-    .public-hero p{max-width:min(62%,65ch);color:#62585d}
-    .public-hero .public-eyebrow{color:#78182b}
-    .public-topline{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1rem;color:#62585d;font-size:.8rem}
-    .public-engine-badge{display:inline-flex;align-items:center;gap:.35rem;padding:.25rem .65rem;border:1px solid #e6d9d7;border-radius:999px;background:#fffcfa;color:#78182b;font-size:.72rem;font-weight:650}
+    .stMainBlockContainer{max-width:1440px;padding:1rem clamp(1rem,3vw,2.5rem) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
+    .public-topbar{position:relative;isolation:isolate;display:flex;align-items:center;justify-content:space-between;gap:1rem;min-height:104px;margin:0 0 1rem;padding:1rem clamp(1.1rem,2.5vw,2rem);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px;background:#f9efed}
+    .public-topbar:after{position:absolute;z-index:-1;inset:12px 0 0 auto;width:min(36%,430px);content:"";background:url("data:image/svg+xml;base64,__HERO_ART__") right bottom/contain no-repeat;opacity:.9;pointer-events:none}
+    .public-topbar img{position:relative;z-index:1;display:block;width:clamp(145px,18vw,205px);height:auto}
+    .public-version{position:relative;z-index:1;padding:.35rem .7rem;border:1px solid #e6d9d7;border-radius:999px;background:#fffdfbcc;color:#78182b;font-size:.75rem;font-weight:650}
+    .public-stage-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin:.1rem 0 1.1rem}
+    .public-stage-heading .public-eyebrow{margin:0 0 .25rem;color:#78182b;font-size:.7rem;font-weight:800;letter-spacing:.085em;text-transform:uppercase}
+    .public-stage-heading h1{margin:.1rem 0 .35rem;color:#24303d;font-size:clamp(1.45rem,2.5vw,2rem);line-height:1.15;letter-spacing:-.025em}
+    .public-stage-heading p:last-child{max-width:65ch;margin:0;color:#62585d;font-size:.86rem}
+    .public-stage-badge{flex:0 0 auto;margin-top:.1rem;padding:.3rem .7rem;border:1px solid #e7e8eb;border-radius:999px;background:#fafafb;color:#647184;font-size:.72rem;font-weight:650;white-space:nowrap}
     .public-steps{display:grid;grid-template-columns:minmax(0,1fr) minmax(2rem,.28fr) minmax(0,1fr) minmax(2rem,.28fr) minmax(0,1fr);align-items:center;gap:.6rem;margin:0 0 1.25rem;padding:.35rem 0 1.15rem;border-bottom:1px solid #e5e3e0}
     .public-step{display:flex;align-items:center;gap:.7rem;color:#24303d;font-size:.85rem;font-weight:650}
     .public-step b{display:grid;place-items:center;flex:0 0 34px;height:34px;border:1px solid #e6d9d7;border-radius:50%;background:#fffcfa;color:#78182b;font-size:.78rem}
@@ -129,21 +127,17 @@ def _style():
     .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
     .st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:.85rem}
     .st-key-public-upload-layout [data-testid="column"],.st-key-public-review-layout [data-testid="column"]{width:auto!important;flex:none!important;min-width:0}
-    @media(max-width:900px){.st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{grid-template-columns:minmax(0,1fr)}.st-key-public-upload-card{min-height:0}.public-hero p{max-width:76%}}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-hero{min-height:160px}.public-hero:after{width:56%;opacity:.3}.public-hero p{max-width:100%}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
-    @media(max-width:475px){.public-topbar img{width:158px}.public-topline{align-items:flex-start;flex-direction:column;gap:.35rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
+    @media(max-width:900px){.st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{grid-template-columns:minmax(0,1fr)}.st-key-public-upload-card{min-height:0}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem;border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px}.public-topbar:after{width:48%;opacity:.4}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
+    @media(max-width:475px){.public-topbar{min-height:82px;padding:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
 
 
-def _topbar(step: int, *, results: bool = False):
+def _topbar(step: int):
     logo = (ROOT / "assets/job_market_brand.svg").read_text(encoding="utf-8")
     logo_uri = "data:image/svg+xml;base64," + base64.b64encode(logo.encode("utf-8")).decode("ascii")
-    st.html(f'<div class="public-topbar"><img alt="Future of Work" src="{logo_uri}"><span class="public-version">Public analyzer · v{VERSION}</span></div>')
-    title = "Analysis results" if results else "Review your dataset" if step == 2 else "Upload your job advertisements"
-    intro = ("Explore the shared research charts and evidence for your dataset." if results else
-             "Check the detected columns before beginning the analysis." if step == 2 else
-             "Start by selecting a CSV dataset. We’ll guide you through the rest.")
+    st.html(f'<header class="public-topbar"><img alt="Future of Work · Job Market Analytics" src="{logo_uri}"><span class="public-version">Public analyzer · v{PUBLIC_VERSION}</span></header>')
     steps = [(1, "Upload job data", "Choose your CSV file."),
              (2, "Review & analyze", "Validate and process data."),
              (3, "View results", "Explore and export insights.")]
@@ -154,9 +148,10 @@ def _topbar(step: int, *, results: bool = False):
         step_markup.append(f'<div class="public-step" data-state="{state}"><b>{number}</b><span>{name}<small>{detail}</small></span></div>')
     connectors = '<span class="public-step-line" aria-hidden="true"></span>'
     st.html('<div class="public-steps" aria-label="Analysis process">' + connectors.join(step_markup) + "</div>")
-    badge = ("Interim classifier · analysis available" if ENGINE.get("classifierStatus") == "interim" else
-             "Research classifier ready" if ENGINE.get("classifierAvailable") else "Classifier unavailable")
-    st.html(f'<header class="public-hero"><div class="public-topline"><span>Future of Work <span aria-hidden="true">›</span> <strong>Public analyzer</strong></span><span class="public-engine-badge">{escape_html(badge)}</span></div><p class="public-eyebrow">MSU-IIT · Philippine jobs · Skills · PSF-AAI</p><h1>{title}</h1><p>{intro}</p></header>')
+
+
+def _stage_heading(step, title, intro, badge):
+    st.html(f'<header class="public-stage-heading"><div><p class="public-eyebrow">STEP {step:02} / 03</p><h1>{escape_html(title)}</h1><p>{escape_html(intro)}</p></div><span class="public-stage-badge">{escape_html(badge)}</span></header>')
 
 
 def _suggest_mapping(columns):
@@ -509,7 +504,7 @@ def _unmapped(result):
 
 
 def _results(result):
-    _topbar(3, results=True)
+    _topbar(3)
     file_name = result["filename"]
     model = result["model"]
     details, actions = st.columns([3, 1], vertical_alignment="center")
@@ -600,6 +595,10 @@ def main():
     preview = st.session_state.get("public_preview")
     mapping = dict(st.session_state.get("public_mapping", {}))
     _topbar(1 if stage == "upload" else 2)
+    if stage == "upload":
+        _stage_heading(1, "Upload your job advertisements", "Start by selecting a CSV dataset. We’ll guide you through the rest.", "CSV format · Up to 4 MB")
+    else:
+        _stage_heading(2, "Review your dataset", "Check the detected columns before beginning the analysis.", "Dataset structure")
     if st.session_state.get("public_error"):
         st.error(st.session_state["public_error"])
     if ENGINE.get("classifierStatus") == "interim":
@@ -721,7 +720,7 @@ def main():
                 st.rerun()
 
     with st.container(key="public-footer"):
-        st.caption(f"Future of Work · Philippine job advertisement analysis · v{VERSION}")
+        st.caption(f"Future of Work · Philippine job advertisement analysis · v{PUBLIC_VERSION}")
     if processing:
         _process_pending_upload()
 
