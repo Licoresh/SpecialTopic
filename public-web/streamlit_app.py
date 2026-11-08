@@ -29,7 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.92"
+PUBLIC_VERSION = "3.0.93"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -54,7 +54,7 @@ def _style():
     [data-testid="stHeader"]{background:transparent;height:0}
     .stApp{background:#f8f5f2}
     .stMainBlockContainer{--public-page-pad:clamp(1rem,3vw,2.5rem);max-width:1440px;padding:1rem var(--public-page-pad) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
-    .public-topbar{position:relative;isolation:isolate;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:1rem;min-height:104px;width:calc(100% + var(--public-page-pad) + var(--public-page-pad));margin:-1rem calc(0px - var(--public-page-pad)) 1rem;padding:1rem var(--public-page-pad);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px;background:#f9efed}
+    .public-topbar{position:relative;isolation:isolate;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:1rem;min-height:104px;width:calc(100% + var(--public-page-pad) + var(--public-page-pad));margin:-1rem calc(0px - var(--public-page-pad)) 1rem;padding:1rem var(--public-page-pad);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px 12px 0 0;background:#f9efed}
     .public-topbar:after{position:absolute;z-index:-1;inset:12px 0 0 auto;width:min(36%,430px);content:"";background:url("data:image/svg+xml;base64,__HERO_ART__") right bottom/contain no-repeat;opacity:.9;pointer-events:none}
     .public-topbar img{position:relative;z-index:1;display:block;width:clamp(145px,18vw,205px);height:auto}
     .public-version{position:relative;z-index:1;padding:.35rem .7rem;border:1px solid #e6d9d7;border-radius:999px;background:#fffdfbcc;color:#78182b;font-size:.75rem;font-weight:650}
