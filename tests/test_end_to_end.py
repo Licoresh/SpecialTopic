@@ -41,6 +41,50 @@ def test_input_to_workbook(workspace, jobs, taxonomy, labeled):
     assert len(filtered["cleaned_jobs"]) == 1
     assert filtered["employer_skill_demand"].employer_demand_pct.eq(100).all()
 
+
+def test_job_market_matches_public_with_private_research_inputs(workspace, taxonomy):
+    from streamlit.testing.v1 import AppTest
+    from src.column_mapping import suggest_column_mapping
+    from src.cleaning import clean_dataset
+    from src.loaders import load_data, map_columns
+    from src.public_engine import analyze_upload
+    from src.utils import digest
+    from src.workflow import EXTRACTION_PIPELINE_VERSION, job_market_bundle
+
+    filename = "synthetic.csv"
+    content = b"job_title,job_description,source_name\nAnalyst,Python and data analysis.,Synthetic"
+    dataset_id = digest(content)
+    raw = load_data(content, filename)
+    mapping, _ = suggest_column_mapping(raw.columns, "jobs")
+    jobs, _ = clean_dataset(map_columns(raw, mapping, "jobs", dataset_id), "jobs")
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    storage.save_json("settings", {"stopwords": ["python", "analysis"], "max_candidates": 1})
+    storage.save_json("uploads", {"jobs": {"hash": "pending-upload", "filename": "pending.csv"}})
+
+    public = analyze_upload(content, filename, mapping, hosted=True)
+    tables, metadata = job_market_bundle()
+    demand = tables["chart_skill_demand"]
+    assert len(demand) > 0
+    assert public["summary"]["ads"] == tables["cleaned_jobs"].source_id.nunique()
+    assert public["summary"]["chartSkills"] == len(demand)
+    assert public["summary"]["withheldPhrases"] == tables["chart_phrase_review"].normalized_phrase.nunique()
+    assert public["charts"]["skills"] == [
+        {"label": row.employer_skill, "count": row.employer_demand_count} for row in demand.itertuples()
+    ]
+    assert public["datasetHash"] == metadata["dataset_id"] == dataset_id
+    assert public["model"]["version"] == metadata["classifier_version"]
+    assert metadata["filename"] == ""
+
+    storage.save_json("extraction_metadata", {"signature": input_signature(),
+                                             "pipeline_version": EXTRACTION_PIPELINE_VERSION})
+    app = AppTest.from_string('from src.ui import research_page\nresearch_page("Job Market Analysis")').run(timeout=30)
+    assert not app.exception and not app.error
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Distinct chart skills"] == str(public["summary"]["chartSkills"])
+    assert metrics["Distinct phrases withheld"] == str(public["summary"]["withheldPhrases"])
+
+
 def test_pending_upload_does_not_replace_saved_cleaned_jobs(workspace, jobs):
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("mapped_jobs", jobs)

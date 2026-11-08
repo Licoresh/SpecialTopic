@@ -8,10 +8,8 @@ from pathlib import Path
 import re
 import unicodedata
 
-import joblib
 import numpy as np
 import pandas as pd
-from sklearn.pipeline import Pipeline
 
 from .alignment import calculate_mapping, summarize_alignment
 from .analytics import chart_mapping_rows, skill_chart_tables, psf_demand_tables, unmapped_chart_counts
@@ -45,6 +43,7 @@ class _ReleasedClassifier:
             raise ClassifierUnavailable("The evaluated research classifier has not been released for public analysis yet.")
         self.name = artifact["name"]
         self.version = artifact["version"]
+        self.trained_at = artifact.get("trainedAt", "")
         self.classes_ = np.asarray(artifact["classes"], dtype=object)
         self.kind = artifact["kind"]
         self.indices = {term: index for index, term in enumerate(artifact["terms"])}
@@ -86,30 +85,13 @@ class _ReleasedClassifier:
         return np.asarray(output)
 
 
-def _model(*, hosted):
-    if hosted:
-        artifact_path = ROOT / "public-web/site/model.json"
-        try:
-            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ClassifierUnavailable("The approved public classifier could not be loaded.") from exc
-        return _ReleasedClassifier(artifact)
-
-    path = ROOT / "models/competency_classifier.joblib"
-    if not path.is_file():
-        raise ClassifierUnavailable("No research classifier is available on this analysis server.")
+def _model():
+    artifact_path = ROOT / "public-web/site/model.json"
     try:
-        model = joblib.load(path)
-        if not isinstance(model, Pipeline) or not hasattr(model, "classes_"):
-            raise ValueError("Not a fitted classification pipeline.")
-    except Exception as exc:
-        raise ClassifierUnavailable("The research classifier on this analysis server could not be loaded.") from exc
-    metadata_path = ROOT / "models/model_metadata.json"
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
-    model.public_version_ = digest(path.read_bytes())[:16]
-    model.public_name_ = getattr(model, "research_model_name_", metadata.get("model_name", "Research classifier"))
-    model.public_trained_at_ = metadata.get("training_timestamp", "")
-    return model
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ClassifierUnavailable("The approved public classifier could not be loaded.") from exc
+    return _ReleasedClassifier(artifact)
 
 
 def _records(frame):
@@ -144,6 +126,21 @@ def _reference_roles(taxonomy):
     if not role_field:
         return 0
     return int(taxonomy[role_field].fillna("").astype(str).str.split("; ").explode().str.strip().replace("", pd.NA).dropna().nunique())
+
+
+def automatic_job_analysis(jobs, model, progress=None):
+    """Use the released analysis preset for both public and researcher charts."""
+    taxonomy = _taxonomy()
+    settings = DEFAULTS
+    matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"])
+    extracted, _ = extract_skills(jobs, "jobs", matcher, model, None,
+                                  stopwords=settings["stopwords"], batch_size=settings["batch_size"],
+                                  max_candidates=settings["max_candidates"], progress=progress)
+    views = skill_chart_tables(extracted, jobs)
+    mapping = calculate_mapping(views["chart_skill_occurrences"], taxonomy,
+                                settings["aligned_threshold"], settings["partial_threshold"],
+                                settings["semantic_model"], settings["semantic_threshold"])
+    return extracted, views, taxonomy, mapping, summarize_alignment(mapping)
 
 
 def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, date_evidence, mapping, alignment,
@@ -289,19 +286,10 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     jobs, _ = clean_dataset(mapped, "jobs")
     if jobs.empty:
         raise ValueError("The CSV contains no job advertisements.")
-    taxonomy = _taxonomy()
-    settings = DEFAULTS.copy()
-    model = _model(hosted=hosted)
-    matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"])
-    extracted, _ = extract_skills(jobs, "jobs", matcher, model, None,
-                                  stopwords=settings["stopwords"], batch_size=settings["batch_size"],
-                                  max_candidates=settings["max_candidates"], progress=progress)
-    views = skill_chart_tables(extracted, jobs)
+    settings = DEFAULTS
+    model = _model()
+    extracted, views, taxonomy, mapping_rows, alignment = automatic_job_analysis(jobs, model, progress)
     chartable = views["chart_skill_occurrences"]
-    mapping_rows = calculate_mapping(views["chart_skill_occurrences"], taxonomy,
-                                     settings["aligned_threshold"], settings["partial_threshold"],
-                                     settings["semantic_model"], settings["semantic_threshold"])
-    alignment = summarize_alignment(mapping_rows)
     _, _, _, rates = calculate_gaps(views["chart_skill_occurrences"], jobs, alignment, settings["emerging_min_jobs"])
     unmapped = unmapped_chart_counts(chartable, alignment, minimum_jobs=1)
     profile = job_profile_tables(jobs)
@@ -328,11 +316,6 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
 
     demand = views["chart_skill_demand"]
     withheld = views["chart_phrase_review"]
-    model_version = getattr(model, "public_version_", None) or getattr(model, "version", None)
-    if not model_version:
-        model_version = digest((ROOT / "models/competency_classifier.joblib").read_bytes())[:16]
-    model_name = getattr(model, "public_name_", getattr(model, "name", getattr(model, "research_model_name_", "Research classifier")))
-    trained_at = getattr(model, "public_trained_at_", getattr(model, "trainedAt", ""))
     ads = int(jobs.source_id.nunique())
     experience_evidence = profile["experience_analysis_year_evidence"]
     experience_status = experience_evidence.parse_status.fillna("").astype(str)
@@ -368,7 +351,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         "mapping": selected,
         "summary": metrics,
         "charts": charts,
-        "model": {"version": model_version, "name": model_name, "trainedAt": trained_at,
+        "model": {"version": model.version, "name": model.name, "trainedAt": model.trained_at,
                   "releaseStatus": getattr(model, "release_status", "approved"),
                   "releaseNote": getattr(model, "release_note", "")},
         "reference": {"sourceUrl": str(taxonomy.source_url.iloc[0]) if "source_url" in taxonomy and not taxonomy.empty else "",
@@ -377,7 +360,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         "evidence": {"limit": len(evidence), "total": ads, "rows": evidence},
         "alignmentRates": rates,
         "datasetHash": dataset_hash,
-        "processing": {"engine": "research", "classifier": model_name, "researcherReviewsApplied": False,
+        "processing": {"engine": "research", "classifier": model.name, "researcherReviewsApplied": False,
                        "stored": False},
     }
 
@@ -389,18 +372,12 @@ def analyze_request(content, filename, mapping):
 
 def health(*, hosted=False):
     maximum = MAX_HOSTED_UPLOAD_BYTES if hosted else MAX_LOCAL_UPLOAD_BYTES
-    if hosted:
-        path = ROOT / "public-web/site/model.json"
-        try:
-            artifact = json.loads(path.read_text(encoding="utf-8"))
-            available = artifact.get("schema") == 1
-        except (OSError, json.JSONDecodeError):
-            artifact = {}
-            available = False
-    else:
+    try:
+        artifact = json.loads((ROOT / "public-web/site/model.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         artifact = {}
-        available = (ROOT / "models/competency_classifier.joblib").is_file()
+    available = artifact.get("schema") == 1
     return {"maxUploadBytes": maximum, "classifierAvailable": available,
-            "classifierStatus": artifact.get("releaseStatus", "approved") if available and hosted else "local" if available else "unavailable",
-            "classifierNotice": artifact.get("releaseNote", "") if hosted else "",
+            "classifierStatus": artifact.get("releaseStatus", "approved") if available else "unavailable",
+            "classifierNotice": artifact.get("releaseNote", ""),
             "engine": "research", "stored": False}

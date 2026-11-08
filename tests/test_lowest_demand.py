@@ -105,7 +105,7 @@ def test_other_results_pages_apply_the_shared_lowest_order(monkeypatch, page, ex
     figures = []
     monkeypatch.setattr(ui, "chart", figures.append)
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
-    monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, metadata))
+    monkeypatch.setattr(ui, "filtered_bundle", lambda **_: (tables, metadata))
     monkeypatch.setattr(ui, "psf_mapping_review", lambda *args: None)
     monkeypatch.setattr(ui.storage, "read_frame", lambda *args: pd.DataFrame())
     app = AppTest.from_string(f"from src.ui import research_page\nresearch_page({page!r})").run(timeout=30)

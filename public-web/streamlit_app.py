@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.config import FIELDS
+from src.column_mapping import suggest_column_mapping
 from src.design import apply_design
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, health
@@ -30,7 +31,7 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.98"
+PUBLIC_VERSION = "3.0.99"
 
 
 @st.cache_resource
@@ -52,7 +53,6 @@ FIELD_LABELS = {
 }
 REQUIRED_FIELDS = ("job_title", "job_description", "required_skills", "preferred_skills", "qualifications")
 OPTIONAL_FIELDS = tuple(field for field in FIELDS["jobs"] if field not in REQUIRED_FIELDS and field != "source_id")
-REFERENCE = json.loads((ROOT / "public-web/site/reference.json").read_text(encoding="utf-8"))
 ENGINE = health(hosted=True)
 
 
@@ -192,23 +192,6 @@ def _topbar(step: int):
 
 def _stage_heading(step, title, intro, badge):
     st.html(f'<header class="public-stage-heading"><div><p class="public-eyebrow">STEP {step:02} / 03</p><h1>{escape_html(title)}</h1><p>{escape_html(intro)}</p></div><span class="public-stage-badge">{escape_html(badge)}</span></header>')
-
-
-def _suggest_mapping(columns):
-    clean = lambda value: "".join(char for char in str(value).casefold() if char.isalnum())
-    fields = REFERENCE.get("columns", {})
-    mapping, used = {field: "" for field in FIELDS["jobs"]}, set()
-    normalized = {column: clean(column.split("__", 1)[0]) for column in columns}
-    for exact in (True, False):
-        for field in FIELDS["jobs"]:
-            if mapping[field]:
-                continue
-            names = [field] if exact else fields.get(field, [])
-            choices = [column for column in columns if column not in used and normalized[column] in {clean(name) for name in names}]
-            if len(choices) == 1:
-                mapping[field] = choices[0]
-                used.add(choices[0])
-    return mapping
 
 
 def _column_label(name):
@@ -747,7 +730,7 @@ def main():
                             st.session_state["public_preview"] = preview
                             prior = st.session_state.get("public_recent_upload") or {}
                             prior_mapping = prior.get("mapping", {}) if prior.get("file_hash") == file_hash else {}
-                            st.session_state["public_mapping"] = dict(prior_mapping) or _suggest_mapping(list(preview.columns))
+                            st.session_state["public_mapping"] = dict(prior_mapping) or suggest_column_mapping(preview.columns, "jobs")[0]
                             st.session_state.pop("public_error", None)
                         else:
                             content = st.session_state["public_content"]

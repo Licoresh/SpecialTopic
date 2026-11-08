@@ -116,7 +116,7 @@ def run_extraction(progress=None, on_prepared=None):
     taxonomy = storage.read_frame("cleaned_psf_aai")
     matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"]) if not taxonomy.empty else None
     from .public_engine import _model
-    model = _model(hosted=True)
+    model = _model()
     annotations = storage.read_frame("labeled_competencies")
     frames, diagnostics = [], []
     for kind in ("jobs",):
@@ -179,6 +179,26 @@ def current_extractions(*, source_ids=None):
         extracted["category_parent"] = extracted.competency_category.map(category_parent)
         extracted["skill_type"] = extracted.competency_category.map(skill_type)
     return extracted
+
+def job_market_bundle():
+    """Compare the active jobs using the public preset and released reference."""
+    from .public_engine import _model, automatic_job_analysis
+
+    jobs = analysis_jobs(storage.read_frame("cleaned_jobs"))
+    model = _model()
+    _, charts, taxonomy, mapping, _ = automatic_job_analysis(jobs, model)
+    for name in ("chart_skill_occurrences", "chart_phrase_review"):
+        charts[name] = charts[name].drop(columns=["original_text"], errors="ignore")
+    tables = {"cleaned_jobs": jobs, "psf_mapping": mapping, **charts,
+              **job_profile_tables(jobs), **location_tables(jobs),
+              **psf_demand_tables(mapping, jobs, taxonomy)}
+    hashes = jobs.get("_dataset_hash", pd.Series(dtype=str)).unique()
+    dataset_id = str(hashes[0]) if len(hashes) == 1 else ""
+    active_upload = storage.read_json("uploads", {}).get("jobs", {})
+    metadata = {"dataset_id": dataset_id, "classifier_version": model.version,
+                "filename": active_upload.get("filename", "") if active_upload.get("hash") == dataset_id else ""}
+    return tables, metadata
+
 
 def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, source_snapshot=None):
     source_snapshot = source_snapshot or {}

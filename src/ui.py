@@ -28,7 +28,7 @@ from .model_training import read_model_metadata, training_data_changed
 from .training_sources import (resolve_training_file, inspect_training_folder, training_candidates,
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
-from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness
+from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
 from .analytics import skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import job_profile_tables, job_title_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
@@ -529,8 +529,14 @@ def current_analysis():
         return False
     return True
 
-def filtered_bundle():
+def filtered_bundle(*, automatic=False):
     signature = st.session_state.get("_current_analysis_signature") or input_signature()
+    if automatic:
+        revision = digest(["automatic_job_market", VERSION, signature])
+        result = _session_cached_value("_fow_market_bundle_cache", revision, job_market_bundle,
+                                       ttl=None, max_entries=1, clone=_clone_analysis_bundle)
+        st.session_state["_fow_loaded_bundle_revision"] = revision
+        return result
     corrections_path = storage.ROOT / "data/feedback/corrections.csv"
     try:
         corrections_stat = corrections_path.stat()
@@ -1002,7 +1008,7 @@ def quality():
 def extraction():
     from .public_engine import _model
     try:
-        shared_classifier = _model(hosted=True)
+        shared_classifier = _model()
     except ValueError:
         shared_classifier = None
     page_intro("Extract skill phrases", "Run the same released classifier as the public analyzer. Keep approved labels as review evidence and send new phrases to review.")
@@ -2374,6 +2380,10 @@ def _job_market_content(tables, meta, revision=None):
         ) if name in tables
     }])
     jobs = tables["cleaned_jobs"]
+    if meta.get("dataset_id"):
+        details = [meta.get("filename"), f"Dataset ID `{meta['dataset_id'][:16]}`",
+                   f"Model ID `{meta['classifier_version']}`", "Same automatic analysis as the public analyzer"]
+        st.caption(" · ".join(detail for detail in details if detail))
     chart_keys = {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review", "chart_skill_family_demand", "chart_family_ad_counts"}
     views = (tables if chart_keys.issubset(tables) else _session_cached_value(
         "_fow_market_skill_cache", revision, lambda: skill_chart_tables(tables["extracted_job_skills"], jobs),
@@ -2462,10 +2472,10 @@ def _job_market_content(tables, meta, revision=None):
             st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
         with _icon_expander("How technical and enabling categories are determined"):
             st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
-            st.write("Basis: the project's discovery vocabulary includes sql under technical / digital and collaboration under soft / enabling. Saved researcher labels override automated category assignments; a trained classifier can categorize other phrases. Matching-method and label provenance remain in the exported occurrence data. The discovery dictionary is not an official TESDA category list.")
+            st.write("The discovery vocabulary, released classifier and released PSF-AAI reference determine these automatic chart categories. Reviewed labels and framework decisions are available in the research evidence and reports.")
             st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
         evidence_tables(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)", {"": unclear},
-                        key="result_unclear_evidence", note="Missing values, experience wording, vague-only descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. Original phrases and saved labels stay here for review; specific skill mentions remain counted.")
+                        key="result_unclear_evidence", note="Missing values, experience wording, vague descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. The original phrases remain available for inspection.")
         evidence_tables("Skill-demand table", {"": demand}, key="result_skill_demand_evidence")
         evidence_tables("Skill wording groups and original phrases", {"": views.get("chart_skill_variants", pd.DataFrame())},
                         key="job_market_wording_groups", note="Equivalent wording shares one chart label. Each advertisement counts once per label; variant counts must not be added. Original wording and saved labels remain unchanged.")
@@ -2910,7 +2920,7 @@ def _job_market_content(tables, meta, revision=None):
     def framework_demand():
         order, limit = result_chart_options(key_prefix="result_psf")
         st.subheader("How does observed demand relate to PSF-AAI?")
-        st.caption("These counts use existing mapping evidence; they do not certify alignment or change researcher decisions. Several skill phrases may support the same competency, but an ad counts once per competency.")
+        st.caption("These counts use automatic links to the released PSF-AAI reference. Several skill phrases may support the same competency, but an ad counts once per competency.")
         def prepare_psf_links():
             columns = [key for key in ("source_id", "psf_competency", "psf_job_role", "status", "normalized_skill") if key in tables["psf_mapping"]]
             mappings = chart_mapping_rows(tables["psf_mapping"][columns].drop_duplicates())
@@ -3148,7 +3158,7 @@ def research_page(page):
                          rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
         if not current_analysis():
             return
-        tables, meta = filtered_bundle()
+        tables, meta = filtered_bundle(automatic=True) if page == "Job Market Analysis" else filtered_bundle()
         active_reference = storage.read_frame("cleaned_psf_aai") if page in {"PSF Mapping", "Employer–PSF Alignment"} else None
         if page == "Reports":
             meta = dict(meta, chart_view_settings={
@@ -3195,11 +3205,12 @@ def _research_results_loading_key(page):
 
 
 def _research_results_content(page, tables, meta, active_reference):
-    jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
-    demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
     if page == "Job Market Analysis":
         _job_market_results(tables, meta, revision=st.session_state.get("_fow_loaded_bundle_revision"))
-    elif page == "PSF Mapping":
+        return
+    jobs, skills = tables["cleaned_jobs"], tables["extracted_job_skills"]
+    demand, alignment = tables["employer_skill_demand"], tables["alignment_results"]
+    if page == "PSF Mapping":
         @st.fragment
         def review_links():
             with st.container(border=True, key="psf_mapping_review_panel"):

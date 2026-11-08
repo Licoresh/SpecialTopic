@@ -46,7 +46,7 @@ def result_app(monkeypatch, tables, page="Job Market Analysis"):
         original(deepcopy(figure), **kwargs)
     monkeypatch.setattr(ui, "chart", capture)
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
-    monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {"settings": {"emerging_min_jobs": 2}}))
+    monkeypatch.setattr(ui, "filtered_bundle", lambda **_: (tables, {"settings": {"emerging_min_jobs": 2}}))
     app = AppTest.from_string(f"from src.ui import research_page\nresearch_page({page!r})")
     app.run(timeout=30)
     assert not app.exception and not app.error
@@ -398,7 +398,7 @@ def test_incomplete_psf_chart_group_can_retry(monkeypatch, tmp_path):
         "psf_job_role": ["analyst", "scientist"], "status": ["ALIGNED", "ALIGNED"],
     })
     monkeypatch.setattr(ui, "current_analysis", lambda: True)
-    monkeypatch.setattr(ui, "filtered_bundle", lambda: (tables, {}))
+    monkeypatch.setattr(ui, "filtered_bundle", lambda **_: (tables, {}))
     original = ui.chart
     fail = [True]
     def draw(figure, **kwargs):
