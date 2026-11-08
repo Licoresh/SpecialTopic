@@ -8,6 +8,7 @@ from html import escape as escape_html
 import json
 from pathlib import Path
 import sys
+import time
 
 import pandas as pd
 import streamlit as st
@@ -29,7 +30,16 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.94"
+PUBLIC_VERSION = "3.0.95"
+
+
+@st.cache_resource
+def _recent_upload_component():
+    return st.components.v2.component(
+        "fow_public_recent_upload_cache",
+        html='<span aria-hidden="true"></span>',
+        js=Path(__file__).with_name("recent_upload_storage.js").read_text(encoding="utf-8"),
+    )
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -51,6 +61,7 @@ def _style():
     hero_art = base64.b64encode((ROOT / "assets/job_market_hero.svg").read_bytes()).decode("ascii")
     style = """<style>
     [data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]{display:none!important}
+    [class*="st-key-public_recent_restore"],[class*="st-key-public_recent_save"]{position:fixed!important;left:-10000px!important;top:0!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important}
     [data-testid="stHeader"]{background:transparent;height:0}
     .stApp{background:#f8f5f2}
     .stMainBlockContainer{--public-page-pad:clamp(1rem,3vw,2.5rem);max-width:1440px;padding:1rem var(--public-page-pad) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
@@ -208,18 +219,83 @@ def _mapping_row(field, columns, mapping, file_hash, duplicate_columns=()):
 
 
 def _read_upload(upload):
-    content = upload.getvalue()
+    return _read_content(upload.getvalue(), upload.name)
+
+
+def _read_content(content, filename):
     if len(content) > MAX_HOSTED_UPLOAD_BYTES:
         raise ValueError("This public Streamlit app accepts CSV files up to 4 MB.")
     encoding = "utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
-    frame = load_data(content, upload.name, encoding=encoding)
+    frame = load_data(content, Path(filename).name, encoding=encoding)
     if len(frame) > 100_000:
         raise ValueError("This public analysis is limited to 100,000 rows per upload.")
     return content, frame
 
 
+def _component_value(state, name):
+    return state.get(name) if isinstance(state, dict) else getattr(state, name, None)
+
+
+def _upload_revision(recent):
+    identity = json.dumps([recent["file_hash"], recent["filename"], recent.get("mapping", {})],
+                          sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _mount_upload_cache(action, *, key, record=None, revision=None):
+    return _recent_upload_component()(
+        data={"action": action, "record": record, "revision": revision}, key=key,
+        on_recent_change=lambda: None, on_saved_change=lambda: None, on_error_change=lambda: None,
+        width="content", height=1,
+    )
+
+
+def _restore_recent_upload():
+    state = _mount_upload_cache("restore", key="public_recent_restore")
+    record = _component_value(state, "recent")
+    if not record or st.session_state.get("public_recent_upload"):
+        return
+    try:
+        content = base64.b64decode(record["content"], validate=True)
+        file_hash = hashlib.sha256(content).hexdigest()
+        filename = Path(record["filename"]).name
+        if file_hash != record["fileHash"]:
+            return
+        content, preview = _read_content(content, filename)
+        mapping = record.get("mapping") if isinstance(record.get("mapping"), dict) else {}
+        recent = {"file_hash": file_hash, "filename": filename, "content": content,
+                  "preview": preview, "mapping": mapping}
+    except (KeyError, TypeError, ValueError, OSError):
+        return
+    st.session_state["public_recent_upload"] = recent
+    st.session_state["_public_recent_saved_revision"] = _upload_revision(recent)
+    st.session_state["_public_recent_saved_file_hash"] = file_hash
+
+
+def _persist_recent_upload():
+    recent = st.session_state.get("public_recent_upload")
+    if not recent:
+        _mount_upload_cache("idle", key="public_recent_save")
+        return
+    revision = _upload_revision(recent)
+    if st.session_state.get("_public_recent_saved_revision") == revision:
+        _mount_upload_cache("idle", key="public_recent_save")
+        return
+    same_file = st.session_state.get("_public_recent_saved_file_hash") == recent["file_hash"]
+    record = {"fileHash": recent["file_hash"], "filename": recent["filename"],
+              "mapping": recent.get("mapping", {})}
+    action = "update" if same_file else "save"
+    if not same_file:
+        record["content"] = base64.b64encode(recent["content"]).decode("ascii")
+    state = _mount_upload_cache(action, key="public_recent_save", record=record, revision=revision)
+    if _component_value(state, "saved") == revision:
+        st.session_state["_public_recent_saved_revision"] = revision
+        st.session_state["_public_recent_saved_file_hash"] = recent["file_hash"]
+
+
 def _reset():
     st.session_state["public_upload_key"] = st.session_state.get("public_upload_key", 0) + 1
+    # Keep public_recent_upload so it can be reused until this browser session ends.
     for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping", "public_result", "public_error", "public_stage", "public_using_recent_upload"):
         st.session_state.pop(key, None)
     st.rerun()
@@ -562,17 +638,17 @@ def _process_pending_upload():
         with st.container(key="public-processing-card"):
             st.html(f'<div class="public-processing-brand"><img alt="" src="{mark_uri}"><span><strong>Future of Work</strong><small>MSU-IIT · Job Market Analytics</small></span></div><h1 class="public-processing-title">Analyzing your dataset</h1><p class="public-processing-copy">Applying the public classifier and shared analysis pipeline.</p>')
             message = st.empty()
-            message.html('<p class="public-processing-status">Preparing your research analysis…</p>')
+            message.html('<p class="public-processing-status">Preparing your dataset analysis…</p>')
             bar, value = st.columns([1, .07], vertical_alignment="center", gap="small")
             with bar:
                 progress = st.progress(0)
             with value:
                 percent = st.empty()
                 percent.html('<span class="public-processing-percent">0%</span>')
-            st.html('<p class="public-processing-privacy">Your upload is processed for this session only.</p>')
+            st.html('<p class="public-processing-privacy">Your recent upload stays available in this browser session.</p>')
 
     def update(value, text):
-        percentage = min(100, max(0, int(float(value) * 100)))
+        percentage = min(100, max(0, int(round(float(value) * 100))))
         progress.progress(percentage)
         message.html(f'<p class="public-processing-status">{escape_html(str(text))}</p>')
         percent.html(f'<span class="public-processing-percent">{percentage}%</span>')
@@ -583,6 +659,8 @@ def _process_pending_upload():
         st.session_state["public_error"] = str(exc)
         st.session_state["public_stage"] = "review"
         st.rerun()
+    update(1.0, "Analysis complete. Preparing your results.")
+    time.sleep(.45)
     st.session_state["public_result"] = result
     st.session_state["public_stage"] = "results"
     st.session_state.pop("public_error", None)
@@ -591,10 +669,12 @@ def _process_pending_upload():
 
 def main():
     _style()
+    _restore_recent_upload()
     result = st.session_state.get("public_result")
     if result:
         _results(result)
         st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis · MSU-IIT</footer>')
+        _persist_recent_upload()
         return
 
     stage = st.session_state.get("public_stage", "upload")
@@ -638,7 +718,9 @@ def main():
                             st.session_state["public_filename"] = Path(uploaded.name).name
                             st.session_state["public_content"] = content
                             st.session_state["public_preview"] = preview
-                            st.session_state["public_mapping"] = _suggest_mapping(list(preview.columns))
+                            prior = st.session_state.get("public_recent_upload") or {}
+                            prior_mapping = prior.get("mapping", {}) if prior.get("file_hash") == file_hash else {}
+                            st.session_state["public_mapping"] = dict(prior_mapping) or _suggest_mapping(list(preview.columns))
                             st.session_state.pop("public_error", None)
                         else:
                             content = st.session_state["public_content"]
@@ -658,7 +740,7 @@ def main():
                         for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                             st.session_state.pop(key, None)
                 recent = st.session_state.get("public_recent_upload")
-                if recent and recent.get("file_hash") != st.session_state.get("public_file_hash"):
+                if recent and (uploaded is None or recent.get("file_hash") != st.session_state.get("public_file_hash")):
                     with st.container(key="public-recent-upload"):
                         info, action = st.columns([2.2, 1], vertical_alignment="center")
                         with info:
@@ -666,7 +748,8 @@ def main():
                             size_mb = len(recent["content"]) / (1024 * 1024)
                             st.caption(f'{len(recent["preview"]):,} rows · {size_mb:.1f} MB · Available while this browser session is open.')
                         with action:
-                            if st.button("Use recent upload", icon=":material/replay:", key="public_use_recent_upload", width="stretch"):
+                            action_label = "Review recent upload" if recent.get("file_hash") == st.session_state.get("public_file_hash") else "Use recent upload"
+                            if st.button(action_label, icon=":material/replay:", key="public_use_recent_upload", width="stretch"):
                                 st.session_state["public_upload_key"] = st.session_state.get("public_upload_key", 0) + 1
                                 st.session_state["public_file_hash"] = recent["file_hash"]
                                 st.session_state["public_filename"] = recent["filename"]
@@ -677,11 +760,11 @@ def main():
                                 st.session_state["public_stage"] = "review"
                                 st.rerun()
             with right, st.container(key="public-workflow-card"):
-                st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your CSV is processed for this session only.</p>')
+                st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your latest CSV stays available in this browser session.</p>')
         with st.container(key="public-upload-footer"):
             privacy, action = st.columns([3, 1], vertical_alignment="center")
             with privacy:
-                st.caption("Your uploaded data stays in this browser session.")
+                st.caption("Your latest CSV stays available until this browser session ends.")
             with action:
                 can_continue = bool(st.session_state.get("public_file_hash")) and content is not None and preview is not None
                 if st.button("Preview next step", type="primary", icon=":material/arrow_forward:",
@@ -752,7 +835,7 @@ def main():
                 st.html('<p class="public-workflow-note">Results depend on the structure, quality, and coverage of the uploaded dataset.</p>')
                 if not classifier_ready:
                     st.warning("The public classifier is unavailable. You can review the columns, but analysis cannot start until it is available.")
-        st.markdown('<p class="public-privacy">Your upload is processed for this session only.</p>', unsafe_allow_html=True)
+        st.markdown('<p class="public-privacy">Your latest CSV stays available until this browser session ends.</p>', unsafe_allow_html=True)
         _, back, analyze = st.columns([5, 1, 1.45], gap="small")
         with back:
             if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload", width="stretch"):
@@ -767,6 +850,7 @@ def main():
 
     with st.container(key="public-footer"):
         st.caption(f"Future of Work · Philippine job advertisement analysis · v{PUBLIC_VERSION}")
+    _persist_recent_upload()
     if processing:
         _process_pending_upload()
 

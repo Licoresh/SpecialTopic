@@ -72,7 +72,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
             predictions = {p: (str(model.classes_[probs.argmax()]), float(probs.max())) for p, probs in zip(phrases, probabilities)}
     for number, ((_, row), text) in enumerate(zip(frame.iterrows(), texts)):
         checkpoint()
-        progress(.4 + .5 * number / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")
+        progress(.4 + .5 * (number + 1) / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")
         evidence = evidence_by_text[text]
         seen = set()
         for phrase, normal, start, end, mapped in evidence:
