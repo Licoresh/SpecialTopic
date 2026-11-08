@@ -30,7 +30,7 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.95"
+PUBLIC_VERSION = "3.0.96"
 
 
 @st.cache_resource
@@ -138,15 +138,26 @@ def _style():
     .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
     .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
     .st-key-public-processing-overlay .stProgress>div>div{background:#78182b}
-    .stTabs [data-baseweb="tab-list"]{display:flex;gap:.3rem;flex-wrap:nowrap;overflow-x:auto;border:1px solid #e5d7d5;border-radius:10px;background:#fff;padding:.3rem}
-    .stTabs [data-baseweb="tab"]{box-sizing:border-box;flex:1 1 0;min-width:0!important;max-width:none;min-height:44px;justify-content:center;padding:.45rem .5rem;white-space:nowrap;font-size:.78rem}
-    .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tablist"]{display:flex!important;align-items:stretch;width:100%;flex-wrap:nowrap!important;gap:.25rem!important;overflow-x:auto;overflow-y:hidden;border:1px solid #e5d7d5;border-radius:10px;background:#fcf9f7;padding:.25rem;scrollbar-width:thin;scrollbar-color:#d5c4c2 transparent}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]{box-sizing:border-box;display:flex;flex:1 0 188px;align-items:center;justify-content:center;gap:.45rem;min-width:188px!important;max-width:none;min-height:44px;margin:0;padding:.45rem .55rem;border:0!important;border-radius:7px;background:transparent;color:#24303d;white-space:nowrap;font-size:.78rem;line-height:1.2;text-align:center}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]>div{display:flex;align-items:center;justify-content:center;white-space:nowrap}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]::before{display:inline-flex;flex:0 0 21px;align-items:center;justify-content:center;width:21px;height:21px;font:21px/1 "Material Symbols Rounded";font-feature-settings:"liga";font-variation-settings:"FILL" 0,"wght" 500,"GRAD" 0,"opsz" 20}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:nth-of-type(1)::before{content:"work"}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:nth-of-type(2)::before{content:"location_on"}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:nth-of-type(3)::before{content:"school"}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:nth-of-type(4)::before{content:"layers"}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:nth-of-type(5)::before{content:"fact_check"}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:nth-of-type(6)::before{content:"monitoring"}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:hover{background:#f4e6e8;color:#641127}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"][aria-selected="true"]{background:#78182b!important;color:#fff!important;border-radius:7px}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"][aria-selected="true"]:hover{background:#641127!important;color:#fff!important}
+    .st-key-public-results-tabs [data-testid="stTabs"] [data-baseweb="tab-highlight"]{display:none!important}
+    .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:focus-visible{outline:2px solid #d6a33d;outline-offset:-2px}
     .st-key-public-results-heading{align-items:center;justify-content:space-between;gap:1rem;margin:.35rem 0 .5rem;padding-top:.6rem;border-top:1px solid #e5e3e0}
     .st-key-public-results-heading [data-testid="stDownloadButton"] button{min-height:44px;white-space:nowrap}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
     .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
     @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
-    @media(max-width:820px){.stTabs [data-baseweb="tab-list"]{justify-content:flex-start}.stTabs [data-baseweb="tab"]{flex:0 0 auto;min-width:max-content!important;padding-inline:.7rem}}
     @media(max-width:475px){.st-key-public-results-heading{align-items:stretch;flex-wrap:wrap}.st-key-public-results-heading [data-testid="stDownloadButton"]{width:100%}.st-key-public-results-heading [data-testid="stDownloadButton"] button{width:100%}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
@@ -616,13 +627,14 @@ def _results(result):
             st.download_button("Export results", pd.DataFrame(report_rows).to_csv(index=False).encode("utf-8-sig"),
                                f"{Path(file_name).stem}-results.csv", "text/csv", key="public_results_csv",
                                type="primary", icon=":material/download:")
-    tabs = st.tabs(["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand", "Alignment evidence", "Unmapped / emerging"])
-    with tabs[0]: _skills(result)
-    with tabs[1]: _roles(result)
-    with tabs[2]: _qualifications(result)
-    with tabs[3]: _psf(result)
-    with tabs[4]: _alignment(result)
-    with tabs[5]: _unmapped(result)
+    with st.container(key="public-results-tabs"):
+        tabs = st.tabs(["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand", "Alignment evidence", "Unmapped / emerging"])
+        with tabs[0]: _skills(result)
+        with tabs[1]: _roles(result)
+        with tabs[2]: _qualifications(result)
+        with tabs[3]: _psf(result)
+        with tabs[4]: _alignment(result)
+        with tabs[5]: _unmapped(result)
 
 
 def _process_pending_upload():
