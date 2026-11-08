@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.config import FIELDS, PUBLIC_VERSION
+from src.config import FIELDS
 from src.design import apply_design
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, health
@@ -29,6 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
+PUBLIC_VERSION = "3.0.86"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
