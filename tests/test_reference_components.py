@@ -143,7 +143,7 @@ def test_export_action_opens_reports_without_changing_research_counts(monkeypatc
     assert not app.exception and not app.error
     route.assert_called_once_with('pages/14_Reports.py')
     assert {metric.label: metric.value for metric in app.metric} == before
-    assert before['Job ads in sample'] == '4'
+    assert before['Job ads'] == '4'
     assert before['Distinct chart skills'] == '3'
     assert before['Distinct phrases withheld'] == '1'
 

@@ -8,7 +8,7 @@ from . import storage
 from .classification import compare_models, save_model, MODEL_FILES, VECTORIZER_CONFIG, SELECTION_BASIS
 from .training_data import load_labeled_data, labeled_file_hash
 from .reporting import export_csv
-from .utils import timestamp, frame_hash
+from .utils import timestamp, frame_hash, digest
 from .training_sources import resolve_training_file
 from .training_lock import exclusive_training, ensure_training_lease
 from . import supabase_store
@@ -19,9 +19,9 @@ def read_model_metadata(root=None):
     path = Path(root or storage.ROOT) / "models/model_metadata.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
-def training_data_changed(root=None):
+def training_data_changed(root=None, *, metadata=None):
     root = Path(root or storage.ROOT)
-    meta = read_model_metadata(root)
+    meta = read_model_metadata(root) if metadata is None else metadata
     if not meta:
         return False
     if supabase_store.configured():
@@ -98,7 +98,9 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
     storage.save_json("training_details", details)
     for name, frame in {"model_metrics": table, "model_comparison": table, "classification_report": pd.concat(reports, ignore_index=True), "confusion_matrix": pd.concat(matrices, ignore_index=True), "test_predictions": pd.concat(predictions, ignore_index=True)}.items():
         storage.atomic_bytes(root / "outputs/tables" / f"{name}.csv", export_csv(frame))
-    save_model(winner["model"], root / "models/competency_classifier.joblib")
+    selected_path = root / "models/competency_classifier.joblib"
+    save_model(winner["model"], selected_path)
+    metadata["classifier_sha256"] = digest(selected_path.read_bytes())
     storage.atomic_bytes(root / "models/model_metadata.json", json.dumps(metadata, indent=2, default=str).encode("utf-8"))
     storage.save_json("selected_model", {"name": selected, **details[selected]})
     if shared:

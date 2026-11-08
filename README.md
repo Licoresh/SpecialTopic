@@ -1,6 +1,32 @@
 # Philippine Job Skills Analysis
 
-A Streamlit application for analyzing Philippine data, analytics and AI job advertisements and comparing employer requirements with the TESDA PSF-AAI.
+A private Streamlit research workspace and a public browser analyzer for Philippine data, analytics and AI job advertisements and the TESDA PSF-AAI.
+
+## Public analyzer
+
+The static public site is served from `public-web/site` on Vercel. A separate Streamlit edition is available at `public-web/streamlit_app.py` and uses the same public analysis engine.
+
+Run the Streamlit public edition locally from the repository root:
+
+```powershell
+..\.venv\Scripts\python.exe -m streamlit run public-web/streamlit_app.py --server.address 127.0.0.1 --server.port 8502 --server.maxUploadSize 4
+```
+
+Open [the local public analyzer](http://127.0.0.1:8502). The Streamlit edition keeps no sidebar and does not require researcher login. Uploads and results remain in the app session and are not written to researcher tables or project files.
+
+Select a CSV, confirm its editable column mapping, and explore Skills, Roles and locations, Qualifications, PSF-AAI demand, Alignment evidence, and Unmapped / emerging results. The dedicated PSF Mapping review page is not part of the public flow. The public engine uses only an explicitly released research classifier; analysis stays disabled until that artifact is available.
+
+To add the Streamlit edition to Community Cloud, choose repository `Licoresh/SpecialTopic`, branch `main`, and main file path `public-web/streamlit_app.py`. Keep the repository root as the app root. Community Cloud syncs later code changes from GitHub automatically; see [Streamlit's deployment guide](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy).
+
+For Vercel, connect `Licoresh/SpecialTopic` and set `main` as the production branch. Keep **Root Directory** at the repository root. The checked-in [Vercel config](vercel.json) selects **Other**, skips build and install, and serves only `public-web/site`. Remove the private workspace's Supabase environment variables from this Vercel project, then deploy a commit containing the static configuration. The private workspace still runs through Streamlit or Docker with its own configuration.
+
+If the production URL returns `DEPLOYMENT_DISABLED`, check the project owner's Vercel dashboard for usage or plan issues, then redeploy the static revision. See [Vercel's troubleshooting steps](https://vercel.com/docs/errors/deployment_disabled).
+
+### Release an evaluated classifier
+
+Add `PUBLIC_MODEL_GITHUB_TOKEN` to the private workspace's `.env`. Use a fine-grained GitHub token scoped to `Licoresh/SpecialTopic` with **Contents: Read and write** and an account allowed to commit to `main` and deploy through the linked Vercel project.
+
+In the private workspace, an administrator opens **Evaluate models → Public classifier release**, prepares the release, and inspects the exported vocabulary before confirming and publishing. The artifact contains the model parameters and vocabulary, which will be visible to public visitors. GitHub receives `public-web/site/model.json`. The Vercel Git integration deploys the commit and visitors see the released version in the analyzer.
 
 ## Local setup
 
@@ -52,7 +78,7 @@ The bundled PSF-AAI reference is in `data/reference/`. The in-app Methodology pa
 
 ## Team updates and data
 
-Run `git pull origin main`, update the requirements in your existing environment, and restart Streamlit. Git delivers application code and the default reference; it does not deliver `.env`, raw uploads, reviewed labels, model files or generated results.
+Run `git pull origin main`, update the requirements in your existing environment, and restart Streamlit. Git delivers application code, the default reference and approved public classifier artifacts. Private model files, `.env`, raw uploads, reviewed labels and generated results stay outside Git.
 
 With Supabase configured, signed-in teammates share saved processed data and annotations. The original upload stays on the uploader's device. Administrators can seed empty shared data slots through Settings. Database setup is defined in `supabase/migrations/`.
 

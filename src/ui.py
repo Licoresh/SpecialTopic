@@ -1812,6 +1812,48 @@ def evaluation():
                         if path.exists():
                             st.download_button(filename, path.read_bytes(), filename, "text/csv", key="evaluation_"+filename)
                     st.download_button("model_metadata.json", json.dumps(metadata, indent=2), "model_metadata.json", "application/json")
+            if supabase_store.is_admin():
+                _public_classifier_release()
+
+
+def _public_classifier_release():
+    from .public_model import publication_configured, prepare_release, publish_release
+
+    with _icon_expander("Public classifier release", icon=":material/publish:"):
+        st.caption("Prepare the evaluated model for the public analyzer. Review its learned vocabulary before publishing it to GitHub and triggering Vercel.")
+        if action_button("Prepare release", key="prepare_public_model"):
+            st.session_state.pop("_public_model_release", None)
+            try:
+                with st.spinner("Preparing evaluated classifier…"):
+                    st.session_state["_public_model_release"] = prepare_release()
+            except (ValueError, OSError, supabase_store.SupabaseError) as exc:
+                st.error(str(exc))
+        release = st.session_state.get("_public_model_release")
+        if not release:
+            return
+        version = release["version"]
+        st.write(f"**{release['name']}** · `{version}` · holdout Macro F1 {release['macro_f1']:.3f} across {release['test_ads']:,} holdout ads.")
+        with st.container(horizontal=True, gap="small", wrap=True):
+            st.download_button("Review learned vocabulary", release["vocabulary"], f"vocabulary-{version}.txt",
+                               "text/plain", key="download_public_vocabulary", on_click="ignore", icon=":material/download:")
+            st.download_button("Download model artifact", release["content"], f"classifier-{version}.json",
+                               "application/json", key="download_public_classifier", on_click="ignore", icon=":material/download:")
+        if not publication_configured():
+            st.info("Set PUBLIC_MODEL_GITHUB_TOKEN in the private workspace to enable publishing.")
+            return
+        if st.session_state.get("_published_public_model") == version:
+            st.success(f"Classifier {version} is on GitHub. Check Vercel for deployment status.")
+            return
+        approved = st.checkbox("I reviewed the evaluation and confirmed the artifact vocabulary is appropriate for public release.",
+                               key=f"approve_public_model_{version}")
+        if action_button("Publish classifier", key="publish_public_model", type="primary", disabled=not approved):
+            try:
+                with st.spinner("Publishing approved classifier to GitHub…"):
+                    publish_release(version)
+                st.session_state["_published_public_model"] = version
+                st.success(f"Classifier {version} is on GitHub. Check Vercel for deployment status.")
+            except (ValueError, OSError, supabase_store.SupabaseError) as exc:
+                st.error(str(exc))
 
 
 def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf", reviewer_id=None):
@@ -2339,7 +2381,7 @@ def _job_market_content(tables, meta, revision=None):
         reference_role_value = f"{reference_role_count:,}"
     else:
         reference_role_value = "—"
-    metrics = [("Job ads in sample", denominator, "work"),
+    metrics = [("Job ads", denominator, "work"),
                ("Distinct chart skills", len(demand), "bar_chart"),
                ("Distinct phrases withheld", unclear_count, "sell"),
                ("PSF-AAI reference roles", reference_role_value, "layers")]

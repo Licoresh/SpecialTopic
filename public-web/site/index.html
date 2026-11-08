@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Explore Philippine job advertisements, skills, qualifications, and PSF-AAI reference terms using your own dataset.">
+  <title>Job Market Analysis · Future of Work</title>
+  <link rel="icon" href="./assets/job_market_mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css?v=3.0.79">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 20v-7m7 7V4m7 16V9"/></symbol>
+    <symbol id="i-layer" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5m-18 4 9 5 9-5"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22c5-2.5 8-5.5 8-10V5l-8-3-8 3v7c0 4.5 3 7.5 8 10Zm-3-10 2 2 4-4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6m-12 4h8m-8 4h8"/></symbol>
+    <symbol id="i-work" viewBox="0 0 24 24"><path d="M8 6V4h8v2M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10H3Zm0 4h18m-11-1v3h4v-3"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 17v3h16v-3"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+    <symbol id="i-school" viewBox="0 0 24 24"><path d="m2 9 10-5 10 5-10 5L2 9Zm5 3v5q5 4 10 0v-5m5-3v7"/></symbol>
+    <symbol id="i-light" viewBox="0 0 24 24"><path d="M9 17h6m-5 4h4m-5-4v-2a6 6 0 1 1 6 0v2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></symbol>
+  </svg>
+  <a class="skip" href="#main">Skip to main content</a>
+  <div class="shell">
+    <header class="app-header">
+      <a class="brand" href="#upload"><img src="./assets/job_market_brand.svg" alt="Future of Work · Job Market Analytics"></a>
+      <nav id="navigation" class="top-navigation" aria-label="Public workspace">
+        <a href="#upload" aria-current="location"><svg class="icon"><use href="#i-upload"></use></svg> Upload data</a>
+        <a href="#results"><svg class="icon"><use href="#i-chart"></use></svg> Explore results</a>
+        <a href="#methodology"><svg class="icon"><use href="#i-layer"></use></svg> Methodology</a>
+      </nav>
+      <span class="version-label">v3.0.79</span>
+    </header>
+    <main id="main" tabindex="-1">
+      <header class="hero">
+        <div class="topline"><span>Future of Work <span class="crumb" aria-hidden="true">›</span> <strong>Public analyzer</strong></span><span class="badge" id="engine-badge"><svg class="icon"><use href="#i-shield"></use></svg> Connecting to research engine</span></div>
+        <p class="eyebrow">MSU-IIT · Philippine jobs · Skills · PSF-AAI</p>
+        <h1 id="page-title">Upload your job advertisements</h1>
+        <p class="intro" id="page-intro">Start by selecting a CSV dataset. We’ll guide you through the rest.</p>
+      </header>
+      <p id="notice" class="notice page-notice" role="status" hidden></p>
+
+      <section id="upload" class="page-view" data-page-view="upload" aria-labelledby="page-title">
+        <div class="upload-layout">
+          <section id="upload-card" class="card upload-card" aria-label="Upload and review dataset">
+            <div class="upload-card-tools"><button class="button quiet" id="clear" type="button" hidden>Clear session</button></div>
+            <label class="dropzone" id="dropzone" for="file" data-ready="false">
+              <svg id="dropzone-icon" class="icon"><use href="#i-upload"></use></svg>
+              <span class="dropzone-copy"><span class="file-name-line"><strong id="file-label">Drop your CSV file here</strong><span class="badge file-ready" id="file-ready" hidden><svg class="icon"><use href="#i-check"></use></svg> File ready</span></span><small id="file-detail">or select a file from your device</small></span>
+              <span class="button primary" id="dropzone-button"><span id="dropzone-action-text">Select CSV file</span><svg class="icon"><use href="#i-arrow"></use></svg></span>
+              <input class="visually-hidden" type="file" id="file" accept=".csv,text/csv">
+            </label>
+            <div id="restore-actions" class="actions" hidden>
+              <button class="button secondary" id="analyze-again" type="button"><svg class="icon"><use href="#i-chart"></use></svg> Analyze saved file again</button>
+            </div>
+            <form id="confirm" aria-labelledby="mapping-title" hidden>
+              <div class="section-head"><div><p class="eyebrow">Review your dataset</p><h2 id="mapping-title">Detected column mapping</h2></div><span class="badge">Editable</span></div>
+              <p>Choose which CSV column matches each field. The mapping stays editable until you start the analysis.</p>
+              <div id="required-fields" class="mapping-list"></div>
+              <details><summary>Optional fields</summary><div id="optional-fields" class="mapping-list detail-body"></div></details>
+              <details><summary>Preview source rows</summary><div id="preview" class="table-wrap detail-body"></div></details>
+              <div class="form-actions"><button id="analyze-submit" type="submit" class="button primary" disabled><svg class="icon"><use href="#i-chart"></use></svg> Analyze dataset</button></div>
+            </form>
+            <div id="analysis-ready" class="analysis-ready" role="status" hidden>
+              <span class="tile"><svg class="icon"><use href="#i-check"></use></svg></span>
+              <div><strong>Analysis ready</strong><p id="analysis-ready-copy"></p></div>
+              <button class="button primary" id="view-results" type="button"><svg class="icon"><use href="#i-chart"></use></svg> View results</button>
+            </div>
+          </section>
+          <aside class="card workflow-card" aria-live="polite">
+            <div id="upload-guide">
+              <h2 id="workflow-title">What happens after uploading?</h2>
+              <ol id="workflow-rail" class="process-rail" aria-label="Analysis process">
+                <li data-process-step="1"><span class="step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li>
+                <li data-process-step="2"><span class="step-number">02</span><span><strong>Prepare and analyze</strong><small>Use the research classifier and analysis rules.</small></span></li>
+                <li data-process-step="3"><span class="step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI references.</small></span></li>
+              </ol>
+              <p class="workflow-note" id="upload-limit">CSV files are sent to the analysis server and are not retained after processing.</p>
+            </div>
+            <div id="review-guide" hidden>
+              <h2>Analysis checklist</h2>
+              <p class="workflow-intro">Review the column matches before results are generated.</p>
+              <ul class="checklist">
+                <li data-state="complete"><span class="checkmark"><svg class="icon"><use href="#i-check"></use></svg></span><span><strong>CSV structure validated</strong><small>Headers and sample rows are ready.</small></span></li>
+                <li id="column-check" data-state="pending"><span class="checkmark"><svg class="icon"><use href="#i-check"></use></svg></span><span><strong id="column-check-title">Complete the column mapping</strong><small id="column-check-copy">Select Job title and at least one job detail field.</small></span></li>
+                <li data-state="pending"><span class="checkmark"><svg class="icon"><use href="#i-check"></use></svg></span><span><strong>Prepare source records</strong><small>Rows and source IDs follow the research workflow.</small></span></li>
+                <li data-state="pending"><span class="checkmark"><svg class="icon"><use href="#i-check"></use></svg></span><span><strong>Classify and summarize</strong><small>Research classifier, charts, and insights are applied.</small></span></li>
+              </ul>
+              <div class="readiness">
+                <div><strong id="readiness-title">Review column matches</strong><output id="mapping-percent">0%</output></div>
+                <progress id="mapping-progress" max="100" value="0" aria-label="Column mapping readiness"></progress>
+              </div>
+              <p class="workflow-note">Your CSV is sent when you start analysis. This public run does not apply saved researcher-only labels or mapping decisions.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="processing" class="page-view processing-screen" data-page-view="processing" aria-labelledby="processing-title" hidden>
+        <div class="processing-card">
+          <div class="processing-brand"><img src="./assets/job_market_mark.svg" alt=""><span><strong>Future of Work</strong><small>MSU-IIT · Job Market Analytics</small></span></div>
+          <h1 id="processing-title">Preparing your file</h1>
+          <p class="processing-copy" id="processing-copy">Checking the CSV structure.</p>
+          <p id="progress-text" class="processing-status" role="status" aria-live="polite">Reading your file…</p>
+          <div class="progress-row"><progress id="progress" max="100" aria-label="Research analysis progress"></progress><output id="progress-value">—</output></div>
+          <button class="button secondary cancel-button" id="cancel" type="button">Cancel</button>
+          <p class="processing-privacy"><svg class="icon"><use href="#i-shield"></use></svg> The analysis server processes this upload without saving it.</p>
+        </div>
+      </section>
+
+      <section id="results" class="page-view" data-page-view="results" aria-labelledby="results-title" hidden>
+        <div class="section-head results-head">
+          <div class="heading"><span class="tile"><svg class="icon"><use href="#i-chart"></use></svg></span><div><p class="eyebrow">03 · Explore</p><h2 id="results-title" tabindex="-1">Analysis results</h2></div></div>
+          <div id="exports" class="actions result-actions" hidden><button id="upload-another" type="button" class="button primary"><svg class="icon"><use href="#i-upload"></use></svg> Analyze another file</button><button id="cleaned" type="button" class="button secondary"><svg class="icon"><use href="#i-download"></use></svg> Cleaned CSV</button><button id="report" type="button" class="button secondary"><svg class="icon"><use href="#i-download"></use></svg> Results CSV</button></div>
+        </div>
+        <div class="card empty" id="empty">
+          <span class="tile"><svg class="icon"><use href="#i-chart"></use></svg></span>
+          <h3>Your results will appear here</h3>
+          <p>Upload and analyze a job dataset to explore employer demand, occupational patterns, qualifications, and PSF-AAI reference evidence.</p>
+          <button id="empty-upload" type="button" class="button primary"><svg class="icon"><use href="#i-upload"></use></svg> Upload job data</button>
+        </div>
+        <div id="result-content" hidden>
+          <p id="result-source" class="dataset-line"></p>
+          <p id="analysis-basis" class="chart-note" role="note"></p>
+          <div id="metrics" class="metric-grid"></div>
+          <div class="result-controls">
+            <div class="tabs" role="tablist" aria-label="Results section">
+              <button id="tab-skills" role="tab" aria-controls="panel" aria-selected="true" data-view="skills"><svg class="icon"><use href="#i-work"></use></svg> Skills</button>
+              <button id="tab-roles" role="tab" aria-controls="panel" aria-selected="false" tabindex="-1" data-view="roles"><svg class="icon"><use href="#i-pin"></use></svg> Roles and locations</button>
+              <button id="tab-qualifications" role="tab" aria-controls="panel" aria-selected="false" tabindex="-1" data-view="qualifications"><svg class="icon"><use href="#i-school"></use></svg> Qualifications</button>
+              <button id="tab-psf" role="tab" aria-controls="panel" aria-selected="false" tabindex="-1" data-view="psf"><svg class="icon"><use href="#i-layer"></use></svg> PSF-AAI demand</button>
+              <button id="tab-alignment" role="tab" aria-controls="panel" aria-selected="false" tabindex="-1" data-view="alignment"><svg class="icon"><use href="#i-layer"></use></svg> Alignment evidence</button>
+              <button id="tab-unmapped" role="tab" aria-controls="panel" aria-selected="false" tabindex="-1" data-view="unmapped"><svg class="icon"><use href="#i-chart"></use></svg> Unmapped / emerging</button>
+            </div>
+            <div class="chart-options" aria-label="Chart display options">
+              <span class="eyebrow">View options</span>
+              <label>Chart order<select id="order"><option value="high">Highest count</option><option value="low">Lowest count</option><option value="alpha">Alphabetical</option></select></label>
+              <label>Items per chart<select id="limit"><option>10</option><option selected>15</option><option>25</option></select></label>
+            </div>
+          </div>
+          <div id="panel" class="chart-stack" role="tabpanel" aria-labelledby="tab-skills" tabindex="0"></div>
+          <details id="evidence" class="card evidence"><summary><svg class="icon"><use href="#i-file"></use></svg> Source evidence</summary><p id="evidence-note"></p><div id="evidence-table" class="table-wrap"></div></details>
+        </div>
+      </section>
+
+      <section id="methodology" class="card method page-view" data-page-view="methodology" aria-labelledby="method-title" hidden>
+        <div class="heading"><span class="tile"><svg class="icon"><use href="#i-layer"></use></svg></span><div><p class="eyebrow">03 · Interpret</p><h2 id="method-title">Methodology</h2></div></div>
+        <div class="method-grid">
+          <details><summary>Cleaning and counting</summary><p>The public analyzer calls the same Python research cleaning, extraction, chart eligibility, job-profile, geography, alignment, gap, and PSF-AAI functions. Source IDs use the uploaded file hash and source row. Duplicate rows remain unless a researcher has reviewed and removed them in the active study dataset.</p></details>
+          <details><summary>Classifier and public review scope</summary><p>Public analysis uses the research classifier for uploaded phrases. Researcher-only saved labels, mapping reviews, and corrections are not applied to anonymous uploads.</p></details>
+          <details><summary>Session storage</summary><p>The browser can restore a dataset and results after refresh in the current tab. Use Clear session to remove the current dataset immediately. Cached copies expire after 12 hours and are removed on a later visit.</p></details>
+        </div>
+      </section>
+      <footer><span>Future of Work · Philippine job advertisement analysis</span><span>Public analyzer</span></footer>
+    </main>
+  </div>
+</body>
+</html>

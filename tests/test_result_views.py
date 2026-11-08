@@ -122,7 +122,7 @@ def test_reference_metrics_render_selected_counts_without_extra_badges(monkeypat
     assert len(card.children[0].get("popover")) == 1  # Full card header, above both columns.
     assert not card.children[1].get("popover")
     metrics = {metric.label: metric.value for metric in app.metric}
-    assert metrics["Job ads in sample"] == "4"
+    assert metrics["Job ads"] == "4"
     assert metrics["Distinct chart skills"] == "3"
     assert metrics["Distinct phrases withheld"] == "1"
     assert metrics["PSF-AAI reference roles"] == "—"
@@ -142,7 +142,7 @@ def test_role_focus_duplicate_labels_and_unclear_phrases(monkeypatch):
     focused = figure_with_title(figures, "Top skills for all selected advertisements")
     assert dict(zip(focused.data[0].y, focused.data[0].x)) == {"sql": 2, "c++": 1, "collaboration": 1}
     metrics = {item.label: item.value for item in app.metric}
-    assert metrics["Job ads in sample"] == "4"
+    assert metrics["Job ads"] == "4"
     assert metrics["Distinct phrases withheld"] == "1"
     assert not any("Experience requirement fields" == fig.layout.title.text for fig in figures)
     app.selectbox(key="result_title_view").set_value("Specific titles (alphabetical)").run(timeout=30)
