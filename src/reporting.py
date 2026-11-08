@@ -129,7 +129,7 @@ def export_research_report(tables, metadata):
     chart_review = tables.get("chart_phrase_review")
     if chart_review is not None and not chart_review.empty:
         lines.extend(["### Chart phrase-clarity audit", "",
-            f"{len(chart_review):,} source occurrences were withheld from the skill charts by conservative phrase-clarity rules. Original evidence and saved researcher labels remain unchanged. Review these phrases before interpreting them as skills; the screen cannot detect every ambiguity.", "",
+            f"{len(chart_review):,} source occurrences were withheld from the skill charts by the phrase screen or skill acceptance rules. The table preserves the source wording and any saved labels for review.", "",
             markdown_table(chart_review.drop(columns=["original_text"], errors="ignore").head(100)), ""])
     years = tables.get("experience_analysis_year_evidence")
     if years is not None and not years.empty:

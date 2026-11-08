@@ -49,10 +49,11 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     from src.loaders import load_data, map_columns
     from src.public_engine import analyze_upload
     from src.utils import digest
-    from src.workflow import EXTRACTION_PIPELINE_VERSION, job_market_bundle
+    from src.workflow import job_market_bundle
 
     filename = "synthetic.csv"
-    content = b"job_title,job_description,source_name\nAnalyst,Python and data analysis.,Synthetic"
+    content = (b"job_title,job_description,source_name\nAnalyst,Python and data analysis.,Synthetic"
+               b"\nAnalyst,Python and data analysis.,Synthetic\n,,")
     dataset_id = digest(content)
     raw = load_data(content, filename)
     mapping, _ = suggest_column_mapping(raw.columns, "jobs")
@@ -66,23 +67,26 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     tables, metadata = job_market_bundle()
     demand = tables["chart_skill_demand"]
     assert len(demand) > 0
-    assert public["summary"]["ads"] == tables["cleaned_jobs"].source_id.nunique()
+    assert public["summary"]["ads"] == tables["cleaned_jobs"].source_id.nunique() == 2
+    assert metadata["quality"] == {"rows": 3, "duplicates": 1, "blank": 1}
+    assert {key: public["summary"][key] for key in metadata["quality"]} == metadata["quality"]
     assert public["summary"]["chartSkills"] == len(demand)
-    assert public["summary"]["withheldPhrases"] == tables["chart_phrase_review"].normalized_phrase.nunique()
+    assert {key: public["summary"][key] for key in metadata["kpis"]} == metadata["kpis"]
     assert public["charts"]["skills"] == [
         {"label": row.employer_skill, "count": row.employer_demand_count} for row in demand.itertuples()
     ]
     assert public["datasetHash"] == metadata["dataset_id"] == dataset_id
+    assert public["analysisInputHash"] == metadata["analysis_input_id"]
     assert public["model"]["version"] == metadata["classifier_version"]
     assert metadata["filename"] == ""
 
-    storage.save_json("extraction_metadata", {"signature": input_signature(),
-                                             "pipeline_version": EXTRACTION_PIPELINE_VERSION})
+    storage.save_json("extraction_metadata", {"signature": "stale-private-extraction"})
     app = AppTest.from_string('from src.ui import research_page\nresearch_page("Job Market Analysis")').run(timeout=30)
     assert not app.exception and not app.error
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Distinct chart skills"] == str(public["summary"]["chartSkills"])
     assert metrics["Distinct phrases withheld"] == str(public["summary"]["withheldPhrases"])
+    assert any("Possible duplicate rows included: 1" in caption.value for caption in app.caption)
 
 
 def test_pending_upload_does_not_replace_saved_cleaned_jobs(workspace, jobs):

@@ -148,6 +148,30 @@ def test_cached_analysis_does_not_copy_source_snapshot_and_refreshes_changed_inp
     assert build.call_count == extracted.call_count == 3
 
 
+def test_automatic_kpi_cache_tracks_jobs_and_released_assets(monkeypatch):
+    from src import public_engine
+
+    session = {"_current_analysis_signature": "private-review-one"}
+    monkeypatch.setattr(ui.st, "session_state", session)
+    revisions = {"jobs": 1, "assets": ["model", "reference"]}
+    frame_revision = Mock(side_effect=lambda name: {"cleaned_jobs": revisions["jobs"]}[name])
+    build = Mock(return_value=({"chart_skill_demand": pd.DataFrame()}, {"kpis": {"ads": 1}}))
+    monkeypatch.setattr(ui.storage, "frame_revision", frame_revision)
+    monkeypatch.setattr(public_engine, "automatic_asset_revision", lambda: revisions["assets"])
+    monkeypatch.setattr(ui, "job_market_bundle", build)
+
+    ui.filtered_bundle(automatic=True)
+    session["_current_analysis_signature"] = "private-review-two"
+    ui.filtered_bundle(automatic=True)
+    assert build.call_count == 1
+    revisions["jobs"] = 2
+    ui.filtered_bundle(automatic=True)
+    revisions["assets"] = ["model", "new-reference"]
+    ui.filtered_bundle(automatic=True)
+    assert build.call_count == 3
+    assert all(call.args == ("cleaned_jobs",) for call in frame_revision.call_args_list)
+
+
 def test_review_queue_preparation_projects_job_metadata_without_losing_evidence(monkeypatch):
     monkeypatch.setattr(ui, "training_candidates", lambda root: pd.DataFrame())
     monkeypatch.setattr(ui, "training_taxonomy", lambda root: pd.DataFrame())
@@ -400,7 +424,7 @@ def test_chart_filters_only_redraw_their_own_panels(monkeypatch, key, value):
                {"Employer-requested skills", "Technical skills", "Enabling and interpersonal skills", "Broad competency areas"})
     assert plotted.call_count
     assert {call.args[0].layout.title.text for call in plotted.call_args_list} <= allowed
-    assert current.call_count == bundle.call_count == 1
+    assert current.call_count == 0 and bundle.call_count == 1
 
 
 def test_psf_role_filter_only_redraws_competency_demand(monkeypatch):
@@ -424,7 +448,7 @@ def test_psf_role_filter_only_redraws_competency_demand(monkeypatch):
     _run_fragment(app, monkeypatch, "result_psf_role")
     assert plotted.call_count == 1
     assert plotted.call_args.args[0].layout.title.text == "PSF-AAI competencies linked to employer demand"
-    assert current.call_count == bundle.call_count == 1
+    assert current.call_count == 0 and bundle.call_count == 1
 
 
 def test_reports_metadata_preserves_independent_route_chart_controls(monkeypatch):

@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 from src.alignment import calculate_mapping
-from src.analytics import accepted_skills, psf_demand_tables, skill_chart_tables, unmapped_chart_counts
+from src.analytics import accepted_skills, job_market_kpis, psf_demand_tables, skill_chart_tables, unmapped_chart_counts
 
 
 def rows(values):
@@ -54,6 +54,25 @@ def test_unclear_phrases_keep_original_evidence_and_reviewer_judgments():
     assert audit.iloc[0].human_label == "Technical / Digital"
     assert audit.original_text.eq("SYNTHETIC SOURCE EVIDENCE").all()
     pd.testing.assert_frame_equal(skills, before)
+
+
+def test_kpis_exclude_blank_and_charted_wording_from_withheld_count():
+    skills = rows([("A", "Python", "Technical / Digital"),
+                   ("B", "PYTHON", "IRRELEVANT"),
+                   ("B", "Docker", "Technical / Digital"),
+                   ("B", "", "Technical / Digital"),
+                   ("EXTERNAL", "Unrelated fragment", "IRRELEVANT")])
+    skills["accepted"] = [True, False, False, False, False]
+    jobs = pd.DataFrame({"source_id": ["A", "A", "B", ""]})
+    reference = pd.DataFrame({"job_role": ["Analyst;Engineer", " analyst ; ENGINEER ; "]})
+    tables = skill_chart_tables(skills, jobs)
+    review = tables["chart_phrase_review"].set_index("normalized_phrase")
+
+    assert review.loc["docker", "review_reason"] == "Candidate did not meet the skill acceptance rules"
+    assert set(review.index) == {"python", "docker", ""}
+    assert job_market_kpis(jobs, tables, reference) == {
+        "ads": 2, "chartSkills": 1, "withheldPhrases": 1, "referenceRoles": 2,
+    }
 
 
 def test_technical_symbols_and_distinct_skill_meanings_are_preserved():

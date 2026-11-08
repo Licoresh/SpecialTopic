@@ -29,7 +29,7 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
-from .analytics import skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
+from .analytics import job_market_kpis, skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import job_profile_tables, job_title_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
 from .timeline_table import timeline_table
@@ -194,7 +194,7 @@ cached_label_validation = st.cache_data(show_spinner=False, ttl=60, max_entries=
 
 # Bump only when the calculated result tables or their research meaning change.
 # UI, style, and performance releases must not invalidate the expensive bundle.
-RESULTS_BUNDLE_VERSION = 2
+RESULTS_BUNDLE_VERSION = 3
 
 
 def _clone_analysis_bundle(value):
@@ -530,13 +530,15 @@ def current_analysis():
     return True
 
 def filtered_bundle(*, automatic=False):
-    signature = st.session_state.get("_current_analysis_signature") or input_signature()
     if automatic:
-        revision = digest(["automatic_job_market", VERSION, signature])
+        from .public_engine import automatic_asset_revision
+
+        revision = digest([VERSION, storage.frame_revision("cleaned_jobs"), automatic_asset_revision()])
         result = _session_cached_value("_fow_market_bundle_cache", revision, job_market_bundle,
                                        ttl=None, max_entries=1, clone=_clone_analysis_bundle)
         st.session_state["_fow_loaded_bundle_revision"] = revision
         return result
+    signature = st.session_state.get("_current_analysis_signature") or input_signature()
     corrections_path = storage.ROOT / "data/feedback/corrections.csv"
     try:
         corrections_stat = corrections_path.stat()
@@ -559,16 +561,6 @@ def filtered_bundle(*, automatic=False):
         return analysis_bundle(source_snapshot=source_snapshot)
     bundle_key = digest({"results_bundle_version": RESULTS_BUNDLE_VERSION,
                          "signature": analysis_revision})
-    # Reuse the active pre-versioned entry after a UI-only code reload when its
-    # exact source snapshot is still cached. Review, extraction, or correction
-    # changes produce a different source_key and cannot take this path.
-    previous_key = st.session_state.get("_fow_loaded_bundle_revision")
-    analysis_cache = st.session_state.get("_fow_analysis_cache", {})
-    source_cache = st.session_state.get("_fow_source_cache", {})
-    if (previous_key and previous_key != bundle_key and previous_key in analysis_cache
-            and source_key in source_cache
-            and "experience_duration_counts" in analysis_cache[previous_key][1][0]):
-        analysis_cache.setdefault(bundle_key, analysis_cache[previous_key])
     result = _session_cached_value(
         "_fow_analysis_cache", bundle_key,
         build_analysis,
@@ -2371,6 +2363,29 @@ def _job_market_results(tables, meta, revision=None):
         st.caption("Review the input or configuration and try again. Raw uploads have not been changed.")
 
 
+def job_market_metrics(kpis, quality=None):
+    metrics = (
+        ("ads", "Job ads", "work", "Selected source rows with job text. Possible duplicates are flagged for review."),
+        ("chartSkills", "Distinct chart skills", "bar_chart", "Unique grouped skill labels across all selected ads."),
+        ("withheldPhrases", "Distinct phrases withheld", "sell", "Unique nonempty candidate phrases that never qualified for a skill chart."),
+        ("referenceRoles", "PSF-AAI reference roles", "layers", "Unique roles listed in the released PSF-AAI reference."),
+    )
+    with st.container(horizontal=True, gap="medium", key="result_metrics"):
+        for index, (key, label, icon, help_text) in enumerate(metrics, 1):
+            with st.container(border=True, key=f"result_metric_{index}"):
+                value = kpis[key]
+                st.metric(label, f"{value:,}" if value is not None else "—", icon=f":material/{icon}:", help=help_text)
+    st.caption("Each ad generates short candidate phrases. The withheld total counts unique wording excluded from all skill charts.")
+    if quality:
+        details = []
+        if quality["duplicates"]:
+            details.append(f"Possible duplicate rows included: {quality['duplicates']:,}")
+        if quality["blank"]:
+            details.append(f"Rows skipped because mapped job text was blank: {quality['blank']:,}")
+        if details:
+            st.caption(" · ".join(details))
+
+
 def _job_market_content(tables, meta, revision=None):
     st.session_state["_table_number"] = 0
     # Normal page loads pass the existing bundle revision; standalone renders hash their inputs.
@@ -2381,7 +2396,9 @@ def _job_market_content(tables, meta, revision=None):
     }])
     jobs = tables["cleaned_jobs"]
     if meta.get("dataset_id"):
+        input_id = meta.get("analysis_input_id", "")
         details = [meta.get("filename"), f"Dataset ID `{meta['dataset_id'][:16]}`",
+                   f"Analysis input ID `{input_id[:16]}`" if input_id else "",
                    f"Model ID `{meta['classifier_version']}`", "Same automatic analysis as the public analyzer"]
         st.caption(" · ".join(detail for detail in details if detail))
     chart_keys = {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review", "chart_skill_family_demand", "chart_family_ad_counts"}
@@ -2389,24 +2406,10 @@ def _job_market_content(tables, meta, revision=None):
         "_fow_market_skill_cache", revision, lambda: skill_chart_tables(tables["extracted_job_skills"], jobs),
         ttl=None, max_entries=1))
     skills, demand, unclear = (views[key] for key in ("chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review"))
-    denominator = jobs.source_id.nunique() if "source_id" in jobs else 0
-    unclear_count = unclear.normalized_phrase.nunique() if not unclear.empty else 0
     framework = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
-    role_field = next((field for field in ("job_role", "psf_job_role") if field in framework), None)
-    if role_field and not framework.empty:
-        reference_roles = framework[role_field].fillna("").map(normalize_text).str.split("; ").explode()
-        reference_role_count = int(reference_roles.loc[reference_roles.ne("")].nunique())
-        reference_role_value = f"{reference_role_count:,}"
-    else:
-        reference_role_value = "—"
-    metrics = [("Job ads", denominator, "work"),
-               ("Distinct chart skills", len(demand), "bar_chart"),
-               ("Distinct phrases withheld", unclear_count, "sell"),
-               ("PSF-AAI reference roles", reference_role_value, "layers")]
-    with st.container(horizontal=True, gap="medium", key="result_metrics"):
-        for index, (label, value, icon) in enumerate(metrics, 1):
-            with st.container(border=True, key=f"result_metric_{index}"):
-                st.metric(label, f"{value:,}" if isinstance(value, int) else value, icon=f":material/{icon}:")
+    kpis = meta.get("kpis") or job_market_kpis(jobs, views, framework)
+    denominator = kpis["ads"]
+    job_market_metrics(kpis, meta.get("quality"))
     def skill_counts(rows, total):
         out = rows.groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
         out["job_ads_pct"] = out.job_ads / total * 100 if total else float("nan")
@@ -3156,9 +3159,13 @@ def research_page(page):
     loading_key = _research_results_loading_key(page)
     with loading_content(loading_key, loading_kind, cards=loading_cards, view=loading_view,
                          rows=st.session_state.get("result_chart_limit", 15), defer=True) as content:
-        if not current_analysis():
+        automatic = page == "Job Market Analysis"
+        if not automatic and not current_analysis():
             return
-        tables, meta = filtered_bundle(automatic=True) if page == "Job Market Analysis" else filtered_bundle()
+        tables, meta = filtered_bundle(automatic=True) if automatic else filtered_bundle()
+        if automatic and not tables:
+            st.info("Save a cleaned job dataset with advertisement text in Review data quality to see Job Market Analysis.")
+            return
         active_reference = storage.read_frame("cleaned_psf_aai") if page in {"PSF Mapping", "Employer–PSF Alignment"} else None
         if page == "Reports":
             meta = dict(meta, chart_view_settings={
@@ -3184,7 +3191,9 @@ def research_page(page):
 
 
 def _research_results_loading_key(page):
-    """Keep each results page ready until the saved extraction revision changes."""
+    """Keep results ready until their source revision changes."""
+    if page == "Job Market Analysis":
+        return f"automatic_job_market:{digest(storage.frame_revision('cleaned_jobs'))[:16]}"
     metadata = storage.read_json("extraction_metadata", {}) or {}
     extraction_revision = storage.frame_revision("extractions_original")
     generation = digest({

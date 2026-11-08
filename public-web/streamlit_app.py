@@ -25,13 +25,13 @@ from src.config import FIELDS
 from src.column_mapping import suggest_column_mapping
 from src.design import apply_design
 from src.loaders import load_data
-from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, health
-from src.ui import (analysis_workflow, featured_result_chart, featured_visual_chart, result_chart_options,
+from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, RESULT_SCHEMA_VERSION, analyze_upload, health
+from src.ui import (analysis_workflow, featured_result_chart, featured_visual_chart, job_market_metrics, result_chart_options,
                     result_count_chart, result_heatmap, result_insight,
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.99"
+PUBLIC_VERSION = "3.0.100"
 
 
 @st.cache_resource
@@ -304,17 +304,6 @@ def _reset():
     for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping", "public_result", "public_error", "public_stage", "public_using_recent_upload"):
         st.session_state.pop(key, None)
     st.rerun()
-
-
-def _metric_row(summary):
-    values = [("Job ads", summary["ads"], "work"),
-              ("Distinct chart skills", summary["chartSkills"], "bar_chart"),
-              ("Distinct phrases withheld", summary["withheldPhrases"], "sell"),
-              ("PSF-AAI reference roles", summary["referenceRoles"], "layers")]
-    with st.container(horizontal=True, gap="medium", key="result_metrics"):
-        for index, (label, value, icon) in enumerate(values, 1):
-            with st.container(border=True, key=f"result_metric_{index}"):
-                st.metric(label, f"{value:,}", icon=f":material/{icon}:")
 
 
 def _frame(rows, label, value, *, total=None):
@@ -601,18 +590,19 @@ def _results(result):
     with details:
         facts = (("Classifier", str(model["name"])),
                  ("Model ID", str(model["version"])),
-                 ("Dataset ID", str(result["datasetHash"][:16])))
+                 ("Dataset ID", str(result["datasetHash"][:16])),
+                 ("Analysis input ID", str(result["analysisInputHash"][:16])))
         fact_markup = "".join(
             f'<span class="public-result-fact"><span>{escape_html(label)}</span><strong>{escape_html(value)}</strong></span>'
             for label, value in facts
         )
-        st.html(f'<div class="public-result-meta" aria-label="Analysis details"><div class="public-result-file"><span class="material-symbols-rounded public-result-file-icon" aria-hidden="true">description</span><div class="public-result-file-copy"><strong>{file_name}</strong><small>{result["summary"]["rows"]:,} rows analyzed</small></div></div><div class="public-result-facts">{fact_markup}</div></div>')
+        st.html(f'<div class="public-result-meta" aria-label="Analysis details"><div class="public-result-file"><span class="material-symbols-rounded public-result-file-icon" aria-hidden="true">description</span><div class="public-result-file-copy"><strong>{file_name}</strong><small>{result["summary"]["rows"]:,} CSV rows</small></div></div><div class="public-result-facts">{fact_markup}</div></div>')
     with actions:
         if st.button("Analyze another dataset", type="primary", icon=":material/upload_file:",
                      key="public_analyze_another", width="stretch"):
             _reset()
     analysis_workflow()
-    _metric_row(result["summary"])
+    job_market_metrics(result["summary"], result["summary"])
 
     report_rows = []
     for section, rows in result["charts"].items():
@@ -681,6 +671,11 @@ def main():
     _style()
     _restore_recent_upload()
     result = st.session_state.get("public_result")
+    if result and result.get("schemaVersion") != RESULT_SCHEMA_VERSION:
+        st.session_state.pop("public_result")
+        st.session_state["public_stage"] = "review"
+        st.info("The counting rules have changed. Start analysis to update your results.")
+        result = None
     if result:
         _results(result)
         st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis · MSU-IIT</footer>')

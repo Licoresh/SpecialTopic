@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 
 from .alignment import calculate_mapping, summarize_alignment
-from .analytics import chart_mapping_rows, skill_chart_tables, psf_demand_tables, unmapped_chart_counts
+from .analytics import chart_mapping_rows, job_market_kpis, skill_chart_tables, psf_demand_tables, unmapped_chart_counts
 from .category_schema import category_parent
-from .cleaning import clean_dataset, normalize_text
+from .cleaning import analysis_job_values, clean_dataset, duplicate_ids, normalize_text
 from .config import DEFAULTS, FIELDS, ROOT
 from .gap_analysis import calculate_gaps
 from .geography import location_tables
@@ -22,12 +22,15 @@ from .job_profile import job_profile_tables, job_title_timeline
 from .loaders import load_data, map_columns
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
-from .utils import digest
+from .utils import digest, frame_hash
 
 
 MAX_LOCAL_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 100_000
+RESULT_SCHEMA_VERSION = 5
+_MODEL_PATH = "public-web/site/model.json"
+_REFERENCE_PATH = "data/reference/psf_aai_default.csv"
 _TOKEN = re.compile(r"(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)", re.UNICODE)
 
 
@@ -86,7 +89,7 @@ class _ReleasedClassifier:
 
 
 def _model():
-    artifact_path = ROOT / "public-web/site/model.json"
+    artifact_path = ROOT / _MODEL_PATH
     try:
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -112,7 +115,7 @@ def _counts(frame, label, value, *, sort=True):
 
 
 def _taxonomy():
-    path = ROOT / "data/reference/psf_aai_default.csv"
+    path = ROOT / _REFERENCE_PATH
     taxonomy = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
     if "review_status" in taxonomy:
         taxonomy = taxonomy[taxonomy.review_status.eq("Researcher verified")].copy()
@@ -121,11 +124,18 @@ def _taxonomy():
     return taxonomy.reset_index(drop=True)
 
 
-def _reference_roles(taxonomy):
-    role_field = "job_role" if "job_role" in taxonomy else None
-    if not role_field:
-        return 0
-    return int(taxonomy[role_field].fillna("").astype(str).str.split("; ").explode().str.strip().replace("", pd.NA).dropna().nunique())
+def automatic_asset_revision():
+    return [digest((ROOT / path).read_bytes()) for path in (_MODEL_PATH, _REFERENCE_PATH)]
+
+
+def automatic_job_scope(jobs):
+    """Use rows with job text and retain possible duplicates for review."""
+    if jobs.empty:
+        return jobs, {"rows": 0, "blank": 0, "duplicates": 0}, ""
+    included = jobs.loc[jobs.cleaned_text.fillna("").str.strip().ne("")]
+    duplicates = duplicate_ids(included.reindex(columns=["source_id", *FIELDS["jobs"]]))
+    quality = {"rows": len(jobs), "blank": len(jobs) - len(included), "duplicates": len(duplicates)}
+    return included, quality, frame_hash(analysis_job_values(included))
 
 
 def automatic_job_analysis(jobs, model, progress=None):
@@ -284,8 +294,9 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     dataset_hash = digest(content)
     mapped = map_columns(raw, selected, "jobs", dataset_hash)
     jobs, _ = clean_dataset(mapped, "jobs")
+    jobs, quality, analysis_id = automatic_job_scope(jobs)
     if jobs.empty:
-        raise ValueError("The CSV contains no job advertisements.")
+        raise ValueError("The mapped CSV has no job advertisement text.")
     settings = DEFAULTS
     model = _model()
     extracted, views, taxonomy, mapping_rows, alignment = automatic_job_analysis(jobs, model, progress)
@@ -314,22 +325,15 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
                          "url": str(row["url"]), "source": str(row["source"]),
                          "descriptionExcerpt": str(row["job_description"])[:450]})
 
-    demand = views["chart_skill_demand"]
-    withheld = views["chart_phrase_review"]
-    ads = int(jobs.source_id.nunique())
+    kpis = job_market_kpis(jobs, views, taxonomy)
+    ads = kpis["ads"]
     experience_evidence = profile["experience_analysis_year_evidence"]
     experience_status = experience_evidence.parse_status.fillna("").astype(str)
     exact_year_rows = experience_evidence.loc[experience_status.eq("Parsed stated years")].drop_duplicates("source_id")
     exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
     dated_ads = int(monthly.job_ads.sum()) if not monthly.empty else 0
     metrics = {
-        "ads": ads,
-        "rows": len(raw),
-        "duplicates": 0,
-        "blank": 0,
-        "chartSkills": int(len(demand)),
-        "withheldPhrases": int(withheld.normalized_phrase.nunique()) if not withheld.empty else 0,
-        "referenceRoles": _reference_roles(taxonomy),
+        **kpis, **quality,
         "withLocation": int(geography["location_evidence"].loc[geography["location_evidence"].region.ne(""), "source_id"].nunique()),
         "withEducation": int(profile["requirement_field_coverage"].loc[profile["requirement_field_coverage"].source_field.eq("education_requirement"), "stated_job_ads"].sum()),
         "withExperience": int(experience_evidence.loc[experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"].nunique()),
@@ -346,7 +350,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         "alignmentGroups": int(len(alignment)),
     }
     return {
-        "schemaVersion": 4,
+        "schemaVersion": RESULT_SCHEMA_VERSION,
         "filename": Path(filename).name,
         "mapping": selected,
         "summary": metrics,
@@ -360,6 +364,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         "evidence": {"limit": len(evidence), "total": ads, "rows": evidence},
         "alignmentRates": rates,
         "datasetHash": dataset_hash,
+        "analysisInputHash": analysis_id,
         "processing": {"engine": "research", "classifier": model.name, "researcherReviewsApplied": False,
                        "stored": False},
     }
@@ -373,7 +378,7 @@ def analyze_request(content, filename, mapping):
 def health(*, hosted=False):
     maximum = MAX_HOSTED_UPLOAD_BYTES if hosted else MAX_LOCAL_UPLOAD_BYTES
     try:
-        artifact = json.loads((ROOT / "public-web/site/model.json").read_text(encoding="utf-8"))
+        artifact = json.loads((ROOT / _MODEL_PATH).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         artifact = {}
     available = artifact.get("schema") == 1

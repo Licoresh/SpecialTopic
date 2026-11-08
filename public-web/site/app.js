@@ -771,18 +771,18 @@ function showResults() {
     section();
     return;
   }
-  const { summary, charts, filename, model, evidence } = result;
+  const { summary, filename, model, evidence } = result;
   const source = $("result-source");
   const file = document.createElement("div");
   file.className = "dataset-file";
   const filenameNode = document.createElement("strong");
   filenameNode.textContent = filename;
   const rowsNode = document.createElement("small");
-  rowsNode.textContent = `${integer.format(summary.rows)} rows analyzed`;
+  rowsNode.textContent = `${integer.format(summary.rows)} CSV rows`;
   file.append(filenameNode, rowsNode);
   const facts = document.createElement("div");
   facts.className = "dataset-facts";
-  for (const [label, value] of [["Classifier", model?.name || "Unavailable"], ["Model ID", model?.version || "—"], ["Dataset ID", result.datasetHash.slice(0, 16)]]) {
+  for (const [label, value] of [["Classifier", model?.name || "Unavailable"], ["Model ID", model?.version || "—"], ["Dataset ID", result.datasetHash.slice(0, 16)], ["Analysis input ID", result.analysisInputHash?.slice(0, 16) || "—"]]) {
     const fact = document.createElement("span");
     fact.className = "dataset-fact";
     const title = document.createElement("span");
@@ -795,10 +795,14 @@ function showResults() {
   source.replaceChildren(file, facts);
   $("metrics").replaceChildren(
     metric("Job ads", summary.ads, "work"),
-    metric("Distinct chart skills", summary.chartSkills ?? charts.skills.length, "chart"),
+    metric("Distinct chart skills", summary.chartSkills, "chart"),
     metric("Distinct phrases withheld", summary.withheldPhrases, "info"),
-    metric("PSF-AAI reference roles", summary.referenceRoles, "layer"),
+    metric("PSF-AAI reference roles", summary.referenceRoles ?? "—", "layer"),
   );
+  const notes = ["Each ad generates short candidate phrases. The withheld total counts unique wording excluded from all skill charts."];
+  if (summary.duplicates) notes.push(`Possible duplicate rows included: ${integer.format(summary.duplicates)}.`);
+  if (summary.blank) notes.push(`Rows skipped because mapped job text was blank: ${integer.format(summary.blank)}.`);
+  $("metrics-note").textContent = notes.join(" ");
   $("evidence-note").textContent = `Showing ${integer.format(evidence.rows.length)} of ${integer.format(evidence.total)} analyzed ads. Download the cleaned CSV for the complete source rows.`;
   $("evidence-table").replaceChildren();
   if ($("evidence").open) showEvidence();
@@ -1078,7 +1082,7 @@ connectEngine();
 
 try {
   const stored = await restore();
-  if (stored && stored.result?.schemaVersion === 4 && !candidate && !result) {
+  if (stored && stored.result?.schemaVersion === 5 && !candidate && !result) {
     result = stored.result;
     savedFile = stored.file;
     setFlowStep(3);
@@ -1089,7 +1093,7 @@ try {
     savedFile = stored.file;
     fileDisplay(savedFile, stored.result?.filename || savedFile.name, "Previous results use an older analysis. Reanalyze this file with the research engine.");
     $("restore-actions").hidden = false;
-    notify("The saved result used the earlier browser analyzer. Reanalyze the original CSV to get the shared research-engine results.");
+    notify("The counting rules have changed. Reanalyze the CSV to update your results.");
   }
 } catch {
   if (!worker && !requestController) notify("Browser storage is unavailable. You can still analyze and download results while this tab is open.");

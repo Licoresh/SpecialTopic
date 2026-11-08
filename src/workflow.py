@@ -7,7 +7,7 @@ from .cleaning import analysis_jobs, analysis_job_values, normalize_text
 from .utils import frame_hash, digest, timestamp
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
-from .analytics import accepted_skills, filter_frame, skill_chart_tables, psf_demand_tables
+from .analytics import accepted_skills, filter_frame, job_market_kpis, skill_chart_tables, psf_demand_tables
 from .job_profile import job_profile_tables
 from .geography import location_tables
 from .alignment import calculate_mapping, summarize_alignment
@@ -182,11 +182,14 @@ def current_extractions(*, source_ids=None):
 
 def job_market_bundle():
     """Compare the active jobs using the public preset and released reference."""
-    from .public_engine import _model, automatic_job_analysis
+    from .public_engine import _model, automatic_job_analysis, automatic_job_scope
 
-    jobs = analysis_jobs(storage.read_frame("cleaned_jobs"))
+    jobs, quality, analysis_id = automatic_job_scope(analysis_jobs(storage.read_frame("cleaned_jobs")))
+    if jobs.empty:
+        return {}, {}
     model = _model()
     _, charts, taxonomy, mapping, _ = automatic_job_analysis(jobs, model)
+    kpis = job_market_kpis(jobs, charts, taxonomy)
     for name in ("chart_skill_occurrences", "chart_phrase_review"):
         charts[name] = charts[name].drop(columns=["original_text"], errors="ignore")
     tables = {"cleaned_jobs": jobs, "psf_mapping": mapping, **charts,
@@ -195,7 +198,8 @@ def job_market_bundle():
     hashes = jobs.get("_dataset_hash", pd.Series(dtype=str)).unique()
     dataset_id = str(hashes[0]) if len(hashes) == 1 else ""
     active_upload = storage.read_json("uploads", {}).get("jobs", {})
-    metadata = {"dataset_id": dataset_id, "classifier_version": model.version,
+    metadata = {"dataset_id": dataset_id, "analysis_input_id": analysis_id, "classifier_version": model.version,
+                "kpis": kpis, "quality": quality,
                 "filename": active_upload.get("filename", "") if active_upload.get("hash") == dataset_id else ""}
     return tables, metadata
 

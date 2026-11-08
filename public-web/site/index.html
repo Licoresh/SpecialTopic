@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Explore Philippine job advertisements, skills, qualifications, and PSF-AAI reference terms using your own dataset.">
   <title>Job Market Analysis · Future of Work</title>
-  <link rel="icon" href="./assets/job_market_mark.svg?v=3.0.99" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css?v=3.0.99">
-  <script type="module" src="./app.js"></script>
+  <link rel="icon" href="./assets/job_market_mark.svg?v=3.0.100" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css?v=3.0.100">
+  <script type="module" src="./app.js?v=3.0.100"></script>
 </head>
 <body>
   <svg class="icons" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -34,7 +34,7 @@
         <a href="#results"><svg class="icon"><use href="#i-chart"></use></svg> Explore results</a>
         <a href="#methodology"><svg class="icon"><use href="#i-layer"></use></svg> Methodology</a>
       </nav>
-      <span class="version-label">v3.0.99</span>
+      <span class="version-label">v3.0.100</span>
     </header>
     <main id="main" tabindex="-1">
       <header class="hero">
@@ -127,6 +127,7 @@
         <div id="result-content" hidden>
           <div id="result-source" class="dataset-line" aria-label="Analysis details"></div>
           <div id="metrics" class="metric-grid"></div>
+          <p id="metrics-note" class="chart-note"></p>
           <div class="result-controls">
             <div class="tabs" role="tablist" aria-label="Results section">
               <button id="tab-skills" role="tab" aria-controls="panel" aria-selected="true" data-view="skills"><svg class="icon"><use href="#i-work"></use></svg> Skills</button>

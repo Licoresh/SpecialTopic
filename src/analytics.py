@@ -344,6 +344,7 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
     view.loc[needs_category_reason & categories.map(requirement_type).eq("Credential requirement"), "review_reason"] = "Credential requirement, not a skill"
     view.loc[needs_category_reason & categories.astype(str).str.casefold().eq("irrelevant"), "review_reason"] = "Researcher or classifier marked this phrase irrelevant"
     accepted = view.get("accepted", pd.Series(True, index=view.index)).astype(str).str.casefold().eq("true")
+    view.loc[~accepted & view.review_reason.eq(""), "review_reason"] = "Candidate did not meet the skill acceptance rules"
     reason = view.review_reason.fillna("").astype(str)
     review = view.loc[reason.ne("")].copy()
     eligible = view.loc[accepted & reason.eq("")].copy()
@@ -395,6 +396,21 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
             "chart_skill_family_demand": family_demand,
             "chart_family_ad_counts": family_ads.sort_values(["family_ads", "job_family"],
                                                               ascending=[False, True], kind="stable").reset_index(drop=True)}
+
+
+def job_market_kpis(jobs, views, reference):
+    """Count the complete evidence for the overview, before chart display filters."""
+    demand = views["chart_skill_demand"]
+    charted = set(demand.normalized_phrase)
+    withheld = set(views["chart_phrase_review"].normalized_phrase.dropna()) - charted - {""}
+    role_field = next((field for field in ("job_role", "psf_job_role") if field in reference), None)
+    role_count = None
+    if role_field and not reference.empty:
+        roles = reference[role_field].map(normalize_text).str.split(";").explode().str.strip()
+        role_count = int(roles[roles.ne("")].nunique())
+    ids = jobs.get("source_id", pd.Series(dtype=str)).dropna().astype(str)
+    return {"ads": int(ids[ids.str.strip().ne("")].nunique()), "chartSkills": len(charted),
+            "withheldPhrases": len(withheld), "referenceRoles": role_count}
 
 
 def chart_mapping_rows(mapping):
