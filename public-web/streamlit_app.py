@@ -47,51 +47,92 @@ ENGINE = health(hosted=True)
 
 def _style():
     apply_design()
-    st.html("""<style>
+    hero_art = base64.b64encode((ROOT / "assets/job_market_hero.svg").read_bytes()).decode("ascii")
+    style = """<style>
     [data-testid="stSidebar"],[data-testid="stSidebarCollapsedControl"]{display:none!important}
-    [data-testid="stHeader"]{background:transparent}
+    [data-testid="stHeader"]{background:transparent;height:0}
+    .stApp{background:#f8f5f2}
     .stMainBlockContainer{max-width:1440px;padding:1rem clamp(1rem,3vw,2.5rem) 4rem}
     .public-topbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.25rem 0 1rem;border-bottom:1px solid #e5e3e0}
-    .public-topbar img{width:clamp(145px,18vw,205px);height:auto}
+    .public-topbar img{display:block;width:clamp(145px,18vw,205px);height:auto}
     .public-version{color:#647184;font-size:.75rem}
-    .st-key-public-flow-shell{padding:clamp(1rem,3vw,2rem);border:1px solid #e5e3e0;border-radius:16px;background:#fff;box-shadow:0 12px 30px #24303d08}
-    .public-hero{padding:1.2rem 0 .65rem}
+    .public-hero{position:relative;isolation:isolate;display:grid;align-content:center;min-height:180px;margin:0 0 1rem;padding:clamp(1.2rem,2.8vw,2rem);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px;background:#f9efed}
+    .public-hero:after{position:absolute;z-index:-1;inset:20px 0 0 auto;width:min(42%,500px);content:"";background:url("data:image/svg+xml;base64,__HERO_ART__") right bottom/contain no-repeat;opacity:.9;pointer-events:none}
     .public-eyebrow{margin:0 0 .35rem;color:#78182b;font-size:.75rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
-    .public-hero h1{margin:.15rem 0 .55rem;color:#24303d;font-size:clamp(1.8rem,3.2vw,2.6rem);line-height:1.12}
-    .public-hero p{max-width:58rem;color:#647184}
+    .public-hero h1{margin:.15rem 0 .55rem;color:#78182b;font-size:clamp(1.8rem,3.2vw,2.6rem);line-height:1.12;letter-spacing:-.035em}
+    .public-hero p{max-width:min(62%,65ch);color:#62585d}
+    .public-hero .public-eyebrow{color:#78182b}
+    .public-topline{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1rem;color:#62585d;font-size:.8rem}
+    .public-engine-badge{display:inline-flex;align-items:center;gap:.35rem;padding:.25rem .65rem;border:1px solid #e6d9d7;border-radius:999px;background:#fffcfa;color:#78182b;font-size:.72rem;font-weight:650}
     .public-steps{display:grid;grid-template-columns:minmax(0,1fr) minmax(2rem,.28fr) minmax(0,1fr) minmax(2rem,.28fr) minmax(0,1fr);align-items:center;gap:.6rem;margin:0 0 1.25rem;padding:.35rem 0 1.15rem;border-bottom:1px solid #e5e3e0}
     .public-step{display:flex;align-items:center;gap:.7rem;color:#24303d;font-size:.85rem;font-weight:650}
-    .public-step b{display:grid;place-items:center;flex:0 0 34px;height:34px;border:1px solid #e0e3e8;border-radius:50%;background:#fff;color:#647184;font-size:.78rem}
+    .public-step b{display:grid;place-items:center;flex:0 0 34px;height:34px;border:1px solid #e6d9d7;border-radius:50%;background:#fffcfa;color:#78182b;font-size:.78rem}
     .public-step[data-state="current"] b{border-color:#78182b;background:#78182b;color:#fff;box-shadow:0 2px 8px #78182b26}
-    .public-step[data-state="complete"] b{border-color:#d5ebe3;background:#e8f5f0;color:#17836b}
-    .public-step small{display:block;color:#647184;font-size:.72rem;font-weight:400}
+    .public-step[data-state="complete"] b{border-color:#cce3d8;background:#edf6f1;color:#16634f}
+    .public-step small{display:block;color:#62585d;font-size:.72rem;font-weight:400}
     .public-step-line{height:1px;background:#e5e3e0}
-    .st-key-public-upload-card,.st-key-public-workflow-card{height:100%;padding:clamp(1rem,2.5vw,1.75rem);border:1px solid #e5e3e0;border-radius:14px;background:#fff}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:190px;border:1px dashed #b87885;border-radius:12px;background:#fcf8f8}
+    .st-key-public-upload-card{height:100%;min-height:350px;display:flex;flex-direction:column;justify-content:center;gap:.8rem;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+    .st-key-public-workflow-card{height:100%;padding:clamp(1rem,2.2vw,1.4rem);border:1px solid #e6d9d7;border-radius:12px;background:#fffcfa;box-shadow:0 2px 8px #4d102007}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:260px;border:1px dashed #c9a1a8;border-radius:10px;background:linear-gradient(135deg,#fff 0%,#fcf6f6 100%)}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:hover{border-color:#78182b;background:#f7edef}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-weight:650}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:hover{background:#5e1221;color:white}
-    .stFormSubmitButton button,.stButton button[kind="primary"],.stDownloadButton button{min-height:44px;border-radius:8px;font-weight:650}
-    .stFormSubmitButton button,.stButton button[kind="primary"]{background:#78182b;border-color:#78182b}
+    .stFormSubmitButton button,.stButton button[kind="primary"],.stDownloadButton button{min-height:44px;border-radius:8px;font-weight:650;transition:background-color .16s ease,transform .16s ease}
+    .stFormSubmitButton button,.stButton button[kind="primary"]{background:#78182b;border-color:#78182b;color:#fff}
+    .stButton button[kind="primary"]:hover{background:#4d1020;border-color:#4d1020;transform:translateY(-1px)}
+    .st-key-public-mapping-card{height:100%;padding:clamp(1rem,2.2vw,1.4rem);border:1px solid #e6d9d7;border-radius:12px;background:#fffcfa;box-shadow:0 2px 8px #4d102007}
+    .st-key-public-mapping-card [data-testid="stHorizontalBlock"]{align-items:center}
+    .public-workflow-title{margin:0 0 .25rem;color:#24303d;font-size:1.12rem;font-weight:700}
+    .public-process-rail{display:grid;gap:.35rem;margin:1rem 0;padding:0;list-style:none}
+    .public-process-rail li{display:grid;grid-template-columns:36px minmax(0,1fr);align-items:start;gap:.7rem;padding:.5rem;border-radius:9px}
+    .public-step-number{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#f7edef;color:#78182b;font-size:.76rem;font-weight:800}
+    .public-process-rail strong,.public-process-rail small{display:block}
+    .public-process-rail strong{font-size:.86rem}
+    .public-process-rail small{margin-top:.08rem;color:#62585d;font-size:.76rem}
+    .public-workflow-note{margin-top:1rem;padding-top:.8rem;border-top:1px solid #e6d9d7;color:#62585d;font-size:.78rem}
     .public-map-head{display:grid;grid-template-columns:1.5fr 1fr .75fr;gap:.8rem;padding:.55rem .7rem;color:#647184;background:#fafafb;font-size:.72rem;font-weight:750;letter-spacing:.04em;text-transform:uppercase}
     [class*="st-key-public-map-row-"]{padding:.12rem .65rem;border-bottom:1px solid #eceef1}
     [class*="st-key-public-map-row-"]:last-child{border-bottom:0}
     [class*="st-key-public-map-row-"] [data-testid="stHorizontalBlock"]{align-items:center}
     .public-file-type{display:grid;place-items:center;width:42px;height:42px;border-radius:10px;background:#f7edef;color:#78182b;font-size:.75rem;font-weight:800}
     .public-filename{color:#24303d;font-size:.88rem;font-weight:700}
-    .public-map-status{display:inline-flex;align-items:center;min-height:1.65rem;padding:.2rem .55rem;border-radius:999px;background:#f1f3f5;color:#647184;font-size:.72rem;font-weight:700;white-space:nowrap}
-    .public-map-status[data-state="complete"]{background:#e8f5f0;color:#17836b}
+    .public-map-status{display:inline-flex;align-items:center;min-height:1.65rem;padding:.2rem .55rem;border-radius:999px;background:#f5f1ef;color:#62585d;font-size:.72rem;font-weight:700;white-space:nowrap}
+    .public-map-status[data-state="complete"]{background:#edf6f1;color:#16634f}
     .public-map-status[data-state="required"]{background:#f7edef;color:#78182b}
-    .public-checklist{display:grid;gap:.85rem;margin:.8rem 0 1rem}
+    .public-map-status[data-state="error"]{background:#fff1f0;color:#a22e3d}
+    .public-checklist{display:grid;gap:.75rem;margin:.8rem 0 1rem}
     .public-check{display:flex;align-items:flex-start;gap:.6rem;color:#475569;font-size:.87rem}
-    .public-check b{color:#17836b}
-    .public-check[data-state="pending"] b{color:#9aa2ae}
+    .public-check b{color:#16634f}
+    .public-check[data-state="pending"] b{color:#9b8b7e}
     .public-readiness{display:flex;justify-content:space-between;gap:1rem;margin:.9rem 0 .35rem;color:#24303d;font-size:.82rem;font-weight:700}
+    .public-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.9rem}
+    .public-file-meta{color:#62585d;font-size:.8rem}
+    .public-privacy{margin:.1rem 0 0;color:#62585d;font-size:.78rem}
+    .public-processing-screen{min-height:calc(100dvh - 5rem);display:grid;align-items:center;padding:clamp(1rem,5vw,3rem);border-radius:16px;background:linear-gradient(180deg,#4d1020 0%,#78182b 28%,#b87583 61%,#f8f5f2 100%)}
+    .st-key-public-processing-card{width:min(100%,760px);margin:auto;padding:clamp(1.6rem,5vw,3.5rem);border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
+    .public-processing-brand{display:inline-flex;align-items:center;gap:.7rem;margin-bottom:1.7rem;text-align:left}
+    .public-processing-brand img{width:46px;height:48px}
+    .public-processing-brand strong,.public-processing-brand small{display:block}
+    .public-processing-brand strong{color:#4d1020;font-size:1.05rem}
+    .public-processing-brand small{color:#62585d;font-size:.76rem}
+    .public-processing-title{margin:.2rem 0 .5rem;color:#24303d;font-size:clamp(1.8rem,4vw,2.5rem);letter-spacing:-.035em}
+    .public-processing-copy{color:#62585d}
+    .public-processing-status{margin-top:1.4rem;color:#4d1020;font-size:.9rem;font-weight:650}
+    .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
+    .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
+    .st-key-public-processing-screen .stProgress>div>div{background:#78182b}
     .stTabs [data-baseweb="tab-list"]{gap:.25rem;flex-wrap:nowrap;overflow-x:auto;border:1px solid #e5d7d5;border-radius:10px;background:#fff;padding:.25rem}
     .stTabs [data-baseweb="tab"]{min-height:38px;padding:.4rem clamp(.45rem,1vw,.9rem);white-space:nowrap;font-size:.78rem}
     .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}.st-key-public-flow-shell{padding:1rem}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}}
-    </style>""")
+    .stApp:has(.st-key-public-processing-screen) .stMainBlockContainer{max-width:100%;padding:0}
+    .st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.95fr);gap:.85rem}
+    .st-key-public-upload-layout [data-testid="column"],.st-key-public-review-layout [data-testid="column"]{width:auto!important;flex:none!important;min-width:0}
+    @media(max-width:900px){.st-key-public-upload-layout [data-testid="stHorizontalBlock"],.st-key-public-review-layout [data-testid="stHorizontalBlock"]{grid-template-columns:minmax(0,1fr)}.st-key-public-upload-card{min-height:0}.public-hero p{max-width:76%}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-hero{min-height:160px}.public-hero:after{width:56%;opacity:.3}.public-hero p{max-width:100%}.public-processing-screen{min-height:calc(100dvh - 1rem);padding:1rem}.st-key-public-processing-card{padding:1.5rem 1rem}}
+    @media(max-width:475px){.public-topbar img{width:158px}.public-topline{align-items:flex-start;flex-direction:column;gap:.35rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
+    </style>""".replace("__HERO_ART__", hero_art)
+    st.html(style)
 
 
 def _topbar(step: int, *, results: bool = False):
@@ -112,7 +153,9 @@ def _topbar(step: int, *, results: bool = False):
         step_markup.append(f'<div class="public-step" data-state="{state}"><b>{number}</b><span>{name}<small>{detail}</small></span></div>')
     connectors = '<span class="public-step-line" aria-hidden="true"></span>'
     st.html('<div class="public-steps" aria-label="Analysis process">' + connectors.join(step_markup) + "</div>")
-    st.html(f'<header class="public-hero"><p class="public-eyebrow">STEP {step:02} / 03</p><h1>{title}</h1><p>{intro}</p></header>')
+    badge = ("Interim classifier · analysis available" if ENGINE.get("classifierStatus") == "interim" else
+             "Research classifier ready" if ENGINE.get("classifierAvailable") else "Classifier unavailable")
+    st.html(f'<header class="public-hero"><div class="public-topline"><span>Future of Work <span aria-hidden="true">›</span> <strong>Public analyzer</strong></span><span class="public-engine-badge">{escape_html(badge)}</span></div><p class="public-eyebrow">MSU-IIT · Philippine jobs · Skills · PSF-AAI</p><h1>{title}</h1><p>{intro}</p></header>')
 
 
 def _suggest_mapping(columns):
@@ -141,7 +184,7 @@ def _column_label(name):
     return name
 
 
-def _mapping_row(field, columns, mapping, file_hash):
+def _mapping_row(field, columns, mapping, file_hash, duplicate_columns=()):
     label = FIELD_LABELS.get(field, field.replace("_", " ").title())
     key = f"public-map-{file_hash[:10]}-{field}"
     if key not in st.session_state:
@@ -154,8 +197,9 @@ def _mapping_row(field, columns, mapping, file_hash):
     with target:
         st.markdown(f"**{label}**")
     with status:
-        state = "complete" if value else "required" if field == "job_title" else "pending"
-        text = "Matched" if value else "Required" if field == "job_title" else "Choose a column"
+        duplicate = value in duplicate_columns
+        state = "error" if duplicate else "complete" if value else "required" if field == "job_title" else "pending"
+        text = "Duplicate" if duplicate else "Matched" if value else "Required" if field == "job_title" else "Choose a column"
         st.html(f'<span class="public-map-status" data-state="{state}">{text}</span>')
     return value
 
@@ -467,13 +511,17 @@ def _results(result):
     _topbar(3, results=True)
     file_name = result["filename"]
     model = result["model"]
-    st.caption(f"{file_name} · {result['summary']['rows']:,} rows · {model['name']} · model {model['version']} · dataset {result['datasetHash'][:16]}")
+    details, actions = st.columns([3, 1], vertical_alignment="center")
+    with details:
+        st.caption(f"{file_name} · {result['summary']['rows']:,} rows · {model['name']} · model {model['version']} · dataset {result['datasetHash'][:16]}")
+    with actions:
+        if st.button("Analyze another dataset", type="primary", icon=":material/upload_file:",
+                     key="public_analyze_another", width="stretch"):
+            _reset()
     if model.get("releaseStatus") == "interim":
         st.warning(model.get("releaseNote") or "Interim classifier. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
     st.info("This anonymous run uses the public classifier and shared analysis functions. It does not apply saved researcher-only labels, mapping reviews, or corrections.", icon=":material/info:")
     _metric_row(result["summary"])
-    if st.button("Analyze another file", type="primary", icon=":material/upload_file:", key="public_analyze_another"):
-        _reset()
     tabs = st.tabs(["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand", "Alignment evidence", "Unmapped / emerging"])
     with tabs[0]: _skills(result)
     with tabs[1]: _roles(result)
@@ -491,6 +539,46 @@ def _results(result):
                            f"{Path(file_name).stem}-results.csv", "text/csv", key="public_results_csv")
 
 
+def _process_pending_upload():
+    content = st.session_state.get("public_content")
+    file_name = st.session_state.get("public_filename")
+    mapping = dict(st.session_state.get("public_mapping", {}))
+    if content is None or not file_name:
+        st.session_state["public_stage"] = "upload"
+        st.rerun()
+
+    mark_uri = "data:image/svg+xml;base64," + base64.b64encode(APP_ICON.read_bytes()).decode("ascii")
+    with st.container(key="public-processing-screen"):
+        with st.container(key="public-processing-card"):
+            st.html(f'<div class="public-processing-brand"><img alt="" src="{mark_uri}"><span><strong>Future of Work</strong><small>MSU-IIT · Job Market Analytics</small></span></div><h1 class="public-processing-title">Analyzing your dataset</h1><p class="public-processing-copy">Applying the public classifier and shared analysis pipeline.</p>')
+            message = st.empty()
+            message.html('<p class="public-processing-status">Preparing your research analysis…</p>')
+            bar, value = st.columns([1, .07], vertical_alignment="center", gap="small")
+            with bar:
+                progress = st.progress(0)
+            with value:
+                percent = st.empty()
+                percent.html('<span class="public-processing-percent">0%</span>')
+            st.html('<p class="public-processing-privacy">Your upload is processed for this session and is not saved to researcher tables or project files.</p>')
+
+    def update(value, text):
+        percentage = min(100, max(0, int(float(value) * 100)))
+        progress.progress(percentage)
+        message.html(f'<p class="public-processing-status">{escape_html(str(text))}</p>')
+        percent.html(f'<span class="public-processing-percent">{percentage}%</span>')
+
+    try:
+        result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
+    except Exception as exc:
+        st.session_state["public_error"] = str(exc)
+        st.session_state["public_stage"] = "review"
+        st.rerun()
+    st.session_state["public_result"] = result
+    st.session_state["public_stage"] = "results"
+    st.session_state.pop("public_error", None)
+    st.rerun()
+
+
 def main():
     _style()
     result = st.session_state.get("public_result")
@@ -500,26 +588,31 @@ def main():
         return
 
     stage = st.session_state.get("public_stage", "upload")
+    if stage == "processing":
+        _process_pending_upload()
+        return
+    if stage not in {"upload", "review"}:
+        st.session_state["public_stage"] = stage = "upload"
     if stage == "review" and st.session_state.get("public_preview") is None:
         st.session_state["public_stage"] = stage = "upload"
     content = st.session_state.get("public_content")
     preview = st.session_state.get("public_preview")
     mapping = dict(st.session_state.get("public_mapping", {}))
-    start_analysis = False
+    _topbar(1 if stage == "upload" else 2)
+    if st.session_state.get("public_error"):
+        st.error(st.session_state["public_error"])
+    if ENGINE.get("classifierStatus") == "interim":
+        st.warning(ENGINE.get("classifierNotice") or "The public classifier is interim. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
 
-    with st.container(key="public-flow-shell"):
-        if ENGINE.get("classifierStatus") == "interim":
-            st.warning(ENGINE.get("classifierNotice") or "A temporary classifier is enabled. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
-
-        if stage == "upload":
-            _topbar(1)
-            left, right = st.columns([1.65, 1], gap="large", vertical_alignment="top")
+    if stage == "upload":
+        with st.container(key="public-upload-layout"):
+            left, right = st.columns([1.65, .95], gap="medium", vertical_alignment="top")
             with left, st.container(key="public-upload-card"):
-                st.subheader("Upload your job advertisements")
-                st.caption("Drop your CSV file here or select it from your device.")
-                st.caption("CSV format · Up to 4 MB · 100,000 records")
                 uploaded = st.file_uploader("Select a CSV file", type=["csv"], key=f"public_upload_{st.session_state.get('public_upload_key', 0)}",
-                                            help="Your file is analyzed in this app session and is not added to the research workspace.")
+                                            help="Your file is processed for this session and is not added to the research workspace.",
+                                            label_visibility="collapsed")
+                st.caption("CSV format · Up to 4 MB · 100,000 records")
+                st.markdown('<p class="public-privacy">Your upload stays in this browser session until you start analysis.</p>', unsafe_allow_html=True)
                 if uploaded is None and st.session_state.get("public_file_hash"):
                     for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                         st.session_state.pop(key, None)
@@ -536,6 +629,7 @@ def main():
                             st.session_state["public_content"] = content
                             st.session_state["public_preview"] = preview
                             st.session_state["public_mapping"] = _suggest_mapping(list(preview.columns))
+                            st.session_state.pop("public_error", None)
                         else:
                             content = st.session_state["public_content"]
                             preview = st.session_state["public_preview"]
@@ -543,32 +637,29 @@ def main():
                         if st.button("Review dataset", type="primary", icon=":material/arrow_forward:", key="public_review_dataset"):
                             st.session_state["public_stage"] = "review"
                             st.rerun()
-                        with st.expander("Preview source rows"):
+                        with st.expander("Preview sample rows"):
                             st.dataframe(preview.head(8), width="stretch", hide_index=True)
                     except (ValueError, OSError) as exc:
                         st.error(str(exc))
                         for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
                             st.session_state.pop(key, None)
             with right, st.container(key="public-workflow-card"):
-                st.subheader("What happens after uploading?")
-                for number, title, detail in (("01", "Check dataset structure", "Review detected fields and sample rows."),
-                                              ("02", "Prepare and analyze", "Clean records and apply the public classifier."),
-                                              ("03", "Explore the findings", "Review trends and PSF-AAI evidence.")):
-                    st.markdown(f"**{number} · {title}**  \n{detail}")
-                st.divider()
-                st.caption("Your CSV stays in this app session and is not added to researcher tables or project files.")
-
-        else:
-            _topbar(2)
-            if content is None or preview is None:
-                st.session_state["public_stage"] = "upload"
-                st.rerun()
-            file_hash = st.session_state["public_file_hash"]
-            file_name = st.session_state["public_filename"]
-            columns = list(preview.columns)
-            mapping = dict(st.session_state.get("public_mapping", {}))
-            left, right = st.columns([1.65, 1], gap="large", vertical_alignment="top")
-            with left, st.container(key="public-mapping-card", border=True):
+                st.html('<h2 class="public-workflow-title">What happens after uploading?</h2><ol class="public-process-rail" aria-label="Analysis process"><li><span class="public-step-number">01</span><span><strong>Check dataset structure</strong><small>Review detected fields and sample rows.</small></span></li><li><span class="public-step-number">02</span><span><strong>Prepare and analyze</strong><small>Clean records and apply the public classifier.</small></span></li><li><span class="public-step-number">03</span><span><strong>Explore the findings</strong><small>Review trends and PSF-AAI evidence.</small></span></li></ol><p class="public-workflow-note">Your CSV is not added to researcher tables or project files.</p>')
+    else:
+        if content is None or preview is None:
+            st.session_state["public_stage"] = "upload"
+            st.rerun()
+        file_hash = st.session_state["public_file_hash"]
+        file_name = st.session_state["public_filename"]
+        columns = list(preview.columns)
+        mapping = dict(st.session_state.get("public_mapping", {}))
+        fields = (*REQUIRED_FIELDS, *OPTIONAL_FIELDS)
+        selected = [st.session_state.get(f"public-map-{file_hash[:10]}-{field}", mapping.get(field, "")) for field in fields]
+        counts = {column: selected.count(column) for column in set(selected) if column}
+        duplicate_columns = {column for column, count in counts.items() if count > 1}
+        with st.container(key="public-review-layout"):
+            left, right = st.columns([1.65, .95], gap="medium", vertical_alignment="top")
+            with left, st.container(key="public-mapping-card"):
                 file_icon, file_details, file_status = st.columns([.16, 1.6, .7], vertical_alignment="center")
                 with file_icon:
                     st.html('<span class="public-file-type">CSV</span>')
@@ -579,63 +670,54 @@ def main():
                     st.html('<span class="public-map-status" data-state="complete">✓ File ready</span>')
                 st.divider()
                 st.subheader("Detected column mapping")
-                st.caption("We suggested matches from your headers. Review and edit each one. Map a job title and at least one detail field to continue.")
+                st.caption("Review the suggested matches. Choose a CSV column for each field; you can edit any match before analysis.")
                 st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
                 for field in REQUIRED_FIELDS:
                     with st.container(key=f"public-map-row-{field}"):
-                        mapping[field] = _mapping_row(field, columns, mapping, file_hash)
+                        mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
                 with st.expander("Optional fields"):
                     st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
                     for field in OPTIONAL_FIELDS:
                         with st.container(key=f"public-map-row-{field}"):
-                            mapping[field] = _mapping_row(field, columns, mapping, file_hash)
+                            mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
                 st.session_state["public_mapping"] = mapping
+                if duplicate_columns:
+                    st.warning("A CSV column is mapped more than once. Choose each source column once to keep its evidence traceable.")
+                with st.expander("Preview sample rows"):
+                    st.dataframe(preview.head(8), width="stretch", hide_index=True)
 
             title_ready = bool(mapping.get("job_title"))
             detail_ready = any(mapping.get(field) for field in REQUIRED_FIELDS[1:])
+            unique = not duplicate_columns
             classifier_ready = bool(ENGINE.get("classifierAvailable"))
-            ready = title_ready and detail_ready and classifier_ready
+            ready = title_ready and detail_ready and unique and classifier_ready
             checks = (("CSV structure validated", True),
-                      ("Job title column identified", title_ready),
-                      ("At least one detail column identified", detail_ready),
+                      ("Job title and detail columns identified", title_ready and detail_ready),
+                      ("Each source column is used once", unique),
                       ("Public classifier available", classifier_ready))
             completed = sum(done for _, done in checks)
-
             with right, st.container(key="public-workflow-card"):
-                st.subheader("Analysis checklist")
-                st.caption("Review the detected fields before analysis begins.")
+                st.html('<h2 class="public-workflow-title">Analysis checklist</h2><p class="public-file-meta">A transparent review before results are generated.</p>')
                 st.html('<div class="public-checklist">' + "".join(
                     f'<div class="public-check" data-state="{"complete" if done else "pending"}"><b aria-hidden="true">{"✓" if done else "○"}</b><span>{label}</span></div>'
                     for label, done in checks) + "</div>")
-                st.html(f'<div class="public-readiness"><span>{"Ready to analyze" if ready else "Complete the required matches"}</span><span>{completed * 25}%</span></div>')
+                st.html(f'<div class="public-readiness"><span>{"Ready to analyze" if ready else "Complete the review"}</span><span>{completed * 25}%</span></div>')
                 st.progress(completed * 25)
-                st.divider()
-                st.caption("Results depend on the structure, quality, and coverage of your dataset.")
+                st.html('<p class="public-workflow-note">Results depend on the structure, quality, and coverage of the uploaded dataset.</p>')
                 if not classifier_ready:
-                    st.warning("The public classifier is unavailable. You can map your columns now; analysis will unlock when the model is available.")
-                back, analyze = st.columns([.85, 1.2], gap="small")
-                with back:
-                    if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload"):
-                        st.session_state["public_stage"] = "upload"
-                        st.rerun()
-                with analyze:
-                    start_analysis = st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
-                                               disabled=not ready, key="public_start_analysis")
-            st.caption("Your upload stays in this app session. It is not saved to researcher tables or project files.")
-
-            if start_analysis:
-                try:
-                    with st.status("Analyzing job advertisements", expanded=True) as status:
-                        progress = st.progress(0, text="Preparing the research analysis…")
-                        def update(value, message):
-                            progress.progress(min(100, max(0, int(value * 100))), text=message)
-                            status.write(message)
-                        result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
-                        st.session_state["public_result"] = result
-                        status.update(label="Analysis complete", state="complete", expanded=False)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+                    st.warning("The public classifier is unavailable. You can review the columns, but analysis cannot start until it is available.")
+        st.markdown('<p class="public-privacy">Your upload is processed for this session and is not saved to researcher tables or project files.</p>', unsafe_allow_html=True)
+        _, back, analyze = st.columns([5, 1, 1.45], gap="small")
+        with back:
+            if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload", width="stretch"):
+                st.session_state["public_stage"] = "upload"
+                st.rerun()
+        with analyze:
+            if st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
+                          disabled=not ready, key="public_start_analysis", width="stretch"):
+                st.session_state["public_stage"] = "processing"
+                st.session_state.pop("public_error", None)
+                st.rerun()
 
     with st.container(key="public-footer"):
         st.caption(f"Future of Work · Philippine job advertisement analysis · v{VERSION}")
