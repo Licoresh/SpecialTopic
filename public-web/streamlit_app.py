@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from html import escape as escape_html
 import json
 from pathlib import Path
 import sys
@@ -11,7 +12,8 @@ import sys
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Future of Work | Public analyzer", page_icon=":material/work:",
+APP_ICON = Path(__file__).resolve().parent / "site" / "assets" / "job_market_mark.svg"
+st.set_page_config(page_title="Future of Work | Public analyzer", page_icon=APP_ICON,
                    layout="wide", initial_sidebar_state="collapsed")
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,26 +54,43 @@ def _style():
     .public-topbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.25rem 0 1rem;border-bottom:1px solid #e5e3e0}
     .public-topbar img{width:clamp(145px,18vw,205px);height:auto}
     .public-version{color:#647184;font-size:.75rem}
-    .public-hero{padding:clamp(1.5rem,4vw,3rem) 0 1.25rem}
+    .st-key-public-flow-shell{padding:clamp(1rem,3vw,2rem);border:1px solid #e5e3e0;border-radius:16px;background:#fff;box-shadow:0 12px 30px #24303d08}
+    .public-hero{padding:1.2rem 0 .65rem}
     .public-eyebrow{margin:0 0 .35rem;color:#78182b;font-size:.75rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
     .public-hero h1{margin:.15rem 0 .55rem;color:#24303d;font-size:clamp(1.8rem,3.2vw,2.6rem);line-height:1.12}
     .public-hero p{max-width:58rem;color:#647184}
-    .public-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:0 0 1.5rem;padding:1rem 1.2rem;border:1px solid #e5e3e0;border-radius:12px;background:#fff}
+    .public-steps{display:grid;grid-template-columns:minmax(0,1fr) minmax(2rem,.28fr) minmax(0,1fr) minmax(2rem,.28fr) minmax(0,1fr);align-items:center;gap:.6rem;margin:0 0 1.25rem;padding:.35rem 0 1.15rem;border-bottom:1px solid #e5e3e0}
     .public-step{display:flex;align-items:center;gap:.7rem;color:#24303d;font-size:.85rem;font-weight:650}
-    .public-step b{display:grid;place-items:center;flex:0 0 34px;height:34px;border-radius:9px;background:#f7edef;color:#78182b}
-    .public-step[data-current="true"] b{background:#78182b;color:#fff}
+    .public-step b{display:grid;place-items:center;flex:0 0 34px;height:34px;border:1px solid #e0e3e8;border-radius:50%;background:#fff;color:#647184;font-size:.78rem}
+    .public-step[data-state="current"] b{border-color:#78182b;background:#78182b;color:#fff;box-shadow:0 2px 8px #78182b26}
+    .public-step[data-state="complete"] b{border-color:#d5ebe3;background:#e8f5f0;color:#17836b}
     .public-step small{display:block;color:#647184;font-size:.72rem;font-weight:400}
+    .public-step-line{height:1px;background:#e5e3e0}
     .st-key-public-upload-card,.st-key-public-workflow-card{height:100%;padding:clamp(1rem,2.5vw,1.75rem);border:1px solid #e5e3e0;border-radius:14px;background:#fff}
-    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:220px;border:1px dashed #b87885;border-radius:12px;background:#fcf8f8}
+    .st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:190px;border:1px dashed #b87885;border-radius:12px;background:#fcf8f8}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button{background:#78182b;color:white;border:0;border-radius:8px;min-height:44px;font-weight:650}
     .st-key-public-upload-card [data-testid="stFileUploaderDropzone"] button:hover{background:#5e1221;color:white}
     .stFormSubmitButton button,.stButton button[kind="primary"],.stDownloadButton button{min-height:44px;border-radius:8px;font-weight:650}
     .stFormSubmitButton button,.stButton button[kind="primary"]{background:#78182b;border-color:#78182b}
+    .public-map-head{display:grid;grid-template-columns:1.5fr 1fr .75fr;gap:.8rem;padding:.55rem .7rem;color:#647184;background:#fafafb;font-size:.72rem;font-weight:750;letter-spacing:.04em;text-transform:uppercase}
+    [class*="st-key-public-map-row-"]{padding:.12rem .65rem;border-bottom:1px solid #eceef1}
+    [class*="st-key-public-map-row-"]:last-child{border-bottom:0}
+    [class*="st-key-public-map-row-"] [data-testid="stHorizontalBlock"]{align-items:center}
+    .public-file-type{display:grid;place-items:center;width:42px;height:42px;border-radius:10px;background:#f7edef;color:#78182b;font-size:.75rem;font-weight:800}
+    .public-filename{color:#24303d;font-size:.88rem;font-weight:700}
+    .public-map-status{display:inline-flex;align-items:center;min-height:1.65rem;padding:.2rem .55rem;border-radius:999px;background:#f1f3f5;color:#647184;font-size:.72rem;font-weight:700;white-space:nowrap}
+    .public-map-status[data-state="complete"]{background:#e8f5f0;color:#17836b}
+    .public-map-status[data-state="required"]{background:#f7edef;color:#78182b}
+    .public-checklist{display:grid;gap:.85rem;margin:.8rem 0 1rem}
+    .public-check{display:flex;align-items:flex-start;gap:.6rem;color:#475569;font-size:.87rem}
+    .public-check b{color:#17836b}
+    .public-check[data-state="pending"] b{color:#9aa2ae}
+    .public-readiness{display:flex;justify-content:space-between;gap:1rem;margin:.9rem 0 .35rem;color:#24303d;font-size:.82rem;font-weight:700}
     .stTabs [data-baseweb="tab-list"]{gap:.25rem;flex-wrap:nowrap;overflow-x:auto;border:1px solid #e5d7d5;border-radius:10px;background:#fff;padding:.25rem}
     .stTabs [data-baseweb="tab"]{min-height:38px;padding:.4rem clamp(.45rem,1vw,.9rem);white-space:nowrap;font-size:.78rem}
     .stTabs [aria-selected="true"]{background:#78182b;color:#fff;border-radius:7px}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{padding-inline:1rem}.st-key-public-flow-shell{padding:1rem}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}}
     </style>""")
 
 
@@ -82,14 +101,18 @@ def _topbar(step: int, *, results: bool = False):
     title = "Analysis results" if results else "Review your dataset" if step == 2 else "Upload your job advertisements"
     intro = ("Explore the shared research charts and evidence for your dataset." if results else
              "Check the detected columns before beginning the analysis." if step == 2 else
-             "Start with a CSV dataset. We’ll guide you through the rest.")
-    st.html(f'<header class="public-hero"><p class="public-eyebrow">MSU-IIT · Philippine jobs · Skills · PSF-AAI</p><h1>{title}</h1><p>{intro}</p></header>')
-    steps = [(1, "Check dataset structure", "Review detected fields and sample rows."),
-             (2, "Prepare and analyze", "Use the research classifier and analysis rules."),
-             (3, "Explore the findings", "Review trends and PSF-AAI evidence.")]
-    st.html('<div class="public-steps" aria-label="Analysis process">' + "".join(
-        f'<div class="public-step" data-current="{index == step}"><b>{index:02}</b><span>{name}<small>{detail}</small></span></div>'
-        for index, name, detail in steps) + "</div>")
+             "Start by selecting a CSV dataset. We’ll guide you through the rest.")
+    steps = [(1, "Upload job data", "Choose your CSV file."),
+             (2, "Review & analyze", "Validate and process data."),
+             (3, "View results", "Explore and export insights.")]
+    step_markup = []
+    for index, name, detail in steps:
+        state = "complete" if index < step else "current" if index == step else "upcoming"
+        number = "✓" if state == "complete" else f"{index:02}"
+        step_markup.append(f'<div class="public-step" data-state="{state}"><b>{number}</b><span>{name}<small>{detail}</small></span></div>')
+    connectors = '<span class="public-step-line" aria-hidden="true"></span>'
+    st.html('<div class="public-steps" aria-label="Analysis process">' + connectors.join(step_markup) + "</div>")
+    st.html(f'<header class="public-hero"><p class="public-eyebrow">STEP {step:02} / 03</p><h1>{title}</h1><p>{intro}</p></header>')
 
 
 def _suggest_mapping(columns):
@@ -118,6 +141,25 @@ def _column_label(name):
     return name
 
 
+def _mapping_row(field, columns, mapping, file_hash):
+    label = FIELD_LABELS.get(field, field.replace("_", " ").title())
+    key = f"public-map-{file_hash[:10]}-{field}"
+    if key not in st.session_state:
+        st.session_state[key] = mapping.get(field, "")
+    source, target, status = st.columns([1.5, 1, .75], vertical_alignment="center")
+    with source:
+        value = st.selectbox(f"CSV column for {label}", ["", *columns],
+            format_func=lambda item: "Choose a column" if not item else _column_label(item),
+            key=key, label_visibility="collapsed", help=f"Choose which CSV column contains {label.lower()}.")
+    with target:
+        st.markdown(f"**{label}**")
+    with status:
+        state = "complete" if value else "required" if field == "job_title" else "pending"
+        text = "Matched" if value else "Required" if field == "job_title" else "Choose a column"
+        st.html(f'<span class="public-map-status" data-state="{state}">{text}</span>')
+    return value
+
+
 def _read_upload(upload):
     content = upload.getvalue()
     if len(content) > MAX_HOSTED_UPLOAD_BYTES:
@@ -131,7 +173,7 @@ def _read_upload(upload):
 
 def _reset():
     st.session_state["public_upload_key"] = st.session_state.get("public_upload_key", 0) + 1
-    for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping", "public_result", "public_error"):
+    for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping", "public_result", "public_error", "public_stage"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -457,73 +499,144 @@ def main():
         st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis · MSU-IIT</footer>')
         return
 
-    _topbar(1)
-    if ENGINE.get("classifierStatus") == "interim":
-        st.warning(ENGINE.get("classifierNotice") or "A temporary classifier is enabled. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
-    left, right = st.columns([1.65, 1], gap="large", vertical_alignment="top")
-    with left, st.container(key="public-upload-card"):
-        st.subheader("Upload your job advertisements")
-        st.caption("Drop a CSV dataset here or select a file from your device.")
-        st.caption("Up to 4 MB · 100,000 records · CSV only")
-        uploaded = st.file_uploader("Select a CSV file", type=["csv"], key=f"public_upload_{st.session_state.get('public_upload_key', 0)}",
-                                    help="Your file is analyzed in this app session and is not added to the research workspace.")
-        if uploaded:
-            try:
-                content, preview = _read_upload(uploaded)
-                file_hash = hashlib.sha256(content).hexdigest()
-                if st.session_state.get("public_file_hash") != file_hash:
-                    st.session_state["public_file_hash"] = file_hash
-                    st.session_state["public_filename"] = Path(uploaded.name).name
-                    st.session_state["public_content"] = content
-                    st.session_state["public_preview"] = preview
-                    st.session_state["public_mapping"] = _suggest_mapping(list(preview.columns))
-                st.success(f"{uploaded.name} · {len(preview):,} records detected")
-                if not ENGINE.get("classifierAvailable"):
-                    st.warning("A public classifier is not available yet. You can inspect and map the file; analysis will unlock when a classifier is published.")
-                with st.form("public-column-mapping"):
-                    st.subheader("Review your dataset")
-                    st.caption("Choose which CSV column matches each field. Every selection stays editable.")
-                    mapping = dict(st.session_state["public_mapping"])
-                    for field in REQUIRED_FIELDS:
-                        mapping[field] = st.selectbox(FIELD_LABELS[field], ["", *preview.columns],
-                            index=(["", *preview.columns].index(mapping.get(field, "")) if mapping.get(field, "") in ["", *preview.columns] else 0),
-                            format_func=lambda value: "Choose a column" if not value else _column_label(value),
-                            key=f"public-map-{file_hash[:10]}-{field}")
-                    with st.expander("Optional fields"):
-                        for field in OPTIONAL_FIELDS:
-                            mapping[field] = st.selectbox(FIELD_LABELS.get(field, field.replace("_", " ").title()), ["", *preview.columns],
-                                index=(["", *preview.columns].index(mapping.get(field, "")) if mapping.get(field, "") in ["", *preview.columns] else 0),
-                                format_func=lambda value: "Not mapped" if not value else _column_label(value),
-                                key=f"public-map-{file_hash[:10]}-{field}")
-                    st.session_state["public_mapping"] = mapping
-                    ready = bool(mapping.get("job_title") and any(mapping.get(field) for field in REQUIRED_FIELDS[1:]))
-                    analyze = st.form_submit_button("Analyze dataset", type="primary", disabled=not (ready and ENGINE.get("classifierAvailable")))
-                if analyze:
-                    st.session_state["public_mapping"] = mapping
+    stage = st.session_state.get("public_stage", "upload")
+    if stage == "review" and st.session_state.get("public_preview") is None:
+        st.session_state["public_stage"] = stage = "upload"
+    content = st.session_state.get("public_content")
+    preview = st.session_state.get("public_preview")
+    mapping = dict(st.session_state.get("public_mapping", {}))
+    start_analysis = False
+
+    with st.container(key="public-flow-shell"):
+        if ENGINE.get("classifierStatus") == "interim":
+            st.warning(ENGINE.get("classifierNotice") or "A temporary classifier is enabled. Results are preliminary until the research model is trained and evaluated.", icon=":material/warning:")
+
+        if stage == "upload":
+            _topbar(1)
+            left, right = st.columns([1.65, 1], gap="large", vertical_alignment="top")
+            with left, st.container(key="public-upload-card"):
+                st.subheader("Upload your job advertisements")
+                st.caption("Drop your CSV file here or select it from your device.")
+                st.caption("CSV format · Up to 4 MB · 100,000 records")
+                uploaded = st.file_uploader("Select a CSV file", type=["csv"], key=f"public_upload_{st.session_state.get('public_upload_key', 0)}",
+                                            help="Your file is analyzed in this app session and is not added to the research workspace.")
+                if uploaded is None and st.session_state.get("public_file_hash"):
+                    for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
+                        st.session_state.pop(key, None)
+                    content = preview = None
+                    mapping = {}
+                if uploaded is not None:
                     try:
-                        with st.status("Analyzing job advertisements", expanded=True) as status:
-                            progress = st.progress(0, text="Preparing the research analysis…")
-                            def update(value, message):
-                                progress.progress(min(100, max(0, int(value * 100))), text=message)
-                                status.write(message)
-                            result = analyze_upload(content, uploaded.name, mapping, hosted=True, progress=update)
-                            st.session_state["public_result"] = result
-                            status.update(label="Analysis complete", state="complete", expanded=False)
-                        st.rerun()
-                    except Exception as exc:
+                        raw_content = uploaded.getvalue()
+                        file_hash = hashlib.sha256(raw_content).hexdigest()
+                        if st.session_state.get("public_file_hash") != file_hash:
+                            content, preview = _read_upload(uploaded)
+                            st.session_state["public_file_hash"] = file_hash
+                            st.session_state["public_filename"] = Path(uploaded.name).name
+                            st.session_state["public_content"] = content
+                            st.session_state["public_preview"] = preview
+                            st.session_state["public_mapping"] = _suggest_mapping(list(preview.columns))
+                        else:
+                            content = st.session_state["public_content"]
+                            preview = st.session_state["public_preview"]
+                        st.success(f"{Path(uploaded.name).name} · {len(preview):,} records detected")
+                        if st.button("Review dataset", type="primary", icon=":material/arrow_forward:", key="public_review_dataset"):
+                            st.session_state["public_stage"] = "review"
+                            st.rerun()
+                        with st.expander("Preview source rows"):
+                            st.dataframe(preview.head(8), width="stretch", hide_index=True)
+                    except (ValueError, OSError) as exc:
                         st.error(str(exc))
-                with st.expander("Preview source rows"):
-                    st.dataframe(preview.head(8), width="stretch", hide_index=True)
-            except (ValueError, OSError) as exc:
-                st.error(str(exc))
-    with right, st.container(key="public-workflow-card"):
-        st.subheader("What happens after uploading?")
-        for number, title, detail in (("01", "Check dataset structure", "Review detected fields and sample rows."),
-                                      ("02", "Prepare and analyze", "Apply the released research classifier and shared analysis rules."),
-                                      ("03", "Explore the findings", "Review trends and PSF-AAI evidence.")):
-            st.markdown(f"**{number} · {title}**  \n{detail}")
-        st.divider()
-        st.caption("Uploads are held in the Streamlit session. This app does not write them or their results to researcher tables or project files.")
+                        for key in ("public_file_hash", "public_filename", "public_content", "public_preview", "public_mapping"):
+                            st.session_state.pop(key, None)
+            with right, st.container(key="public-workflow-card"):
+                st.subheader("What happens after uploading?")
+                for number, title, detail in (("01", "Check dataset structure", "Review detected fields and sample rows."),
+                                              ("02", "Prepare and analyze", "Clean records and apply the public classifier."),
+                                              ("03", "Explore the findings", "Review trends and PSF-AAI evidence.")):
+                    st.markdown(f"**{number} · {title}**  \n{detail}")
+                st.divider()
+                st.caption("Your CSV stays in this app session and is not added to researcher tables or project files.")
+
+        else:
+            _topbar(2)
+            if content is None or preview is None:
+                st.session_state["public_stage"] = "upload"
+                st.rerun()
+            file_hash = st.session_state["public_file_hash"]
+            file_name = st.session_state["public_filename"]
+            columns = list(preview.columns)
+            mapping = dict(st.session_state.get("public_mapping", {}))
+            left, right = st.columns([1.65, 1], gap="large", vertical_alignment="top")
+            with left, st.container(key="public-mapping-card", border=True):
+                file_icon, file_details, file_status = st.columns([.16, 1.6, .7], vertical_alignment="center")
+                with file_icon:
+                    st.html('<span class="public-file-type">CSV</span>')
+                with file_details:
+                    st.html(f'<span class="public-filename">{escape_html(file_name)}</span>')
+                    st.caption(f"Dataset · {len(preview):,} records detected")
+                with file_status:
+                    st.html('<span class="public-map-status" data-state="complete">✓ File ready</span>')
+                st.divider()
+                st.subheader("Detected column mapping")
+                st.caption("We suggested matches from your headers. Review and edit each one. Map a job title and at least one detail field to continue.")
+                st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
+                for field in REQUIRED_FIELDS:
+                    with st.container(key=f"public-map-row-{field}"):
+                        mapping[field] = _mapping_row(field, columns, mapping, file_hash)
+                with st.expander("Optional fields"):
+                    st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
+                    for field in OPTIONAL_FIELDS:
+                        with st.container(key=f"public-map-row-{field}"):
+                            mapping[field] = _mapping_row(field, columns, mapping, file_hash)
+                st.session_state["public_mapping"] = mapping
+
+            title_ready = bool(mapping.get("job_title"))
+            detail_ready = any(mapping.get(field) for field in REQUIRED_FIELDS[1:])
+            classifier_ready = bool(ENGINE.get("classifierAvailable"))
+            ready = title_ready and detail_ready and classifier_ready
+            checks = (("CSV structure validated", True),
+                      ("Job title column identified", title_ready),
+                      ("At least one detail column identified", detail_ready),
+                      ("Public classifier available", classifier_ready))
+            completed = sum(done for _, done in checks)
+
+            with right, st.container(key="public-workflow-card"):
+                st.subheader("Analysis checklist")
+                st.caption("Review the detected fields before analysis begins.")
+                st.html('<div class="public-checklist">' + "".join(
+                    f'<div class="public-check" data-state="{"complete" if done else "pending"}"><b aria-hidden="true">{"✓" if done else "○"}</b><span>{label}</span></div>'
+                    for label, done in checks) + "</div>")
+                st.html(f'<div class="public-readiness"><span>{"Ready to analyze" if ready else "Complete the required matches"}</span><span>{completed * 25}%</span></div>')
+                st.progress(completed * 25)
+                st.divider()
+                st.caption("Results depend on the structure, quality, and coverage of your dataset.")
+                if not classifier_ready:
+                    st.warning("The public classifier is unavailable. You can map your columns now; analysis will unlock when the model is available.")
+                back, analyze = st.columns([.85, 1.2], gap="small")
+                with back:
+                    if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload"):
+                        st.session_state["public_stage"] = "upload"
+                        st.rerun()
+                with analyze:
+                    start_analysis = st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
+                                               disabled=not ready, key="public_start_analysis")
+            st.caption("Your upload stays in this app session. It is not saved to researcher tables or project files.")
+
+            if start_analysis:
+                try:
+                    with st.status("Analyzing job advertisements", expanded=True) as status:
+                        progress = st.progress(0, text="Preparing the research analysis…")
+                        def update(value, message):
+                            progress.progress(min(100, max(0, int(value * 100))), text=message)
+                            status.write(message)
+                        result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
+                        st.session_state["public_result"] = result
+                        status.update(label="Analysis complete", state="complete", expanded=False)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
     with st.container(key="public-footer"):
         st.caption(f"Future of Work · Philippine job advertisement analysis · v{VERSION}")
 
