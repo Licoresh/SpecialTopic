@@ -29,7 +29,7 @@ from src.ui import (featured_result_chart, featured_visual_chart, result_chart_o
                     result_role_distribution)
 from src.visualization import education_bar, heatmap, job_title_trend
 
-PUBLIC_VERSION = "3.0.86"
+PUBLIC_VERSION = "3.0.87"
 
 FIELD_LABELS = {
     "job_title": "Job title", "job_description": "Job description", "required_skills": "Required skills",
@@ -107,9 +107,9 @@ def _style():
     .public-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.9rem}
     .public-file-meta{color:#62585d;font-size:.8rem}
     .public-privacy{margin:.1rem 0 0;color:#62585d;font-size:.78rem}
-    .st-key-public-processing-overlay{position:fixed!important;z-index:100000!important;inset:0!important;width:100vw!important;height:100dvh!important;display:grid!important;place-items:center!important;padding:clamp(1rem,5vw,3rem)!important;overflow:auto!important;background:#19171870!important;backdrop-filter:blur(2px)}
+    .st-key-public-processing-overlay{position:fixed!important;z-index:100000!important;inset:0!important;width:100vw!important;height:100dvh!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:clamp(1rem,5vw,3rem)!important;overflow:auto!important;background:#19171870!important;backdrop-filter:blur(2px)}
     [data-testid="stElementContainer"]:has(.st-key-public-processing-overlay){height:0!important;margin:0!important;padding:0!important}
-    .st-key-public-processing-card{width:min(100%,760px);margin:auto;padding:clamp(1.6rem,5vw,3.5rem);border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
+    .st-key-public-processing-card{position:fixed!important;z-index:100001!important;top:50dvh!important;left:50vw!important;transform:translate(-50%,-50%)!important;width:min(760px,calc(100vw - 2rem))!important;max-height:calc(100dvh - 2rem);margin:0!important;padding:clamp(1.6rem,5vw,3.5rem);overflow:auto;border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
     .public-processing-brand{display:inline-flex;align-items:center;gap:.7rem;margin-bottom:1.7rem;text-align:left}
     .public-processing-brand img{width:46px;height:48px}
     .public-processing-brand strong,.public-processing-brand small{display:block}
