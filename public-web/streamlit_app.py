@@ -42,7 +42,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.118"
+PUBLIC_VERSION = "3.0.119"
 
 
 @st.cache_resource
@@ -75,12 +75,13 @@ def _style():
     [class*="st-key-public_recent_restore"],[class*="st-key-public_recent_save"]{position:fixed!important;left:-10000px!important;top:0!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important}
     [data-testid="stHeader"]{background:transparent;height:0}
     .stApp{background:#f8f5f2}
-    .stMainBlockContainer{--public-page-pad:clamp(1rem,3vw,2.5rem);max-width:1440px;padding:1rem var(--public-page-pad) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
+    .stMainBlockContainer{--public-page-pad:clamp(1rem,3vw,2.5rem);max-width:1440px;padding:0 var(--public-page-pad) 4rem;border:1px solid #ebe4e1;border-radius:18px;background:#fff;box-shadow:0 12px 32px #24303d08}
     .public-topbar{position:relative;isolation:isolate;box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:1rem;min-height:104px;width:calc(100% + var(--public-page-pad) + var(--public-page-pad));margin:0 calc(0px - var(--public-page-pad)) 1rem;padding:1rem var(--public-page-pad);overflow:hidden;border:1px solid #e6d9d7;border-radius:12px 12px 0 0;background:#f9efed}
     .public-topbar:after{position:absolute;z-index:-1;inset:12px 0 0 auto;width:min(36%,430px);content:"";background:url("data:image/svg+xml;base64,__HERO_ART__") right bottom/contain no-repeat;opacity:.9;pointer-events:none}
     .public-topbar img{position:relative;z-index:1;display:block;width:clamp(145px,18vw,205px);height:auto}
     .public-version{position:relative;z-index:1;padding:.35rem .7rem;border:1px solid #e6d9d7;border-radius:999px;background:#fffdfbcc;color:#78182b;font-size:.75rem;font-weight:650}
     .public-stage-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin:.1rem 0 1.1rem}
+    .st-key-public-stage-actions{gap:.55rem;flex-wrap:wrap!important;margin:.1rem 0 1.1rem}
     .public-stage-heading .public-eyebrow{margin:0 0 .25rem;color:#78182b;font-size:.7rem;font-weight:800;letter-spacing:.085em;text-transform:uppercase}
     .public-stage-heading h1{margin:.1rem 0 .35rem;color:#24303d;font-size:clamp(1.45rem,2.5vw,2rem);line-height:1.15;letter-spacing:-.025em}
     .public-stage-heading p:last-child{max-width:65ch;margin:0;color:#62585d;font-size:.86rem}
@@ -157,7 +158,8 @@ def _style():
     .st-key-public-upload-footer [data-testid="stHorizontalBlock"]{align-items:center}
     .st-key-public-processing-overlay{position:fixed!important;z-index:100000!important;inset:0!important;width:100vw!important;height:100dvh!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:clamp(1rem,5vw,3rem)!important;overflow:auto!important;background:#19171870!important;backdrop-filter:blur(2px)}
     .st-key-public-processing-overlay[hidden]{display:none!important}
-    [data-testid="stElementContainer"]:has(.st-key-public-processing-overlay){height:0!important;margin:0!important;padding:0!important}
+    [data-testid="stElementContainer"]:has(.st-key-public-processing-overlay){display:contents!important;height:0!important;margin:0!important;padding:0!important}
+    [data-testid="stLayoutWrapper"]:has(.st-key-public-processing-overlay){display:contents!important}
     .st-key-public-processing-card{position:fixed!important;z-index:100001!important;top:50dvh!important;left:50vw!important;transform:translate(-50%,-50%)!important;width:min(760px,calc(100vw - 2rem))!important;max-height:calc(100dvh - 2rem);margin:0!important;padding:clamp(1.6rem,5vw,3.5rem);overflow:auto;border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
     .public-processing-brand{display:inline-flex;align-items:center;gap:.7rem;margin-bottom:1.7rem;text-align:left}
     .public-processing-brand img{width:46px;height:48px}
@@ -202,7 +204,7 @@ def _style():
     [class*="st-key-result_chart_controls_public"] [data-testid="stCaptionContainer"]{padding-top:.2rem;color:#647184;font-size:.7rem}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
     .stApp:has(.st-key-public-processing-overlay:not([hidden])){overflow:hidden}
-    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.public-result-facts{flex-basis:100%}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
+    @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.public-result-facts{flex-basis:100%}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}.st-key-public-stage-actions{justify-content:flex-start!important}}
     @media(max-width:475px){[class*="st-key-result_chart_selectors_public"] [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}[class*="st-key-result_chart_selectors_public"] [data-testid="stSelectbox"]{min-width:100%}.st-key-public-results-heading{align-items:stretch;flex-wrap:wrap}.st-key-public-results-heading [data-testid="stDownloadButton"]{width:100%}.st-key-public-results-heading [data-testid="stDownloadButton"] button{width:100%}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
     st.html(style)
@@ -224,8 +226,22 @@ def _topbar(step: int):
     st.html('<div class="public-steps" aria-label="Analysis process">' + connectors.join(step_markup) + "</div>")
 
 
-def _stage_heading(step, title, intro, badge):
-    st.html(f'<header class="public-stage-heading"><div><p class="public-eyebrow">STEP {step:02} / 03</p><h1>{escape_html(title)}</h1><p>{escape_html(intro)}</p></div><span class="public-stage-badge">{escape_html(badge)}</span></header>')
+def _stage_heading(step, title, intro, badge, *, download_template=False):
+    heading, actions = st.columns([2.8, 1.4] if download_template else [3, 1],
+                                  vertical_alignment="center")
+    with heading:
+        st.html(f'<header class="public-stage-heading"><div><p class="public-eyebrow">STEP {step:02} / 03</p><h1>{escape_html(title)}</h1><p>{escape_html(intro)}</p></div></header>')
+    with actions:
+        with st.container(horizontal=True, vertical_alignment="center",
+                          horizontal_alignment="right", key="public-stage-actions"):
+            st.html(f'<span class="public-stage-badge">{escape_html(badge)}</span>')
+            if download_template:
+                columns = ("job_title", "job_description", "required_skills", "preferred_skills",
+                           "qualifications", "education_requirement", "experience_requirement",
+                           "location", "company", "posting_date")
+                template = (",".join(columns) + "\r\n").encode("utf-8-sig")
+                st.download_button("Download CSV template", template, "job_ads_template.csv",
+                                   "text/csv", icon=":material/download:", key="public_csv_template")
 
 
 def _column_label(name):
@@ -903,11 +919,11 @@ def main():
         if not can_refresh:
             st.info("The analysis reference has been updated. Use your recent upload to refresh the results.")
         result = None
-    loading_slot = st.empty()
     if result:
         _results_screen(result)
         return
 
+    loading_slot = st.empty()
     stage = st.session_state.get("public_stage", "upload")
     processing = stage == "processing"
     if stage not in {"upload", "review", "processing"}:
@@ -924,7 +940,7 @@ def main():
     mapping = dict(st.session_state.get("public_mapping", {}))
     _topbar(1 if stage == "upload" else 2)
     if stage == "upload":
-        _stage_heading(1, "Upload your job advertisements", "Start by selecting a CSV dataset. We’ll guide you through the rest.", "CSV format · Up to 4 MB")
+        _stage_heading(1, "Upload your job advertisements", "Start by selecting a CSV dataset. We’ll guide you through the rest.", "CSV · Up to 4 MB", download_template=True)
     else:
         _stage_heading(2, "Review your dataset", "Check the detected columns before beginning the analysis.", "Dataset structure")
     if st.session_state.get("public_error"):
