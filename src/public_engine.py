@@ -27,7 +27,7 @@ from .utils import digest
 MAX_LOCAL_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 100_000
-RESULT_SCHEMA_VERSION = 7
+RESULT_SCHEMA_VERSION = 8
 _MODEL_PATH = "public-web/site/model.json"
 _REFERENCE_PATH = "data/reference/psf_aai_default.csv"
 _TOKEN = re.compile(r"(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)", re.UNICODE)
@@ -144,6 +144,7 @@ def automatic_job_scope(jobs):
     included = jobs.loc[jobs.cleaned_text.fillna("").str.strip().ne("")]
     duplicates = duplicate_ids(included.reindex(columns=["source_id", *FIELDS["jobs"]]))
     quality = {"rows": len(jobs), "blank": len(jobs) - len(included), "duplicates": len(duplicates)}
+    included = included.loc[~included.source_id.isin(duplicates)].copy()
     return included, quality, digest(job_comparison_csv(included))
 
 

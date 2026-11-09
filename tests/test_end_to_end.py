@@ -34,6 +34,20 @@ def test_input_to_workbook(workspace, jobs, taxonomy, labeled):
                 "extracted": current_extractions()}
     cached_path_tables, _ = analysis_bundle(source_snapshot=snapshot)
     pd.testing.assert_frame_equal(tables["employer_skill_demand"], cached_path_tables["employer_skill_demand"])
+    duplicate_id = "synthetic-duplicate-ad"
+    duplicate_job = snapshot["jobs"].iloc[[0]].assign(source_id=duplicate_id)
+    duplicate_skills = snapshot["extracted"].loc[
+        snapshot["extracted"].source_id.eq(snapshot["jobs"].source_id.iloc[0])
+    ].assign(source_id=duplicate_id)
+    deduplicated, dedup_meta = analysis_bundle(source_snapshot={
+        **snapshot,
+        "jobs": pd.concat([snapshot["jobs"], duplicate_job], ignore_index=True),
+        "extracted": pd.concat([snapshot["extracted"], duplicate_skills], ignore_index=True),
+    })
+    assert len(deduplicated["cleaned_jobs"]) == len(jobs)
+    assert dedup_meta["dataset_counts"]["jobs"] == len(jobs)
+    for name in ("employer_skill_demand", "chart_skill_demand", "alignment_results", "unmapped_skills"):
+        pd.testing.assert_frame_equal(deduplicated[name], tables[name])
     book = load_workbook(BytesIO(export_excel(tables, meta)))
     assert "employer_skill_demand" in book.sheetnames
     assert book["employer_skill_demand"].max_row > 1
@@ -67,7 +81,9 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     tables, metadata = job_market_bundle()
     demand = tables["chart_skill_demand"]
     assert len(demand) > 0
-    assert public["summary"]["ads"] == tables["cleaned_jobs"].source_id.nunique() == 2
+    assert public["summary"]["ads"] == tables["cleaned_jobs"].source_id.nunique() == 1
+    assert demand.employer_demand_count.eq(1).all()
+    assert len(storage.read_frame("cleaned_jobs")) == 3
     assert metadata["quality"] == {"rows": 3, "duplicates": 1, "blank": 1}
     assert {key: public["summary"][key] for key in metadata["quality"]} == metadata["quality"]
     assert public["summary"]["chartSkills"] == len(demand)
@@ -87,7 +103,9 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Distinct chart skills"] == str(public["summary"]["chartSkills"])
     assert metrics["Distinct phrases withheld"] == str(public["summary"]["withheldPhrases"])
-    assert any("Possible duplicate rows included: 1" in caption.value for caption in app.caption)
+    assert metrics["Cleaned Job ads"] == "1"
+    assert not any("Possible duplicate rows included" in caption.value or "Each ad generates" in caption.value
+                   for caption in app.caption)
     assert any("Upload pending: pending.csv" in warning.value for warning in app.warning)
 
 
@@ -181,12 +199,12 @@ def test_public_results_render_family_and_psf_heatmaps():
     chosen = families.value
     families.set_value([]).run(timeout=30)
     assert heatmap_axes() == {"Reference role"}
-    assert any("Select at least one occupational family" in caption.value for caption in app.caption)
+    assert any("Choose at least one job family" in message.value for message in app.info)
     app.multiselect(key="public_family_selection").set_value(chosen).run(timeout=30)
     assert heatmap_axes() == {"Occupational family", "Reference role"}
     app.multiselect(key="public_psf_heatmap_roles").set_value([]).run(timeout=30)
     assert heatmap_axes() == {"Occupational family"}
-    assert any("Select at least one reference role" in caption.value for caption in app.caption)
+    assert any("Choose at least one reference role" in message.value for message in app.info)
 
 
 def test_pending_upload_does_not_replace_saved_cleaned_jobs(workspace, jobs):

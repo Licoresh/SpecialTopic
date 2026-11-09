@@ -10,7 +10,7 @@ The application supports a researcher-led, descriptive comparison of job-adverti
 
 | Stage | System role | Researcher decision |
 | --- | --- | --- |
-| Prepare data | Map source columns, clean job records, preserve identifiers and source evidence, and flag possible duplicates. | Confirm Philippine provenance, AI/analytics relevance, inclusion, and duplicate handling. |
+| Prepare data | Map source columns, clean job records, preserve identifiers and source evidence, and remove detected duplicates from result inputs. | Confirm Philippine provenance, AI/analytics relevance, inclusion, and duplicate handling. |
 | Verify framework | Extract a reviewable PSF-AAI reference from the official source and retain page and source provenance. | Check competency names, descriptions, codes, roles, levels, and cited pages before activation. |
 | Discover phrases | Find candidate skill phrases and retain normalized text, job-ad occurrence, and context. | Inspect context, refine phrases, and exclude irrelevant candidates. |
 | Label and map | Keep analytical category labels separate from PSF-AAI links; produce model-assisted drafts and candidate matches. | Review each category and each phrase-ad mapping. Multiple competencies require separate source-based rationales. |
@@ -28,7 +28,7 @@ This study does not collect or compare university curricula. Its comparison is e
 
 ## Job text preparation and phrase discovery
 
-Map source columns to the app's job schema; preserve raw bytes and source fields. Cleaning normalizes HTML, Unicode and whitespace and lowercases descriptive job-analysis values, including c++, c#, .net, r, sql and power bi. Technical punctuation is retained. Raw source fields, identifiers, URL paths, dates and official framework records retain their source identity. Empty fields stay empty. A reviewer confirms duplicate removals.
+Map source columns to the app's job schema; preserve raw bytes and source fields. Cleaning normalizes HTML, Unicode and whitespace and lowercases descriptive job-analysis values, including c++, c#, .net, r, sql and power bi. Technical punctuation is retained. Raw source fields, identifiers, URL paths, dates and official framework records retain their source identity. Empty fields stay empty. A reviewer confirms removals when saving the cleaned source dataset. Both public and researcher results also remove detected duplicate ads from the analysis input before extraction, aggregation, chart counts, percentages and insights. The shared rule keeps the first source row in file order: later rows are excluded when normalized mapped fields match, or when nonempty title, employer, location and full description match even if URLs or collection dates differ. Similar titles alone do not remove an ad. Blank mapped job text is excluded. The Cleaned Job ads KPI counts the retained result input; original uploads and review evidence remain available.
 
 The existing NLP pipeline combines exact framework terms and researcher-supplied aliases/keywords with general discovery vocabulary and spaCy lookup lemmatization over candidate n-grams. Every candidate retains its original phrase, normalized phrase, job ID and source context. Candidate limits are recorded. General vocabulary and model predictions are discovery evidence, not human labels or PSF matches. Researchers inspect context, edit phrases and may label a candidate IRRELEVANT.
 

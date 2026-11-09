@@ -795,13 +795,12 @@ function showResults() {
   }
   source.replaceChildren(file, facts);
   $("metrics").replaceChildren(
-    metric("Job ads", summary.ads, "work"),
+    metric("Cleaned Job ads", summary.ads, "work"),
     metric("Distinct chart skills", summary.chartSkills, "chart"),
     metric("Distinct phrases withheld", summary.withheldPhrases, "info"),
     metric("PSF-AAI reference roles", summary.referenceRoles ?? "—", "layer"),
   );
-  const notes = ["Each ad generates short candidate phrases. The withheld total counts unique wording excluded from all skill charts."];
-  if (summary.duplicates) notes.push(`Possible duplicate rows included: ${integer.format(summary.duplicates)}.`);
+  const notes = [];
   if (summary.blank) notes.push(`Rows skipped because mapped job text was blank: ${integer.format(summary.blank)}.`);
   $("metrics-note").textContent = notes.join(" ");
   $("evidence-note").textContent = `Showing ${integer.format(evidence.rows.length)} of ${integer.format(evidence.total)} analyzed ads. Download the cleaned CSV for the complete source rows.`;

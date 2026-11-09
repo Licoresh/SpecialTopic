@@ -205,7 +205,7 @@ cached_label_validation = st.cache_data(show_spinner=False, ttl=60, max_entries=
 
 # Bump only when the calculated result tables or their research meaning change.
 # UI, style, and performance releases must not invalidate the expensive bundle.
-RESULTS_BUNDLE_VERSION = 3
+RESULTS_BUNDLE_VERSION = 4
 
 
 def _clone_analysis_bundle(value):
@@ -2040,7 +2040,7 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
 def analysis_workflow():
     stages = [
         ("Select job ads", "Choose dataset, sources and scope.", "database"),
-        ("Clean and group", "Standardize text and reconcile title variants.", "cleaning_services"),
+        ("Clean and deduplicate", "Remove duplicate ads, standardize text and group title variants.", "cleaning_services"),
         ("Extract and review", "Identify skills, education and experience.", "content_paste_search"),
         ("Compare PSF-AAI", "Match job evidence with PSF-AAI competencies.", "layers"),
         ("Describe results", "Analyze demand, gaps and key findings.", "bar_chart"),
@@ -2067,7 +2067,7 @@ def result_chart_options(*, key_prefix="result_chart", note_below=False, public=
                 "Sort by" if public else "Chart order",
                 ["Alphabetical", "Highest demand", "Lowest demand"], index=1,
                 format_func=(lambda value: {"Alphabetical": "A–Z", "Highest demand": "Highest count",
-                                           "Lowest demand": "Lowest count"}[value]) if public else None,
+                                           "Lowest demand": "Lowest count"}[value]) if public else str,
                 key=f"{key_prefix}_order",
             )
             limit = st.selectbox("Categories to show" if public else "Items per chart",
@@ -2439,7 +2439,7 @@ def _job_market_results(tables, meta, revision=None):
 
 def job_market_metrics(kpis, quality=None):
     metrics = (
-        ("ads", "Job ads", "work", "Selected source rows with job text. Possible duplicates are flagged for review."),
+        ("ads", "Cleaned Job ads", "work", "Job advertisements with mapped text after duplicate removal. All result charts use this cleaned scope."),
         ("chartSkills", "Distinct chart skills", "bar_chart", "Unique grouped skill labels across all selected ads."),
         ("withheldPhrases", "Distinct phrases withheld", "sell", "Unique nonempty candidate phrases that never qualified for a skill chart."),
         ("referenceRoles", "PSF-AAI reference roles", "layers", "Unique roles listed in the released PSF-AAI reference."),
@@ -2449,11 +2449,8 @@ def job_market_metrics(kpis, quality=None):
             with st.container(border=True, key=f"result_metric_{index}"):
                 value = kpis[key]
                 st.metric(label, f"{value:,}" if value is not None else "—", icon=f":material/{icon}:", help=help_text)
-    st.caption("Each ad generates short candidate phrases. The withheld total counts unique wording excluded from all skill charts.")
     if quality:
         details = []
-        if quality["duplicates"]:
-            details.append(f"Possible duplicate rows included: {quality['duplicates']:,}")
         if quality["blank"]:
             details.append(f"Rows skipped because mapped job text was blank: {quality['blank']:,}")
         if details:

@@ -206,10 +206,13 @@ def job_market_bundle():
 
 
 def analysis_bundle(job_filters=None, skill_filters=None, statuses=None, *, source_snapshot=None):
+    from .public_engine import automatic_job_scope
+
     source_snapshot = source_snapshot or {}
     jobs_source = source_snapshot["jobs"] if "jobs" in source_snapshot else storage.read_frame("cleaned_jobs")
     taxonomy = source_snapshot["taxonomy"] if "taxonomy" in source_snapshot else storage.read_frame("cleaned_psf_aai")
     extracted_source = source_snapshot["extracted"] if "extracted" in source_snapshot else current_extractions()
+    jobs_source, _, _ = automatic_job_scope(jobs_source)
     jobs = analysis_jobs(filter_frame(jobs_source, job_filters or {}))
     extracted = extracted_source.copy()
     if not extracted.empty:

@@ -3,6 +3,28 @@ import pytest
 from src.cleaning import clean_text, normalize_text, normalize_url, clean_dataset, duplicate_ids, analysis_jobs, analysis_job_values
 from src.loaders import map_columns
 
+
+def test_automatic_scope_deduplicates_reposts_before_analysis_without_mutating_source():
+    from src.public_engine import automatic_job_scope
+
+    raw = pd.DataFrame([
+        {"job_title": "Analyst", "company": "Example", "location": "Cebu", "job_description": "Python and SQL", "url": "https://example.test/first"},
+        {"job_title": "ANALYST", "company": "Example", "location": "Cebu", "job_description": "<p>Python and SQL</p>", "url": "https://example.test/repost"},
+        {"job_title": "Analyst", "company": "Example", "location": "Cebu", "job_description": "Data governance"},
+        {},
+    ]).fillna("")
+    mapped = map_columns(raw, {column: column for column in raw}, "jobs", "dedup-sample")
+    before = mapped.copy(deep=True)
+    jobs, quality, analysis_id = automatic_job_scope(mapped.iloc[::-1])
+    assert quality == {"rows": 4, "blank": 1, "duplicates": 1}
+    assert jobs.source_id.tolist() == mapped.source_id.iloc[[0, 2]].tolist()
+    assert jobs.url.iloc[0] == "https://example.test/first"
+    repeated, repeated_quality, repeated_id = automatic_job_scope(jobs)
+    assert repeated_quality == {"rows": 2, "blank": 0, "duplicates": 0}
+    assert repeated_id == analysis_id
+    assert repeated.source_id.tolist() == jobs.source_id.tolist()
+    pd.testing.assert_frame_equal(mapped, before)
+
 def test_meaningful_characters():
     assert clean_text("<p>C++ &amp; C# .NET R SQL Power BI</p>\n") == "C++ & C# .NET R SQL Power BI"
     assert normalize_text("  PYTHON\t SQL ") == "python sql"

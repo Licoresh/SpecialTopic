@@ -39,7 +39,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.114"
+PUBLIC_VERSION = "3.0.115"
 
 
 @st.cache_resource
