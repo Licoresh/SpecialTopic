@@ -38,7 +38,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.105"
+PUBLIC_VERSION = "3.0.106"
 
 
 @st.cache_resource
@@ -129,16 +129,22 @@ def _style():
     .public-actions{display:flex;justify-content:flex-end;gap:.55rem;margin-top:.9rem}
     .public-file-meta{color:#62585d;font-size:.8rem}
     .public-result-meta{display:flex;flex-wrap:wrap;align-items:center;gap:.55rem .8rem;min-width:0}
-    .public-result-file{display:flex;flex:1 1 270px;align-items:center;gap:.55rem;min-width:0}
+    .public-result-file{display:flex;flex:1 1 13rem;align-items:center;gap:.55rem;min-width:0}
     .public-result-file-icon{display:grid;flex:0 0 38px;place-items:center;width:38px;height:38px;border-radius:10px;background:#f7edef;color:#78182b;font-size:21px}
     .public-result-file-copy{min-width:0}
     .public-result-file-copy strong,.public-result-file-copy small{display:block}
     .public-result-file-copy strong{color:#24303d;font-size:.84rem;line-height:1.3;overflow-wrap:anywhere}
     .public-result-file-copy small{margin-top:.12rem;color:#62585d;font-size:.71rem}
-    .public-result-facts{display:flex;flex:1 1 390px;flex-wrap:wrap;gap:.35rem}
-    .public-result-fact{display:inline-flex;align-items:baseline;gap:.3rem;min-height:28px;padding:.3rem .55rem;border:1px solid #e9dfdc;border-radius:999px;background:#fcf9f7;font-size:.69rem;line-height:1.25}
+    .public-result-facts{display:flex;flex:2 1 min(32rem,100%);flex-wrap:nowrap;min-width:0;gap:3px;overflow-x:auto;scrollbar-width:thin;container-type:inline-size}
+    .public-result-fact{display:inline-flex;flex:none;align-items:center;gap:.35em;min-height:2.5em;padding:.35em .65em;border:1px solid #e9dfdc;border-radius:999px;background:#fcf9f7;font-size:clamp(.5rem,min(1.6cqi,.44rem + .22vw),.64rem);line-height:1.25;white-space:nowrap}
     .public-result-fact span{color:#647184}
-    .public-result-fact strong{color:#24303d;font-weight:700;overflow-wrap:anywhere}
+    .public-result-fact strong{color:#24303d;font-weight:700}
+    .public-result-fact .public-result-label-compact{display:none}
+    @container(max-width:425px){
+        .public-result-fact{gap:.25em;padding-inline:.28em}
+        .public-result-fact .public-result-label-full{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+        .public-result-fact .public-result-label-compact:not(:empty){display:inline}
+    }
     .public-privacy{margin:.1rem 0 0;color:#62585d;font-size:.78rem}
     .st-key-public-upload-footer{margin-top:1rem;padding-top:.75rem;border-top:1px solid #e6d9d7}
     .st-key-public-upload-footer [data-testid="stHorizontalBlock"]{align-items:center}
@@ -632,15 +638,17 @@ def _results(result):
     model = result["model"]
     details, actions = st.columns([3, 1], vertical_alignment="center")
     with details:
-        facts = (("Classifier", str(model["name"])),
-                 ("Model ID", str(model["version"])),
-                 ("Dataset ID", str(result["datasetHash"][:16])),
-                 ("Analysis input ID", str(result["analysisInputHash"][:16])))
+        facts = (("Classifier", "", str(model["name"])),
+                 ("Model ID", "Model", str(model["version"])),
+                 ("Dataset ID", "CSV", str(result["datasetHash"][:16])),
+                 ("Analysis input ID", "Input", str(result["analysisInputHash"][:16])))
         fact_markup = "".join(
-            f'<span class="public-result-fact"><span>{escape_html(label)}</span><strong>{escape_html(value)}</strong></span>'
-            for label, value in facts
+            f'<span class="public-result-fact"><span class="public-result-label-full">{label}</span>'
+            f'<span class="public-result-label-compact" aria-hidden="true">{short_label}</span>'
+            f'<strong>{escape_html(value)}</strong></span>'
+            for label, short_label, value in facts
         )
-        st.html(f'<div class="public-result-meta" aria-label="Analysis details"><div class="public-result-file"><span class="material-symbols-rounded public-result-file-icon" aria-hidden="true">description</span><div class="public-result-file-copy"><strong>{file_name}</strong><small>{result["summary"]["rows"]:,} CSV rows</small></div></div><div class="public-result-facts">{fact_markup}</div></div>')
+        st.html(f'<div class="public-result-meta"><div class="public-result-file"><span class="material-symbols-rounded public-result-file-icon" aria-hidden="true">description</span><div class="public-result-file-copy"><strong>{file_name}</strong><small>{result["summary"]["rows"]:,} CSV rows</small></div></div><div class="public-result-facts" role="group" aria-label="Analysis details" tabindex="0">{fact_markup}</div></div>')
     with actions:
         if st.button("Analyze another dataset", type="primary", icon=":material/upload_file:",
                      key="public_analyze_another", width="stretch"):
