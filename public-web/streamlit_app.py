@@ -37,12 +37,12 @@ from src.job_profile import selected_timeline
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, automatic_analysis_revision, health
 from src.ui import (analysis_workflow, chart, collect_result_plots, featured_result_chart, featured_visual_chart, job_market_metrics,
-                    alignment_status_insight, chart_evidence_target, ordered_result_table, result_chart_options, result_count_chart,
+                    alignment_status_insight, chart_download_target, chart_evidence_target, ordered_result_table, result_chart_options, result_count_chart,
                     result_heatmap, result_insight, result_single_metric)
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.122"
+PUBLIC_VERSION = "3.0.125"
 
 
 @st.cache_resource
@@ -198,10 +198,11 @@ def _style():
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]:focus-visible{outline:2px solid #d6a33d;outline-offset:-2px}
     .st-key-public-results-heading{align-items:center;justify-content:space-between;gap:1rem;margin:.35rem 0 .5rem;padding-top:.6rem;border-top:1px solid #e5e3e0}
     .st-key-public-results-heading [data-testid="stDownloadButton"] button{min-height:44px;white-space:nowrap}
-    [class*="st-key-result_chart_controls_public"]{margin:.1rem 0 .55rem;padding:0;border:0;border-radius:0;background:transparent}
+    [class*="st-key-result_chart_controls_public"]{margin:.1rem 0 .9rem;padding:.65rem .75rem;border:1px solid #e5d8d2;border-radius:12px;background:#fbf8f6}
     [class*="st-key-result_chart_selectors_public"] [data-testid="stSelectbox"]{min-width:min(12rem,42vw)}
     [class*="st-key-result_chart_controls_public"] [data-testid="stSelectbox"] label{color:#62585d;font-size:.72rem;font-weight:650}
     [class*="st-key-result_chart_controls_public"] [data-testid="stCaptionContainer"]{padding-top:.2rem;color:#647184;font-size:.7rem}
+    [class*="st-key-result_single_"] [data-testid="stMetricValue"],.st-key-public_education_single [data-testid="stMetricValue"]{color:#86142D!important}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
     .stApp:has(.st-key-public-processing-overlay:not([hidden])){overflow:hidden}
     @media(max-width:720px){
@@ -260,7 +261,7 @@ def _style():
         [class*="st-key-result_metric_"] [data-testid="stMetricValue"]{font-size:1.42rem;line-height:1.05}
         [class*="st-key-result_metric_"] [data-testid="stMetricLabel"] p{display:-webkit-box;max-height:2.4em;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;font-size:.62rem;line-height:1.2}
         [class*="st-key-result_metric_"] [data-testid="stMetricIcon"]{left:0;width:30px;height:36px;font-size:23px}
-        .st-key-result_metric_1 [data-testid="stMetricIcon"]{left:-.55rem;width:36px;height:42px}
+        .st-key-result_metric_1 [data-testid="stMetricIcon"]{left:-.25rem;width:28px;height:32px;font-size:19px}
         .fow-analysis-pipeline ol{grid-template-columns:minmax(0,1fr)!important;gap:1.3rem!important}
         .fow-analysis-pipeline li{min-height:68px;padding:.6rem}
         .fow-analysis-pipeline li+li:before{display:grid;place-items:center;content:"↓";position:absolute;z-index:1;top:-1.18rem;left:50%;width:24px;height:16px;transform:translateX(-50%);border-radius:999px;background:#fff;color:#78182b;font-size:1rem;line-height:1}
@@ -271,6 +272,11 @@ def _style():
         .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]{scroll-snap-align:start}
         .st-key-public-results-heading [data-testid="stDownloadButton"]{width:100%}
         .st-key-public-results-heading [data-testid="stDownloadButton"] button{width:100%}
+        [class*="st-key-public_result_chart_header_"] [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.35rem!important}
+        [class*="st-key-public_result_chart_header_"] [data-testid="stHorizontalBlock"]>[data-testid="stLayoutWrapper"]{width:100%!important;flex:1 1 100%!important;min-width:0!important}
+        [class*="st-key-public_result_chart_header_"] [data-testid="stHorizontalBlock"]>[data-testid="stLayoutWrapper"]:last-child [data-testid="stPopover"]{width:max-content!important;margin-left:auto}
+        [class*="st-key-public_result_chart_header_"] [data-testid="stHorizontalBlock"]>[data-testid="stLayoutWrapper"]:last-child [data-testid="stPopover"] button{width:auto!important;min-width:0!important;white-space:nowrap}
+        [class*="st-key-public_result_chart_header_"] [data-testid="stHorizontalBlock"]>[data-testid="stLayoutWrapper"]:last-child [data-testid="stHorizontalBlock"]{justify-content:flex-end!important}
         .public-processing-title{font-size:1.65rem}
         .public-processing-meter{gap:.6rem}
         .public-processing-privacy{font-size:.7rem}
@@ -440,34 +446,22 @@ def _frame(rows, label, value, *, total=None):
 
 
 def _bar(rows, label, value, title, heading, total, key, order, limit, list_title="Top Displayed Skills",
-         *, controls_prefix=None, extra_controls=None, note=None):
+         *, extra_controls=None, note=None):
     frame = rows if isinstance(rows, pd.DataFrame) else _frame(rows, label, value, total=total)
     if frame.empty:
         st.info("No chartable evidence is available for this selection.")
         return
-    selection = {"order": order, "limit": limit}
-
-    def render_controls():
-        if controls_prefix:
-            selection["order"], selection["limit"] = _controls(controls_prefix)
-        if extra_controls:
-            extra_controls()
-
     featured_result_chart(
         label, value, heading, total,
-        lambda: result_count_chart(frame, label, value, title, order=selection["order"],
-                                   limit=selection["limit"], show_heading=False),
-        key=key, render_controls=render_controls if controls_prefix or extra_controls else None,
+        lambda: result_count_chart(frame, label, value, title, order=order,
+                                   limit=limit, show_heading=False),
+        key=key, render_controls=extra_controls,
         card_heading=title, embedded=False, note=note,
     )
 
 
 def _controls(prefix):
     return result_chart_options(key_prefix=prefix, public=True)
-
-
-def _chart_state(prefix):
-    return st.session_state.get(f"{prefix}_order", "Highest demand"), st.session_state.get(f"{prefix}_limit", 15)
 
 
 def _chart_settings(page):
@@ -478,16 +472,14 @@ def _chart_settings(page):
 def _skills(result):
     _chart_settings("Job Market Analysis")
     charts, ads = result["charts"], result["summary"]["ads"]
-    order, limit = _chart_state("public_skills")
+    order, limit = _controls("public_skills")
     items = [("skills", "employer_skill", "employer_demand_count", "Employer-requested skills", "Top requested skills", "skills", "Each ad counts once per grouped skill; skill categories overlap."),
              ("technicalSkills", "skill_label", "job_ads", "Technical skills", "Top technical skills", "technical_skills", "Distinct ads per technical skill."),
              ("enablingSkills", "skill_label", "job_ads", "Enabling and interpersonal skills", "Top enabling skills", "soft_/_enabling_skills", "Distinct ads per enabling skill."),
              ("broadAreas", "category_group", "job_ads", "Broad competency areas", "Most common broad area", "broad_competency_areas", "An ad may contribute to several overlapping areas.")]
-    for index, (source, label, value, title, heading, key, note) in enumerate(items):
+    for source, label, value, title, heading, key, note in items:
         _bar(charts.get(source), label, value, title, heading, ads, key, order, limit,
-             controls_prefix="public_skills" if index == 0 else None, note=note)
-        if index == 0:
-            order, limit = _chart_state("public_skills")
+             note=note)
 
 
 def _heatmap(matrix, title, summary, rows, key, *, count_label="Job advertisements", shares=None, denominators=None,
@@ -517,7 +509,7 @@ def _roles(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
     ads = summary["ads"]
-    order, limit = _chart_state("public_roles")
+    order, limit = _controls("public_roles")
     title_mode = st.session_state.get("public_title_mode", "Most common job titles")
     if title_mode == "Specific titles (alphabetical)":
         title_mode = "Specific job titles"
@@ -532,8 +524,7 @@ def _roles(result):
     }[title_mode]
     title_order = order
     _bar(charts.get(title_source), title_label, "job_ads", title, "Top occupational titles", ads, "titles", title_order, limit,
-         controls_prefix="public_roles", extra_controls=title_controls)
-    order, limit = _chart_state("public_roles")
+         extra_controls=title_controls)
 
     family_sizes = {row["job_family"]: int(row["family_ads"]) for row in charts.get("familyAdCounts", [])}
     skill_rows = _frame(charts.get("skills"), "skill_label", "job_ads", total=ads)
@@ -729,7 +720,7 @@ def _roles(result):
 def _qualifications(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
-    order, limit = _chart_state("public_qualifications")
+    order, limit = _controls("public_qualifications")
     education_note = (f"Education is stated in {summary['withEducation']:,} of {summary['ads']:,} ads. "
                       f"Not stated does not mean education was not required; {summary['educationNeedsReview']:,} stated ads need review.")
     education = pd.DataFrame(charts.get("education", []))
@@ -744,17 +735,17 @@ def _qualifications(result):
                 f"{leaders[0]} has the highest classified count ({max_value:,} of {classified:,} ads with one recognized level).")
         top = list(education.sort_values(["job_ads", "level_order"], ascending=[False, True]).head(3)[["education_level", "job_ads"]].itertuples(index=False, name=None))
         heading = "Stated education requirements by level"
+        figure = education_bar(education)
         if len(education) == 1:
-            with st.container(border=True, key="public-education-single-card"):
-                metric_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
-                with metric_column:
-                    result_single_metric(heading, leaders[0], max_value, "Job advertisements", text,
-                                         key="public_education_single")
-                with insight_column:
-                    result_insight("Education Insight", text, [], "Classified levels")
-                st.caption(education_note)
+            def render_education_metric():
+                result_single_metric(heading, leaders[0], max_value, "Job advertisements", text,
+                                     key="public_education_single", figure=figure)
+                return figure
+            featured_visual_chart(render_education_metric, text, top, key="education",
+                                  insight_title="Education Insight", list_title="Classified levels",
+                                  heading=heading, note=education_note)
         else:
-            featured_visual_chart(lambda: chart(education_bar(education), title=heading, show_heading=False),
+            featured_visual_chart(lambda: chart(figure, title=heading, show_heading=False),
                                   text, top, key="education", insight_title="Education Insight",
                                   list_title="Classified levels", heading=heading, note=education_note)
     else:
@@ -763,9 +754,6 @@ def _qualifications(result):
     if experience.empty:
         st.info("No experience durations could be compared in this selection.")
     else:
-        experience_selection = {"order": order, "limit": limit}
-        def experience_controls():
-            experience_selection["order"], experience_selection["limit"] = _controls("public_qualifications")
         def experience_insight(figure):
             shown = pd.DataFrame([(str(name), int(count)) for trace in figure.data
                                   for name, count in zip(trace.y, trace.x)], columns=["requirement", "job_ads"])
@@ -773,11 +761,11 @@ def _qualifications(result):
             result_insight("Experience Insight", text, top, "Displayed durations")
         featured_visual_chart(
             lambda: result_count_chart(experience, "requirement", "job_ads", "Experience duration distribution",
-                                       order=experience_selection["order"], limit=experience_selection["limit"],
+                                       order=order, limit=limit,
                                        show_heading=False),
             "", [], key="public_experience", insight_title="Experience Insight",
             list_title="Displayed durations", heading="Experience requirements",
-            render_insight=experience_insight, render_controls=experience_controls, embedded=False,
+            render_insight=experience_insight, embedded=False,
             note=(f"Experience was identified in {summary['withExperience']:,} ads. Exact-year median: "
                   f"{summary['experienceExactMedian']} from {summary['experienceExactCount']:,} ads; ranges and open-ended wording remain separate."),
         )
@@ -786,7 +774,7 @@ def _qualifications(result):
 def _psf(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
-    order, limit = _chart_state("public_psf")
+    order, limit = _controls("public_psf")
     roles = charts.get("psfRoles", [])
     role_labels = result.get("reference", {}).get("roles", {})
     role_names = sorted(set(role_labels) | {row["label"] for row in roles})
@@ -806,8 +794,7 @@ def _psf(result):
         denominator = next((int(row["count"]) for row in roles if row["label"] == selected_role), 0)
     _bar(competencies, "psf_competency", "job_ads", "PSF-AAI competencies linked to employer demand", "Most linked competency", denominator,
          "psf_competencies", order, limit, "Top Displayed Competencies",
-         controls_prefix="public_psf", extra_controls=psf_role_control)
-    order, limit = _chart_state("public_psf")
+         extra_controls=psf_role_control)
     _bar(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", "Most represented reference roles", summary["ads"],
          "psf_roles", order, limit, "Top Displayed Roles")
     cells = charts.get("psfHeatmap", [])
@@ -866,15 +853,18 @@ def _psf(result):
 
 def _alignment(result):
     _chart_settings("Employer–PSF Alignment")
+    order, limit = _controls("public_alignment")
     summary = result["summary"]
     rows = _frame(result["charts"].get("alignment"), "status", "evidence_groups")
     if not rows.empty:
         with st.container(border=True, key="public-alignment-evidence-card"):
-            st.subheader("Phrase–competency evidence by status", icon=":material/fact_check:")
-            order, limit = _controls("public_alignment")
+            with st.container(key="public_result_chart_header_alignment"):
+                heading_column, download_slot = st.columns([3.2, 1], vertical_alignment="center")
+                with heading_column:
+                    st.subheader("Phrase–competency evidence by status", icon=":material/fact_check:")
             bar_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
             evidence_slot = st.container()
-            with bar_column, chart_evidence_target(evidence_slot):
+            with bar_column, chart_download_target(download_slot), chart_evidence_target(evidence_slot):
                 status_chart = result_count_chart(
                     rows, "status", "evidence_groups", "Status of Phrase–Competency Evidence Groups",
                     order=order, limit=limit, show_heading=False, value_label="Evidence groups",
@@ -888,16 +878,13 @@ def _alignment(result):
 def _unmapped(result):
     _chart_settings("Unmapped / Emerging Skills")
     charts, summary = result["charts"], result["summary"]
-    order, limit = _chart_state("public_unmapped")
-    for index, (source, title, heading, key) in enumerate((
+    order, limit = _controls("public_unmapped")
+    for source, title, heading, key in (
         ("unmapped", "Unmapped skill evidence", "Most frequent unmapped skill", "unmapped_evidence"),
         ("recurring", "Recurring unmapped phrases for review", "Recurring unmapped skill", "unmapped_recurring"),
-    )):
+    ):
         _bar(charts.get(source), "skill_label", "job_ads", title, heading, summary["ads"], key, order, limit,
-             "Top Displayed Candidates" if source == "recurring" else "Top Displayed Skills",
-             controls_prefix="public_unmapped" if index == 0 else None)
-        if index == 0:
-            order, limit = _chart_state("public_unmapped")
+             "Top Displayed Candidates" if source == "recurring" else "Top Displayed Skills")
     st.caption("A missing PSF-AAI match does not establish a framework gap. Recurrence alone does not establish emergence.")
 
 

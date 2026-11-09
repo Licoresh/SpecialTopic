@@ -2155,12 +2155,24 @@ def ordered_result_table(frame, label, order, value=None):
     return out.sort_values(fields, ascending=[order == "Lowest demand", True] if len(fields) == 2 else True, kind="stable").drop(columns="_display_order")
 
 
-def result_single_metric(title, label, value, unit, detail, *, key):
+def result_single_metric(title, label, value, unit, detail, *, key, figure=None):
     """Show a single observed value with its category and scope instead of a one-item chart."""
     with st.container(key=key):
-        st.subheader(title)
+        download_target = _CHART_DOWNLOAD_TARGET.get()
+        if figure is not None and download_target is not None:
+            with download_target:
+                chart_downloads(figure, title, key=key)
+        elif figure is not None:
+            with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+                st.subheader(title)
+                with st.container(width="content"):
+                    chart_downloads(figure, title, key=key)
+        else:
+            st.subheader(title)
         st.metric(str(label), f"{int(value):,}", help=f"{title}. {detail}")
         st.caption(" · ".join(part for part in (unit, detail) if part))
+        if figure is not None:
+            chart_evidence(figure, title, key)
 
 
 def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False,
@@ -2206,8 +2218,7 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
             detail = f"{share:.1f}% of selected job advertisements. {detail}"
     key_part = "".join(character.lower() if character.isalnum() else "_" for character in f"{title}_{category}")[:72]
     result_single_metric(title, category, count, value_label, detail,
-                         key=f"result_single_{key_part}")
-    chart_evidence(figure, title, key_part)
+                         key=f"result_single_{key_part}", figure=figure)
     return figure
 
 
@@ -2309,9 +2320,10 @@ def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Ke
             if heading:
                 st.subheader(heading, icon=heading_icon)
         elif heading:
-            heading_column, download_slot = st.columns([3.2, 1], vertical_alignment="center")
-            with heading_column:
-                st.subheader(heading, icon=heading_icon)
+            with st.container(key=f"public_result_chart_header_{key}"):
+                heading_column, download_slot = st.columns([3.2, 1], vertical_alignment="center")
+                with heading_column:
+                    st.subheader(heading, icon=heading_icon)
         else:
             download_slot = card_download_slot()
         if render_controls:
@@ -2368,10 +2380,14 @@ def featured_result_chart(label, value, heading, total, render_chart, *, key, re
         embedded = key in {"titles", "selected_title", "unmapped_evidence", "unmapped_recurring", "public_alignment"}
     with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
         if card_heading:
-            st.subheader(card_heading, icon=":material/bar_chart:")
+            with st.container(key=f"public_result_chart_header_{key}"):
+                heading_column, download_slot = st.columns([3.2, 1], vertical_alignment="center")
+                with heading_column:
+                    st.subheader(card_heading, icon=":material/bar_chart:")
+        else:
+            download_slot = card_download_slot()
         if render_controls:
             render_controls()
-        download_slot = card_download_slot()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
         evidence_slot = st.container()
         with chart_column, chart_download_target(download_slot), chart_evidence_target(evidence_slot):
@@ -2434,13 +2450,11 @@ def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row
                 total = int(pd.to_numeric(pd.Series(row_denominators), errors="coerce").reindex(matrix.index).fillna(0).iloc[0])
                 unit = "job ad" if total == 1 else "job ads"
                 detail = f"{share:.1f}% of {total:,} {unit} in this {row_group_label}. Only one cell is present, so there is no category comparison."
-        result_single_metric(title, label, matrix.iat[0, 0], count_label,
-                             detail,
-                             key=f"result_single_heatmap_{digest([title])}")
-        chart_evidence(heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
-                               row_denominators=row_denominators, share_label=share_label,
-                               denominator_label=denominator_label, transpose=transpose),
-                       title, f"single_heatmap_{digest([title])}")
+        figure = heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
+                         row_denominators=row_denominators, share_label=share_label,
+                         denominator_label=denominator_label, transpose=transpose)
+        result_single_metric(title, label, matrix.iat[0, 0], count_label, detail,
+                             key=f"result_single_heatmap_{digest([title])}", figure=figure)
     else:
         key = digest([VERSION, frame_hash(matrix), matrix.index.name, matrix.columns.name, title,
                       frame_hash(pd.DataFrame(share_matrix)) if share_matrix is not None else None,
