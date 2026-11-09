@@ -10,6 +10,13 @@ import os
 from pathlib import Path
 import sys
 
+# Prefer this repository's shared modules even when the host pre-populates
+# PYTHONPATH with the project root later in the search order.
+ROOT = Path(__file__).resolve().parents[1]
+source_root = str(ROOT)
+sys.path[:] = [source_root, *(entry for entry in sys.path
+                              if os.path.abspath(entry or os.getcwd()) != source_root)]
+
 import pandas as pd
 import streamlit as st
 
@@ -17,10 +24,6 @@ APP_ICON = Path(__file__).resolve().parent / "site" / "assets" / "job_market_mar
 st.set_page_config(page_title="Future of Work | Public analyzer", page_icon=APP_ICON,
                    layout="wide", initial_sidebar_state="collapsed")
 
-ROOT = Path(__file__).resolve().parents[1]
-source_root = str(ROOT)
-if source_root not in sys.path:
-    sys.path.insert(0, source_root)
 # The Streamlit watcher uses PYTHONPATH for modules outside the entrypoint folder.
 watch_paths = os.environ.get("PYTHONPATH", "").split(os.pathsep)
 if source_root not in watch_paths:
@@ -39,7 +42,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.116"
+PUBLIC_VERSION = "3.0.117"
 
 
 @st.cache_resource
