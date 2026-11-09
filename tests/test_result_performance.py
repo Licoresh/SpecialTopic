@@ -169,6 +169,9 @@ def test_automatic_kpi_cache_tracks_jobs_and_released_assets(monkeypatch):
     revisions["assets"] = ["model", "new-reference"]
     ui.filtered_bundle(automatic=True)
     assert build.call_count == 3
+    monkeypatch.setitem(public_engine.DEFAULTS, "emerging_min_jobs", 99)
+    ui.filtered_bundle(automatic=True)
+    assert build.call_count == 4
     assert all(call.args == ("cleaned_jobs",) for call in frame_revision.call_args_list)
 
 

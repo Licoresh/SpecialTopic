@@ -29,7 +29,7 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
-from .analytics import job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
+from .analytics import experience_chart_insight, location_chart_insight, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline, selected_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
 from .timeline_table import timeline_table
@@ -545,9 +545,9 @@ def current_analysis():
 
 def filtered_bundle(*, automatic=False):
     if automatic:
-        from .public_engine import automatic_asset_revision
+        from .public_engine import automatic_analysis_revision
 
-        revision = digest([VERSION, storage.frame_revision("cleaned_jobs"), automatic_asset_revision()])
+        revision = digest([VERSION, storage.frame_revision("cleaned_jobs"), automatic_analysis_revision()])
         result = _session_cached_value("_fow_market_bundle_cache", revision, job_market_bundle,
                                        ttl=None, max_entries=1, clone=_clone_analysis_bundle)
         st.session_state["_fow_loaded_bundle_revision"] = revision
@@ -2391,6 +2391,7 @@ def _competency_heatmap_view(cells, roles, competence, limit):
     else:
         matrix = selected_cells.pivot(index="psf_job_role", columns="psf_competency", values="job_ads")
         matrix = matrix.reindex(index=chosen_roles, columns=chosen_competencies).fillna(0).astype(int)
+        matrix = matrix.rename_axis(index="reference role", columns="competency")
         row_denominators = roles.set_index("psf_job_role").job_ads.reindex(matrix.index).fillna(0).astype(int)
         shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
         with heatmap_output:
@@ -2584,6 +2585,7 @@ def _job_market_content(tables, meta, revision=None):
                     else:
                         matrix = selected_family_demand.pivot(index="job_family", columns="skill_label", values="job_ads")
                         matrix = matrix.reindex(index=chosen_families, columns=top_skills).fillna(0).astype(int)
+                        matrix = matrix.rename_axis(index="occupational family", columns="skill")
                         row_denominators = family_sizes.reindex(matrix.index).fillna(0).astype(int)
                         shares = matrix.div(row_denominators.where(row_denominators.gt(0), 1), axis=0).mul(100)
                         cells = selected_family_demand.copy()
@@ -2703,20 +2705,10 @@ def _job_market_content(tables, meta, revision=None):
                                                       "Skills in the selected geographical area", order=order, limit=min(limit, 10), downloads=False)
                 with insight_col:
                     locations_shown = _plotted_counts(location_figure, count_field, "job_ads")
-                    location_summary = "No classifiable location is available in this selection."
-                    if not locations_shown.empty:
-                        maximum = int(locations_shown.job_ads.max())
-                        leaders = locations_shown.loc[locations_shown.job_ads.eq(maximum), count_field].tolist()
-                        location_summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator_for_locations:,} ads."
-                                            if len(locations_shown) == 1 else
-                                            f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator_for_locations:,} ads."
-                                            if len(leaders) == 1 else
-                                            f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator_for_locations:,} ads each.")
-                    skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads").sort_values(
-                        ["job_ads", "skill_label"], ascending=[False, True], kind="stable")
-                    skill_top_rows = list(zip(skill_shown.skill_label.head(3), skill_shown.job_ads.head(3)))
-                    result_insight("Location Insight", f"{location_summary} Skill counts describe this area.",
-                                   skill_top_rows, "Top Displayed Skills")
+                    skill_shown = _plotted_counts(skill_figure, "skill_label", "job_ads")
+                    location_summary, skill_top_rows = location_chart_insight(
+                        locations_shown, skill_shown, count_field, denominator_for_locations)
+                    result_insight("Location Insight", location_summary, skill_top_rows, "Top Displayed Skills")
                 missing_locations = int(focused_locations.loc[focused_locations.location_status.eq("not stated"), "source_id"].nunique())
                 unresolved_locations = int(focused_locations.loc[focused_locations.region.eq("") & focused_locations.location_status.ne("not stated"), "source_id"].nunique())
                 if selected_region == "All":
@@ -2903,14 +2895,7 @@ def _job_market_content(tables, meta, revision=None):
                 st.caption(f"One advertisement states exactly {exact_years.iloc[0]:g} years; a single observation is not summarized as a distribution. Ranges and open-ended wording remain separate.")
             durations = profile["experience_duration_counts"]
             shown = ordered_result_table(durations, "requirement", order, "job_ads").head(limit)
-            summary = "No experience durations could be compared in this selection."
-            top_durations = list(shown.head(3)[["requirement", "job_ads"]].itertuples(index=False, name=None))
-            if top_durations:
-                label, highest = top_durations[0]
-                ties = int(shown.job_ads.eq(highest).sum())
-                summary = (f"{ties:,} displayed durations share the highest count ({highest:,} ads each)."
-                           if ties > 1 else f"{label.capitalize()} is the most frequent duration shown "
-                           f"({highest:,} of {denominator:,} selected ads).")
+            summary, top_durations = experience_chart_insight(shown, denominator)
             if len(shown) > 1:
                 featured_visual_chart(
                     lambda: result_count_chart(shown, "requirement", "job_ads", "Experience duration distribution",

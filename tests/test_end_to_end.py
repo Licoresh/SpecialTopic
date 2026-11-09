@@ -77,6 +77,7 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     ]
     assert public["datasetHash"] == metadata["dataset_id"] == dataset_id
     assert public["analysisInputHash"] == metadata["analysis_input_id"]
+    assert public["analysisRevision"] == metadata["analysis_revision"]
     assert public["model"]["version"] == metadata["classifier_version"]
     assert metadata["filename"] == ""
 
@@ -88,6 +89,33 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     assert metrics["Distinct phrases withheld"] == str(public["summary"]["withheldPhrases"])
     assert any("Possible duplicate rows included: 1" in caption.value for caption in app.caption)
     assert any("Upload pending: pending.csv" in warning.value for warning in app.warning)
+
+
+def test_public_results_refresh_all_sections_when_release_changes(monkeypatch):
+    from pathlib import Path
+    from unittest.mock import Mock
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+    from src import public_engine
+
+    content = b"job_title,job_description\nAnalyst,SQL and collaboration."
+    mapping = {"job_title": "job_title", "job_description": "job_description"}
+    result = public_engine.analyze_upload(content, "jobs.csv", mapping)
+    result["analysisRevision"] = "previous-reference"
+    analyze = Mock(wraps=public_engine.analyze_upload)
+    monkeypatch.setattr(public_engine, "analyze_upload", analyze)
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "public-web/streamlit_app.py")
+    app.session_state["public_content"] = content
+    app.session_state["public_filename"] = "jobs.csv"
+    app.session_state["public_mapping"] = mapping
+    app.session_state["public_result"] = result
+    app.run(timeout=30)
+    assert not app.exception and not app.error
+    assert analyze.call_count == 1
+    assert len(app.tabs) == 6
+    assert app.session_state["public_result"]["analysisRevision"] == public_engine.automatic_analysis_revision()
+    assert app.session_state["public_stage"] == "results"
+    st.cache_resource.clear()
 
 
 def test_research_input_csv_preserves_reviewed_scope_and_rebuilds_cleaning(workspace):

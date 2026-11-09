@@ -28,17 +28,18 @@ if source_root not in watch_paths:
 
 from src.config import FIELDS, TEXT_FIELDS
 from src.column_mapping import suggest_column_mapping
+from src.analytics import experience_chart_insight, location_chart_insight
 from src.design import apply_design
 from src.job_profile import selected_timeline
 from src.loaders import load_data
-from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, RESULT_SCHEMA_VERSION, analyze_upload, health
+from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, automatic_analysis_revision, health
 from src.ui import (analysis_workflow, chart, collect_result_plots, featured_result_chart, featured_visual_chart, job_market_metrics,
                     ordered_result_table, result_chart_options, result_count_chart, result_heatmap, result_insight,
                     result_role_distribution, result_single_metric)
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.107"
+PUBLIC_VERSION = "3.0.108"
 
 
 @st.cache_resource
@@ -358,8 +359,8 @@ def _skills(result):
     order, limit = _controls("public_skills")
     items = [("skills", "employer_skill", "employer_demand_count", "Employer-requested skills", "Top requested skills", "skills", "Each ad counts once per grouped skill; skill categories overlap."),
              ("technicalSkills", "skill_label", "job_ads", "Technical skills", "Top technical skills", "technical_skills", "Distinct ads per technical skill."),
-             ("enablingSkills", "skill_label", "job_ads", "Enabling and interpersonal skills", "Top enabling skills", "enabling_skills", "Distinct ads per enabling skill."),
-             ("broadAreas", "category_group", "job_ads", "Broad competency areas", "Most common broad area", "broad_areas", "An ad may contribute to several overlapping areas.")]
+             ("enablingSkills", "skill_label", "job_ads", "Enabling and interpersonal skills", "Top enabling skills", "soft_/_enabling_skills", "Distinct ads per enabling skill."),
+             ("broadAreas", "category_group", "job_ads", "Broad competency areas", "Most common broad area", "broad_competency_areas", "An ad may contribute to several overlapping areas.")]
     for source, label, value, title, heading, key, note in items:
         st.subheader(title)
         _bar(charts.get(source), label, value, title, heading, ads, key, order, limit)
@@ -466,7 +467,8 @@ def _roles(result):
         location_data = [{"label": row["label"], "count": row["count"]} for row in city_rows if selected_city == "All" or row["label"] == selected_city]
         denominator = int(next((row["count"] for row in region_rows if row["label"] == selected_region), 0))
         location_title, location_label = f"Cities and municipalities in {selected_region}", "locality"
-    _bar(location_data, location_label, "job_ads", location_title, "Top occupational titles", denominator, "locations", order, limit)
+    location_frame = _frame(location_data, location_label, "job_ads", total=denominator)
+    location_denominator = denominator
     if selected_region == "All":
         skill_data = [row for row in charts.get("regionSkillDemand", []) if row["region"]]
         area = "All regions"
@@ -481,7 +483,20 @@ def _roles(result):
     skill_counts = {}
     for row in skill_data:
         skill_counts[row["skill_label"]] = skill_counts.get(row["skill_label"], 0) + int(row["job_ads"])
-    _bar([{"label": label, "count": count} for label, count in skill_counts.items()], "employer_skill", "employer_demand_count",
+    skill_data = [{"label": label, "count": count} for label, count in skill_counts.items()]
+    skill_frame = _frame(skill_data, "skill_label", "job_ads", total=denominator)
+    if location_frame.empty:
+        st.info("No classifiable location is available in this selection.")
+    else:
+        location_summary, top_skills = location_chart_insight(
+            ordered_result_table(location_frame, location_label, order, "job_ads").head(limit),
+            ordered_result_table(skill_frame, "skill_label", order, "job_ads").head(min(limit, 10)),
+            location_label, location_denominator)
+        featured_visual_chart(
+            lambda: result_count_chart(location_frame, location_label, "job_ads", location_title, order=order, limit=limit),
+            location_summary, top_skills, key="public_locations", insight_title="Location Insight",
+            list_title="Top Displayed Skills")
+    _bar(skill_data, "employer_skill", "employer_demand_count",
          f"Skills in {area}", "Top requested skills", denominator, "location_skills", order, min(limit, 10))
 
     monthly = charts.get("timelineByTitle", [])
@@ -502,7 +517,7 @@ def _roles(result):
         peak = int(by_month.job_ads.max()) if not by_month.empty else 0
         peak_months = by_month.loc[by_month.job_ads.eq(peak), "month"].astype(str).tolist()[:3] if peak else []
         summary_text = f"The chosen titles appear in {dated:,} dated ads. The highest recorded monthly count is {peak:,}, in {', '.join(peak_months)}."
-        top = [(title, title_totals.get(title, 0)) for title in timeline_titles]
+        top = sorted(((title, title_totals.get(title, 0)) for title in timeline_titles), key=lambda row: (-row[1], row[0]))
         if monthly_frame.empty:
             st.info("No usable posting dates are available for these job titles.")
         elif monthly_frame.month.nunique() > 1:
@@ -534,6 +549,7 @@ def _qualifications(result):
         heading = "Stated education requirements by level"
         if len(education) == 1:
             result_single_metric(heading, leaders[0], max_value, "Job advertisements", text, key="public_education_single")
+            result_insight("Education Insight", text, [], "Classified levels")
         else:
             featured_visual_chart(lambda: chart(education_bar(education), title=heading, show_heading=False),
                                   text, top, key="education", insight_title="Education Insight",
@@ -546,10 +562,7 @@ def _qualifications(result):
     if shown.empty:
         st.info("No experience durations could be compared in this selection.")
     else:
-        count = int(shown.job_ads.max())
-        leaders = shown.loc[shown.job_ads.eq(count), "requirement"].tolist()
-        text = f"{len(leaders):,} displayed durations share the highest count ({count:,} ads each)." if len(leaders) > 1 else f"{str(leaders[0]).capitalize()} is the most frequent duration shown ({count:,} of {summary['ads']:,} selected ads)."
-        top = list(shown.sort_values(["job_ads", "requirement"], ascending=[False, True]).head(3)[["requirement", "job_ads"]].itertuples(index=False, name=None))
+        text, top = experience_chart_insight(shown, summary["ads"])
         st.subheader("Experience requirements")
         with st.container(border=True):
             result_count_chart(shown, "requirement", "job_ads", "Experience duration distribution", order=order, limit=limit, downloads=True, show_heading=False)
@@ -575,7 +588,7 @@ def _psf(result):
         denominator = next((int(row["count"]) for row in roles if row["label"] == selected_role), 0)
     _bar(competencies, "psf_competency", "job_ads", "PSF-AAI competencies linked to employer demand", "Most linked competency", denominator,
          "psf_competencies", order, limit, "Top Displayed Competencies")
-    _bar(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", "Most represented reference roles", None,
+    _bar(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", "Most represented reference roles", summary["ads"],
          "psf_roles", order, limit, "Top Displayed Roles")
     if roles:
         role_frame = pd.DataFrame([{"psf_job_role": row["label"], "job_ads": row["count"]} for row in roles])
@@ -732,10 +745,12 @@ def main():
     _style()
     _restore_recent_upload()
     result = st.session_state.get("public_result")
-    if result and result.get("schemaVersion") != RESULT_SCHEMA_VERSION:
+    if result and result.get("analysisRevision") != automatic_analysis_revision():
         st.session_state.pop("public_result")
-        st.session_state["public_stage"] = "review"
-        st.info("Analysis has been updated. Start analysis again to refresh your results.")
+        can_refresh = st.session_state.get("public_content") is not None and st.session_state.get("public_filename")
+        st.session_state["public_stage"] = "processing" if can_refresh else "review"
+        if not can_refresh:
+            st.info("The analysis reference has been updated. Use your recent upload to refresh the results.")
         result = None
     loading_slot = st.empty()
     if result:
@@ -747,7 +762,7 @@ def main():
     if stage not in {"upload", "review", "processing"}:
         st.session_state["public_stage"] = stage = "upload"
         processing = False
-    if stage in {"review", "processing"} and st.session_state.get("public_preview") is None:
+    if stage == "review" and st.session_state.get("public_preview") is None:
         st.session_state["public_stage"] = stage = "upload"
         processing = False
     if processing:

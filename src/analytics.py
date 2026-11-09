@@ -410,7 +410,37 @@ def job_skill_breakdown(skills, denominator):
     if "category_conflict" in skills:
         groups = groups.mask(skills.category_conflict.eq(True), "category needs review")
     broad = skills.assign(category_group=groups).groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
+    broad["job_ads_pct"] = broad.job_ads / denominator * 100 if denominator else float("nan")
     return typed, broad
+
+
+def experience_chart_insight(shown, denominator):
+    if shown.empty:
+        return "No experience durations could be compared in this selection.", []
+    ranked = shown.sort_values(["job_ads", "requirement"], ascending=[False, True], kind="stable")
+    label, highest = ranked.iloc[0][["requirement", "job_ads"]]
+    highest = int(highest)
+    ties = int(shown.job_ads.eq(highest).sum())
+    summary = (f"{ties:,} displayed durations share the highest count ({highest:,} ads each)."
+               if ties > 1 else f"{label.capitalize()} is the most frequent duration shown "
+               f"({highest:,} of {denominator:,} selected ads).")
+    return summary, list(ranked.head(3)[["requirement", "job_ads"]].itertuples(index=False, name=None))
+
+
+def location_chart_insight(locations, skills, label, denominator):
+    summary = "No classifiable location is available in this selection."
+    if not locations.empty:
+        maximum = int(locations.job_ads.max())
+        leaders = locations.loc[locations.job_ads.eq(maximum), label].tolist()
+        summary = (f"{leaders[0]} is the only displayed location: {maximum:,} of {denominator:,} ads."
+                   if len(locations) == 1 else
+                   f"{leaders[0]} has the highest displayed location count: {maximum:,} of {denominator:,} ads."
+                   if len(leaders) == 1 else
+                   f"{len(leaders):,} displayed locations tie at {maximum:,} of {denominator:,} ads each.")
+    skills = skills.reindex(columns=["skill_label", "job_ads"])
+    ranked = skills.sort_values(["job_ads", "skill_label"], ascending=[False, True], kind="stable")
+    rows = list(ranked.head(3)[["skill_label", "job_ads"]].itertuples(index=False, name=None))
+    return f"{summary} Skill counts describe this area.", rows
 
 
 def psf_reference_roles(reference):

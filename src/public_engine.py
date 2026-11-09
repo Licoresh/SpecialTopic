@@ -127,6 +127,12 @@ def automatic_asset_revision():
     return [digest((ROOT / path).read_bytes()) for path in (_MODEL_PATH, _REFERENCE_PATH)]
 
 
+def automatic_analysis_revision():
+    """Identify the released inputs that determine every automatic result."""
+    from .preprocessing import EXTRACTION_VERSION
+    return digest([RESULT_SCHEMA_VERSION, automatic_asset_revision(), DEFAULTS, EXTRACTION_VERSION])
+
+
 def automatic_job_scope(jobs):
     """Rebuild the automatic input from mapped values, after any manual screening."""
     if jobs.empty:
@@ -331,6 +337,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     }
     return {
         "schemaVersion": RESULT_SCHEMA_VERSION,
+        "analysisRevision": automatic_analysis_revision(),
         "filename": Path(filename).name,
         "mapping": selected,
         "summary": metrics,

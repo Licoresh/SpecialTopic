@@ -182,7 +182,7 @@ def current_extractions(*, source_ids=None):
 
 def job_market_bundle():
     """Compare the active jobs using the public preset and released reference."""
-    from .public_engine import _model, automatic_job_analysis, automatic_job_scope
+    from .public_engine import _model, automatic_analysis_revision, automatic_job_analysis, automatic_job_scope
 
     jobs, quality, analysis_id = automatic_job_scope(storage.read_frame("cleaned_jobs"))
     if jobs.empty:
@@ -199,6 +199,7 @@ def job_market_bundle():
     dataset_id = str(hashes[0]) if len(hashes) == 1 else ""
     active_upload = storage.read_json("uploads", {}).get("jobs", {})
     metadata = {"dataset_id": dataset_id, "analysis_input_id": analysis_id, "classifier_version": model.version,
+                "analysis_revision": automatic_analysis_revision(),
                 "kpis": kpis, "quality": quality,
                 "filename": active_upload.get("filename", "") if active_upload.get("hash") == dataset_id else ""}
     return tables, metadata
