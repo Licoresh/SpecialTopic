@@ -352,9 +352,29 @@ def _build_manual_review_data():
         if column not in candidates:
             candidates[column] = ""
     from .cleaning import normalize_text
-    missing = candidates.normalized_phrase.eq("")
-    candidates.loc[missing, "normalized_phrase"] = candidates.loc[missing, "phrase"].map(normalize_text)
-    candidates = candidates[candidates.phrase.str.strip().ne("")].drop_duplicates(["normalized_phrase", "source_type", "source_id"])
+    candidates["phrase"] = candidates.phrase.fillna("").astype(str).str.strip()
+    normalized = candidates.normalized_phrase.fillna("").astype(str).str.strip()
+    candidates["normalized_phrase"] = normalized.where(normalized.ne(""), candidates.phrase).map(normalize_text)
+    candidates["source_type"] = candidates.source_type.fillna("").astype(str).str.strip()
+    candidates["source_id"] = candidates.source_id.fillna("").astype(str).str.strip()
+    job_types = candidates.source_type.str.casefold().isin({"jobs", "philippine job advertisement"})
+    candidates.loc[job_types, "source_type"] = "jobs"
+    candidates = candidates[candidates.phrase.ne("")].copy()
+    # Prefer the fullest available evidence when duplicate candidate rows point
+    # to the same normalized phrase in the same advertisement.
+    candidates["_review_order"] = range(len(candidates))
+    candidates["_context_length"] = candidates.original_text.fillna("").astype(str).str.len()
+    candidates["_title_length"] = candidates.job_title.fillna("").astype(str).str.len()
+    occurrence_keys = ["normalized_phrase", "source_type", "source_id"]
+    candidates = (candidates.sort_values(
+        occurrence_keys + ["_context_length", "_title_length"],
+        ascending=[True, True, True, False, False], kind="stable",
+    ).drop_duplicates(occurrence_keys, keep="first")
+      .sort_values("_review_order", kind="stable")
+      .drop(columns=["_review_order", "_context_length", "_title_length"]))
+    # Preserve the source description's exact case; lowercase only the phrase
+    # shown and saved from this researcher review queue.
+    candidates["phrase"] = candidates.phrase.str.lower()
     from .pretrained_suggestions import is_incomplete_phrase, has_phrase_text
     candidates = candidates.loc[candidates.phrase.map(has_phrase_text).astype(bool)].copy()
     candidates["needs_phrase_edit"] = candidates.phrase.map(
@@ -404,6 +424,75 @@ def _review_contexts(frame):
         contexts = archived_job_contexts(storage.ROOT, frame.loc[missing, "source_id"], cached_load_path)
         frame.loc[missing, "original_text"] = frame.loc[missing, "source_id"].map(contexts).fillna("")
     return frame
+
+
+def _highlight_review_phrase(text, phrase):
+    source = "" if text is None or pd.isna(text) else str(text)
+    target = "" if phrase is None or pd.isna(phrase) else str(phrase).strip()
+    if not target:
+        return escape(source), 0
+    pattern = re.compile(re.escape(target), re.IGNORECASE)
+    output, cursor, matches = [], 0, 0
+    for match in pattern.finditer(source):
+        output.append(escape(source[cursor:match.start()]))
+        output.append(f'<mark style="background:#f4d991;color:#4d1020;padding:0 2px;border-radius:3px">{escape(match.group())}</mark>')
+        cursor = match.end()
+        matches += 1
+    output.append(escape(source[cursor:]))
+    return "".join(output), matches
+
+
+@st.fragment
+def _manual_review_source_context(rows):
+    """Select an occurrence and inspect its exact source description."""
+    identity = frame_hash(rows[["normalized_phrase", "source_type", "source_id"]])
+    if st.session_state.get("_manual_context_identity") != identity:
+        st.session_state.pop("manual_review_context_selector", None)
+        st.session_state["_manual_context_identity"] = identity
+
+    choices = rows[["phrase", "job_title", "company", "source_id"]].copy().reset_index(drop=True)
+    choices.columns = ["Phrase", "Job title", "Employer", "Advertisement"]
+    st.caption("Select or double-click an advertisement row to open its full source description.")
+    event = st.dataframe(
+        choices, hide_index=True, width="stretch", height=min(280, 44 + 42 * len(choices)),
+        on_select="rerun", selection_mode="single-row", key="manual_review_context_selector",
+    )
+    selected = list(event.selection.rows)
+    if not selected:
+        st.info("Choose a row above to review where the phrase appears.")
+        return
+
+    row = rows.iloc[selected[0]]
+    phrase = str(row.get("phrase", ""))
+    raw_source = row.get("original_text", "")
+    source = "" if raw_source is None or pd.isna(raw_source) else str(raw_source).strip()
+    title = str(row.get("job_title", "") or "").strip()
+    company = str(row.get("company", "") or "").strip()
+    if title or company:
+        st.markdown(" · ".join(value for value in (title, company) if value))
+    if row.get("source_url"):
+        st.link_button("Open original posting", str(row["source_url"]), icon=":material/open_in_new:")
+    if not source:
+        st.warning("The full source description is unavailable. Ask the workspace admin to restore the original advertisement evidence.")
+        return
+
+    highlighted, count = _highlight_review_phrase(source, phrase)
+    if count:
+        first = re.search(re.escape(phrase), source, flags=re.IGNORECASE)
+        start, end = max(0, first.start() - 100), min(len(source), first.end() + 160)
+        excerpt, _ = _highlight_review_phrase(source[start:end], phrase)
+        st.caption(f"Found {count} matching occurrence{'s' if count != 1 else ''} in this description.")
+        st.html(
+            f'<div style="white-space:pre-wrap;line-height:1.55">'
+            f'{("…" if start else "")}{excerpt}{("…" if end < len(source) else "")}</div>'
+        )
+    else:
+        st.caption("No exact phrase match was found; the phrase may be normalized. Review the full source text below.")
+    with st.container(height=380):
+        st.html(
+            f'<div style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6">'
+            f'{highlighted}</div>'
+        )
 
 @st.cache_data(show_spinner=False)
 def cached_clean(frame, kind, duplicate_list):
@@ -1405,11 +1494,9 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     st.warning("Competency reviews could not be loaded. Check the shared connection and occurrence-mapping migration. Category review remains available.")
                 if not shown.empty:
                     detail_tools = st.container(horizontal=True, key="review_detail_tools")
-                    with detail_tools, st.popover("Source evidence", icon=":material/article:"):
-                        # Context for the selected rows is always loaded, including training
-                        # sources outside the study dataset.
-                        st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
-                        st.caption("Evidence belongs to the advertisement shown in each row. Use All advertisement occurrences to inspect other contexts for the same phrase.")
+                    with detail_tools, st.popover("Review source context", icon=":material/article:"):
+                        _manual_review_source_context(shown)
+                        st.caption("Matching phrases are grouped case-insensitively. Duplicate candidate rows within one advertisement are merged; separate advertisements remain separate evidence.")
                     roles = psf_reference_roles(active_taxonomy)
                     if roles and "job_role" in active_taxonomy:
                         with detail_tools, st.popover("Reference roles", icon=":material/work:"):
@@ -1475,7 +1562,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     page_occurrences.append(occurrence)
                     page_reviews.append(existing)
                     table_row = {
-                        "Phrase": row.get("phrase", ""),
+                        "Phrase": str(row.get("phrase", "")).lower(),
                         "Source ads": int(row.get("source_ads", 0)),
                         "Source advertisement": row.get("source_id", ""),
                         "Category": saved.get("label", "") if saved else "",
@@ -1621,7 +1708,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                             st.warning(f"{len(conflicts)} normalized phrase(s) have more than one category across the saved dataset and this page. Choose one category for each; it will be applied to every occurrence, including previously saved rows.")
                             st.caption("One row per phrase. Choose a category from the values shown for that phrase; the choice will be applied to all saved occurrences.")
                             table = pd.DataFrame([
-                                {"Phrase": item["phrase"], "Existing categories": " · ".join(item["labels"]), "Choose category": "— Choose a category —"}
+                                {"Phrase": str(item["phrase"]).lower(), "Existing categories": " · ".join(item["labels"]), "Choose category": "— Choose a category —"}
                                 for item in conflicts.values()
                             ], index=list(conflicts.keys()))
                             choices = ["— Choose a category —"] + sorted(
