@@ -145,6 +145,10 @@ def test_public_results_render_family_and_psf_heatmaps():
 
     app.run(timeout=30)
     assert heatmap_axes() == {"Occupational family", "Reference role"}
+    roles = app.selectbox(key="public_psf_role").options
+    assert {"Machine Learning Engineer", "Business Analytics Manager", "Chief Technology Officer", "AI Engineer"} <= set(roles)
+    reference = next(table.value for table in app.dataframe if "Framework roles" in table.value)
+    assert set(reference.Competency) >= {"Collaboration", "Research", "Product Management", "Transdisciplinary Thinking"}
     families = app.multiselect(key="public_family_selection")
     chosen = families.value
     families.set_value([]).run(timeout=30)

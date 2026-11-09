@@ -61,8 +61,14 @@ def test_official_pdf_parser_retains_competency_codes_pages_and_roles():
     candidates = TaxonomyMatcher(frame).match_candidates("Statistics")
     assert any(item["psf_competency"] == "Computational Modeling" and
                item["matching_method"] == "competency_profile" for item in candidates)
-    assert len(roles) == 1029 and roles.job_role.nunique() == 28
+    assert roles.job_role.nunique() == 31
     assert "Critical Work" not in set(roles.job_role)
+    evidence = set(roles[["competency_name", "job_role", "proficiency_level", "source_page"]].itertuples(index=False, name=None))
+    assert ("Collaboration", "Data Governance Officer", "Advanced", 55) in evidence
+    assert ("Process Improvement and Optimization", "Business Analytics Manager", "Level 4", 44) in evidence
+    assert ("Product Management", "Chief AI Engineer", "Level 5", 89) in evidence
+    assert ("Product Management", "Chief Technology Officer", "Level 6", 91) in evidence
+    assert ("Research", "Machine Learning Engineer", "Level 3", 72) in evidence
 
 
 def test_bundled_default_reference_matches_the_included_official_pdf():
@@ -74,3 +80,30 @@ def test_bundled_default_reference_matches_the_included_official_pdf():
     assert reference.source_hash.eq(source_hash).all()
     assert reference.review_status.eq("Researcher verified").all()
     assert reference.range_of_application.str.contains("SQL", case=False).any()
+    by_name = reference.set_index("competency_name")
+    assert "Data Governance Officer" in by_name.loc["Collaboration", "job_role"].split("; ")
+    assert "Machine Learning Engineer" in by_name.loc["Research", "job_role"].split("; ")
+    assert by_name.loc["Collaboration", "aliases"] == "collaborate"
+    assert by_name.loc["Research", "aliases"] == "conduct research"
+
+
+def test_research_reference_gets_released_links_for_the_same_source(workspace):
+    from src import storage
+    from src.config import ROOT
+
+    path = workspace / "data/reference/psf_aai_default.csv"
+    path.parent.mkdir(parents=True)
+    path.write_bytes((ROOT / "data/reference/psf_aai_default.csv").read_bytes())
+    reference = pd.read_csv(path, dtype=str, keep_default_na=False).set_index("competency_name", drop=False)
+    saved = reference.loc[["Collaboration", "Research"]].reset_index(drop=True)
+    saved.loc[0, "job_role"] = "Researcher custom role"
+    saved.loc[0, "aliases"] = ""
+    saved.loc[1, "source_hash"] = "other-source"
+    saved.loc[1, "aliases"] = "custom wording"
+    storage.save_frame("cleaned_psf_aai", saved)
+    for effective in (storage.read_frame("cleaned_psf_aai"), training_taxonomy(workspace)):
+        assert effective.loc[0, "aliases"] == "collaborate"
+        assert {"Researcher custom role", "Data Governance Officer"} <= set(effective.loc[0, "job_role"].split("; "))
+        assert effective.loc[1, "aliases"] == "custom wording"
+    original = pd.read_csv(workspace / "data/processed/cleaned_psf_aai.csv", dtype=str, keep_default_na=False)
+    assert original.loc[0, "aliases"] == ""

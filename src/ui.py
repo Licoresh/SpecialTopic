@@ -29,7 +29,7 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
-from .analytics import job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
+from .analytics import job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline, selected_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
 from .timeline_table import timeline_table
@@ -269,7 +269,7 @@ def _load_manual_review_data(labels):
         for path in sorted((storage.ROOT / "train").rglob("*"))
         if path.is_file() and path.suffix.lower() in (".csv", ".xlsx")
     )
-    revision = (str(storage.ROOT), shared, local_files, tuple(
+    revision = (VERSION, str(storage.ROOT), shared, local_files, tuple(
         storage.frame_revision(name) for name in
         ("extractions_original", "cleaned_jobs", "cleaned_psf_aai")
     ), None if shared else storage.frame_revision("team_training_candidates"))
@@ -1295,6 +1295,13 @@ def labeling():
 
 
 
+def _psf_competency_label(reference, key):
+    row = reference.loc[key]
+    aliases = row.get("aliases", "")
+    aliases = str(aliases).strip() if pd.notna(aliases) else ""
+    return f"{row.competency_name} ({aliases})" if aliases else str(row.competency_name)
+
+
 def _category_review(candidates, occurrences, reviewed_phrases, categories, taxonomy, labels, reviewer, auto_train):
     from .cleaning import normalize_text
     if not candidates.empty:
@@ -1351,6 +1358,19 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                         # sources outside the study dataset.
                         st.dataframe(shown[["phrase", "source_type", "source_id", "job_title", "company", "source_url", "original_text"]], hide_index=True, width="stretch", column_config={"source_url": st.column_config.LinkColumn("Original source")})
                         st.caption("Evidence belongs to the advertisement shown in each row. Use All advertisement occurrences to inspect other contexts for the same phrase.")
+                    roles = psf_reference_roles(active_taxonomy)
+                    if roles and "job_role" in active_taxonomy:
+                        with detail_tools, st.popover("Reference roles", icon=":material/work:"):
+                            role = st.selectbox("PSF-AAI reference role", sorted(roles), index=None,
+                                                format_func=roles.__getitem__, key="manual_reference_role",
+                                                placeholder="Choose a framework role")
+                            if role:
+                                applies = active_taxonomy.job_role.fillna("").map(
+                                    lambda values: role in {normalize_text(value) for value in values.split(";")})
+                                fields = [field for field in ("competency_name", "source_page") if field in active_taxonomy]
+                                st.dataframe(active_taxonomy.loc[applies, fields].rename(columns={
+                                    "competency_name": "Competency", "source_page": "Competency PDF page",
+                                }), hide_index=True, width="stretch")
                 from .pretrained_suggestions import (
                     MODEL_ID, MODEL_REVISION,
                     suggestion_key, psf_draft_candidates, draft_complete, PSF_DRAFT_LIMIT,
@@ -1407,7 +1427,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                 table_config["Source advertisement"] = st.column_config.TextColumn(disabled=True, width=200)
                 table_config["PSF-AAI competencies"] = st.column_config.MultiselectColumn(
                     options=sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, "competency_name"]).casefold()),
-                    format_func=lambda key: str(reference.loc[key, "competency_name"]) if key in reference.index else key,
+                    format_func=lambda key: _psf_competency_label(reference, key) if key in reference.index else key,
                     accept_new_options=False, disabled=not mapping_available, width=300,
                     help="Select two or more competencies when this advertisement supports each. Each link requires a separate rationale below.")
                 disabled_columns = ["Phrase", "Source ads", "Source advertisement"]
@@ -1975,7 +1995,7 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
         st.caption(f"Saved by {saved.iloc[0].get('reviewer', '')} · {when}")
     revision = prefix + digest([extraction_id, frame_hash(taxonomy), occurrence_hash(occurrence), frame_hash(saved)])[:16]
     chosen = st.multiselect("PSF-AAI competencies", sorted(reference.index.tolist(), key=lambda key: str(reference.loc[key, 'competency_name']).casefold()), default=defaults,
-                            format_func=lambda key: f"{reference.loc[key, 'competency_name']} ({key})",
+                            format_func=lambda key: f"{_psf_competency_label(reference, key)} ({key})",
                             key=f"psf_choices_{revision}", placeholder="Search and select one or more competencies",
                             help="Select another option to add it. Remove a selected tag with its × button. Each link needs its own source-based rationale.")
     st.caption(f"{len(chosen)} competencies selected. Broad wording alone does not justify multiple links.")
@@ -1995,6 +2015,8 @@ def psf_mapping_review(skills, jobs, taxonomy, mapping, reviews, *, prefix="psf"
         for key in chosen:
             st.write(reference.loc[key, "competency_name"])
             st.caption(str(reference.loc[key].get("competency_description", "")) or "No description supplied in the active reference.")
+            if roles := reference.loc[key].get("job_role", ""):
+                st.caption(f"Framework roles · {roles}")
             if reference.loc[key].get("range_of_application", ""):
                 st.caption("Range of application: " + str(reference.loc[key]["range_of_application"]))
             reasons[key] = st.text_area("Source evidence and rationale", value=old_reasons.get(key, ""),
@@ -2951,8 +2973,9 @@ def _job_market_content(tables, meta, revision=None):
             reference = tables.get("psf_framework_order", tables.get("verified_psf_aai", pd.DataFrame()))
             if "competency_name" not in reference:
                 reference = reference.rename(columns={"psf_competency": "competency_name"})
-            role_options = sorted({role for value in all_linked.psf_job_role.unique()
-                                   for role in value.split("; ") if role})
+            role_labels = psf_reference_roles(reference)
+            role_options = sorted(set(role_labels) | {role for value in all_linked.psf_job_role.unique()
+                                                      for role in value.split("; ") if role})
             def prepare_psf_charts():
                 available = {"psf_chart_demand", "psf_role_competency_demand"}.issubset(tables)
                 psf_views = tables if available else psf_demand_tables(all_linked, jobs, reference, denominator=denominator)
@@ -2972,7 +2995,8 @@ def _job_market_content(tables, meta, revision=None):
                 with st.container(horizontal=True, gap="medium", key="result_psf_controls"):
                     if st.session_state.get("result_psf_role", "All") not in ["All", *role_options]:
                         st.session_state["result_psf_role"] = "All"
-                    role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role")
+                    role = st.selectbox("PSF-AAI reference role", ["All", *role_options], key="result_psf_role",
+                                        format_func=lambda value: role_labels.get(value, value))
                 role_competence, role_denominator = competence, denominator
                 if role != "All":
                     linked = all_linked[all_linked.psf_job_role.str.split("; ").map(lambda roles: role in roles)].copy()
@@ -2990,6 +3014,8 @@ def _job_market_content(tables, meta, revision=None):
                                                    order=order, limit=limit),
                         key="psf_competencies",
                     )
+                elif role != "All":
+                    st.info("No chartable competency evidence for this reference role in the selected advertisements.")
                 st.caption("The reference-role filter applies to competency demand above. The reference-role chart and heatmap below retain the full selected dataset and their own controls. Role links can overlap.")
             competency_role_demand()
             st.subheader("Reference roles", icon=":material/work:")

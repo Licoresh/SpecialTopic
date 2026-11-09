@@ -646,7 +646,8 @@ function renderPsf() {
   const { charts, summary } = result;
   sectionHeading("How does observed demand relate to PSF-AAI?", "An advertisement counts once per competency. Public links are automated candidates for inspection and do not include researcher-only reviews.");
   const roles = charts.psfRoles || [];
-  const roleOptions = [...new Set(roles.map(row => row.label))].sort((a, b) => a.localeCompare(b));
+  const roleOptions = [...new Set([...Object.keys(result.reference?.roles || {}), ...roles.map(row => row.label)])]
+    .sort((a, b) => a.localeCompare(b));
   if (!roleOptions.includes("All")) roleOptions.unshift("All");
   if (!roleOptions.includes(psfRoleFilter)) psfRoleFilter = "All";
   $("panel").append(selectControl("PSF-AAI reference role", roleOptions, psfRoleFilter, value => { psfRoleFilter = value; }, "psf-role"));

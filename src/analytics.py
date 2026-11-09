@@ -413,16 +413,21 @@ def job_skill_breakdown(skills, denominator):
     return typed, broad
 
 
+def psf_reference_roles(reference):
+    field = next((column for column in ("job_role", "psf_job_role") if column in reference), None)
+    if field is None:
+        return {}
+    roles = (role.strip() for value in reference[field].fillna("") for role in str(value).split(";"))
+    return {normalize_text(role): role for role in roles if role}
+
+
 def job_market_kpis(jobs, views, reference):
     """Count the complete evidence for the overview, before chart display filters."""
     demand = views["chart_skill_demand"]
     charted = set(demand.normalized_phrase)
     withheld = set(views["chart_phrase_review"].normalized_phrase.dropna()) - charted - {""}
-    role_field = next((field for field in ("job_role", "psf_job_role") if field in reference), None)
-    role_count = None
-    if role_field and not reference.empty:
-        roles = reference[role_field].map(normalize_text).str.split(";").explode().str.strip()
-        role_count = int(roles[roles.ne("")].nunique())
+    role_count = (len(psf_reference_roles(reference))
+                  if not reference.empty and {"job_role", "psf_job_role"} & set(reference.columns) else None)
     ids = jobs.get("source_id", pd.Series(dtype=str)).dropna().astype(str)
     return {"ads": int(ids[ids.str.strip().ne("")].nunique()), "chartSkills": len(charted),
             "withheldPhrases": len(withheld), "referenceRoles": role_count}

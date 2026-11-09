@@ -9,6 +9,7 @@ from .storage import atomic_bytes
 from .utils import timestamp
 
 OFFICIAL_URL = "https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf"
+COMPETENCY_ALIASES = {"Collaboration": "collaborate", "Research": "conduct research"}
 
 
 def _range_of_application(page_text):
@@ -59,7 +60,7 @@ def parse_framework(path):
     path = Path(path)
     source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     reader = PdfReader(path)
-    records, page_texts = [], []
+    records, page_texts, role_pages = [], [], []
     for number, page in enumerate(reader.pages, 1):
         spans = []
         def capture(text, cm, tm, font, size):
@@ -67,6 +68,11 @@ def parse_framework(path):
                 spans.append((text.strip(), abs(tm[0] * size), tm[5]))
         text = page.extract_text(visitor_text=capture) or ""
         page_texts.append(text)
+        if "Functional Skills and Competencies Enabling Skills and Competencies" in text:
+            titles = [t for t, size, y in spans if 20 <= size <= 24 and 700 < y < 780]
+            if len(titles) != 1:
+                raise ValueError(f"Unrecognized role heading on PDF page {number}; review the source manually.")
+            role_pages.append((number, titles[0], text))
         functional = "FSC Code" in text and "Functional Skills and Competencies (FSC)" in text
         enabling = "ESC-" in text and "Enabling Skills and Competencies (ESC)" in text
         if not (functional or enabling):
@@ -86,7 +92,8 @@ def parse_framework(path):
                    competency_description=summary,
                    competency_category="Functional Skills and Competencies" if functional else "Enabling Skills and Competencies",
                    functional_skill=name if functional else "", enabling_skill=name if enabling else "",
-                   proficiency_level="; ".join(levels), source_page=str(number), source_url=OFFICIAL_URL,
+                   proficiency_level="; ".join(levels), aliases=COMPETENCY_ALIASES.get(name, ""),
+                   source_page=str(number), source_url=OFFICIAL_URL,
                    source_hash=source_hash, review_status="Parsed — needs researcher review")
         records.append(row)
     if not records:
@@ -95,20 +102,17 @@ def parse_framework(path):
     if frame.competency_name.str.casefold().duplicated().any():
         raise ValueError("Duplicate competency definition headings detected; review the PDF layout.")
     links = []
-    for page, text in enumerate(page_texts, 1):
-        if "Functional Skills and Competencies Enabling Skills and Competencies" not in text:
-            continue
-        role = text.splitlines()[0].strip()
-        if not role or "Analytics &" in role or "Skills" in role or role.startswith("Critical Work"):
-            continue
+    names = {name.casefold(): name for name in frame.competency_name}
+    alternatives = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    role_skill = re.compile(r"(?<!\w)(" + alternatives + r")\s+(Level [1-6]|Basic|Intermediate|Advanced)\b", re.I)
+    for page, role, text in role_pages:
         flat = re.sub(r"\s+", " ", text)
-        for row in frame.itertuples():
-            hit = re.search(re.escape(row.competency_name) + r"\s+(Level [1-6]|Basic|Intermediate|Advanced)\b", flat, re.I)
-            if hit:
-                links.append({"competency_name": row.competency_name, "job_role": role,
-                              "proficiency_level": hit.group(1), "source_page": page,
-                              "source_url": OFFICIAL_URL, "source_hash": source_hash})
+        for hit in role_skill.finditer(flat):
+            links.append({"competency_name": names[hit.group(1).casefold()], "job_role": role,
+                          "proficiency_level": hit.group(2), "source_page": page,
+                          "source_url": OFFICIAL_URL, "source_hash": source_hash})
     roles = pd.DataFrame(links, columns=["competency_name", "job_role", "proficiency_level", "source_page", "source_url", "source_hash"])
+    roles = roles.drop_duplicates(["competency_name", "job_role", "proficiency_level"])
     if not roles.empty:
         grouped = roles.groupby("competency_name").job_role.agg(lambda values: "; ".join(sorted(set(values))))
         frame["job_role"] = frame.competency_name.map(grouped).fillna("")
@@ -119,6 +123,51 @@ def parse_framework(path):
             frame.at[index, "competency_description"] = f"{row['competency_description']} Profile details: {detail}"
         frame.at[index, "range_of_application"] = _range_of_application(profile)
     return frame, roles
+
+
+def apply_bundled_role_links(frame, root):
+    """Refresh released links on rows that cite the same official competency."""
+    fields = {"competency_id", "competency_name", "source_hash", "review_status", "job_role"}
+    if frame.empty or not fields.issubset(frame.columns):
+        return frame
+    path = Path(root) / "data/reference/psf_aai_default.csv"
+    if not path.is_file():
+        return frame
+    bundled = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if not fields.issubset(bundled.columns):
+        return frame
+    from .cleaning import normalize_text
+
+    keys = ["competency_id", "competency_name", "source_hash"]
+    official = bundled[bundled.review_status.eq("Researcher verified")].set_index(keys)
+    current = frame.copy()
+    alias_owners = {}
+    for index, row in current.iterrows():
+        for field in ("competency_name", "aliases", "keywords"):
+            for term in str(row.get(field, "")).split(";"):
+                if normalized := normalize_text(term):
+                    alias_owners.setdefault(normalized, set()).add(index)
+
+    for index, row in current.iterrows():
+        key = tuple(row[field] for field in keys)
+        if row["review_status"] != "Researcher verified" or key not in official.index or not key[-1]:
+            continue
+        for field in ("job_role", "aliases"):
+            terms = {normalize_text(term): term.strip() for term in str(row.get(field, "")).split(";") if term.strip()}
+            original_count = len(terms)
+            for term in str(official.loc[key].get(field, "")).split(";"):
+                normalized = normalize_text(term)
+                if normalized and (field != "aliases" or alias_owners.get(normalized, {index}) == {index}):
+                    terms.setdefault(normalized, term.strip())
+            if len(terms) == original_count:
+                continue
+            value = "; ".join(sorted(terms.values())) if field == "job_role" else "; ".join(terms.values())
+            if field not in current:
+                current[field] = ""
+            current.at[index, field] = value
+            if field + "_clean" in current:
+                current.at[index, field + "_clean"] = value
+    return current
 
 
 def enrich_verified_profiles(frame, pdf_path):

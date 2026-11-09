@@ -205,6 +205,7 @@ def training_candidates(root):
 
 def training_taxonomy(root):
     from . import supabase_store, storage
+    from .psf_source import apply_bundled_role_links
     if supabase_store.configured():
         return storage.read_frame("cleaned_psf_aai")
     root = Path(root)
@@ -212,7 +213,7 @@ def training_taxonomy(root):
     if cleaned.exists():
         frame = read_source_table(cleaned)
         if not frame.empty:
-            return frame
+            return apply_bundled_role_links(frame, root)
     detected = [row for row in inspect_training_folder(root) if row["purpose"] == "PSF-AAI data"]
     if len(detected) > 1:
         raise ValueError("Multiple PSF-AAI tables detected. Upload/map the intended taxonomy on Data Upload first.")
@@ -220,5 +221,5 @@ def training_taxonomy(root):
         frame = read_source_table(root / "train" / detected[0]["filename"])
         if "source_page" not in frame or "source_url" not in frame:
             raise ValueError("The PSF-AAI reference needs source_page and source_url fields. Add provenance before mapping.")
-        return frame
+        return apply_bundled_role_links(frame, root)
     return storage.read_frame("cleaned_psf_aai")

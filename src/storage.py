@@ -212,6 +212,13 @@ def _bundled_psf_default():
     return frame
 
 
+def _released_psf_links(name, frame):
+    if name in {"cleaned_psf_aai", "verified_psf_aai"} and not frame.empty:
+        from .psf_source import apply_bundled_role_links
+        return apply_bundled_role_links(frame, ROOT)
+    return frame
+
+
 def initialize():
     for name in ("data/raw", "data/processed", "data/feedback", "data/templates", "models", "outputs/charts", "outputs/tables", "outputs/reports"):
         (ROOT / name).mkdir(parents=True, exist_ok=True)
@@ -358,6 +365,8 @@ def read_frame(name, *, include_source_text=True, columns=None, source_ids=None)
                 frame["original_text"] = frame.source_id.map(source_text).fillna("")
         if name == "cleaned_psf_aai" and frame.empty:
             frame = _bundled_psf_default()
+        else:
+            frame = _released_psf_links(name, frame)
         return frame if include_source_text else frame.drop(columns=["original_text"], errors="ignore")
     if configured():
         if name == "cleaned_psf_aai":
@@ -401,6 +410,7 @@ def read_frame(name, *, include_source_text=True, columns=None, source_ids=None)
         )
         if name == "cleaned_psf_aai" and frame.empty:
             return _bundled_psf_default()
+        frame = _released_psf_links(name, frame)
         return frame if include_source_text else frame.drop(columns=["original_text"], errors="ignore")
     except pd.errors.EmptyDataError:
         if name == "cleaned_psf_aai":

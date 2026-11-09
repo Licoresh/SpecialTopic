@@ -898,6 +898,26 @@ def test_manual_review_multiple_links_roundtrip_and_source_isolation(ui_workspac
     assert not mapping.loc[~mapping.extraction_id.eq(occurrence_id), "mapping_review_status"].eq("REVIEWED").any()
 
 
+def test_manual_review_shows_official_roles_and_searchable_competencies(ui_workspace, jobs):
+    import pandas as pd
+    from src.config import ROOT
+
+    taxonomy = pd.read_csv(ROOT / "data/reference/psf_aai_default.csv", dtype=str, keep_default_na=False)
+    storage.save_frame("cleaned_jobs", jobs)
+    storage.save_frame("cleaned_psf_aai", taxonomy)
+    run_extraction()
+    app = page_app("Manual Labeling")
+    assert not app.exception and not app.error
+    editor = next(table for table in app.dataframe if "PSF-AAI competencies" in table.value)
+    assert "Collaboration (collaborate)" in editor.proto.columns
+    assert "Research (conduct research)" in editor.proto.columns
+    picker = app.selectbox(key="manual_reference_role")
+    assert {"Machine Learning Engineer", "Data Governance Officer"} <= set(picker.options)
+    picker.set_value("machine learning engineer").run(timeout=60)
+    evidence = next(table.value for table in app.dataframe if "Competency PDF page" in table.value)
+    assert {"Research", "Collaboration"} <= set(evidence.Competency)
+
+
 def test_manual_review_requires_each_rationale_before_saving_categories(ui_workspace, jobs, taxonomy):
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)

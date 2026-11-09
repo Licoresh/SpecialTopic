@@ -38,7 +38,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.106"
+PUBLIC_VERSION = "3.0.107"
 
 
 @st.cache_resource
@@ -562,8 +562,10 @@ def _psf(result):
     charts, summary = result["charts"], result["summary"]
     order, limit = _controls("public_psf")
     roles = charts.get("psfRoles", [])
-    role_names = [row["label"] for row in roles]
-    selected_role = st.selectbox("PSF-AAI reference role", ["All", *role_names], key="public_psf_role")
+    role_labels = result.get("reference", {}).get("roles", {})
+    role_names = sorted(set(role_labels) | {row["label"] for row in roles})
+    selected_role = st.selectbox("PSF-AAI reference role", ["All", *role_names], key="public_psf_role",
+                                 format_func=lambda role: role_labels.get(role, role))
     if selected_role == "All":
         competencies = charts.get("psf", [])
         denominator = summary["ads"]
@@ -602,7 +604,10 @@ def _psf(result):
         st.caption("The PSF-AAI heatmap needs advertisements with role and competency links.")
     if charts.get("psfEvidence"):
         with st.expander("PSF-AAI reference evidence"):
-            st.dataframe(pd.DataFrame(charts["psfEvidence"]), width="stretch", hide_index=True)
+            st.caption("Includes official competencies with zero matching advertisements in this dataset.")
+            st.dataframe(pd.DataFrame(charts["psfEvidence"]).rename(columns={
+                "label": "Competency", "count": "Matching ads", "roles": "Framework roles", "sourcePage": "PDF page",
+            }), width="stretch", hide_index=True)
 
 
 def _alignment(result):

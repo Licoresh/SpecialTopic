@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .alignment import calculate_mapping, summarize_alignment
-from .analytics import chart_mapping_rows, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, unmapped_chart_counts
+from .analytics import chart_mapping_rows, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, unmapped_chart_counts
 from .cleaning import clean_dataset, duplicate_ids, job_comparison_csv, normalize_text
 from .config import DEFAULTS, FIELDS, ROOT
 from .gap_analysis import calculate_gaps
@@ -27,7 +27,7 @@ from .utils import digest
 MAX_LOCAL_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 100_000
-RESULT_SCHEMA_VERSION = 6
+RESULT_SCHEMA_VERSION = 7
 _MODEL_PATH = "public-web/site/model.json"
 _REFERENCE_PATH = "data/reference/psf_aai_default.csv"
 _TOKEN = re.compile(r"(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)", re.UNICODE)
@@ -190,13 +190,14 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
     psf_demand = psf_tables["psf_chart_demand"].copy()
     psf_roles = role_counts.rename(columns={"psf_job_role": "label", "job_ads": "count"})
     references = taxonomy.reindex(columns=["competency_name", "competency_description", "range_of_application",
-                                            "source_page", "source_url"]).fillna("").copy()
+                                            "job_role", "source_page", "source_url"]).fillna("").copy()
     references["psf_competency"] = references.competency_name.map(normalize_text)
     references = references.drop_duplicates("psf_competency")
     methods = (linked.groupby("psf_competency").match_method.apply(lambda values: sorted(set(map(str, values)))).to_dict()
                if not linked.empty and "match_method" in linked else {})
-    psf_references = psf_demand.merge(references, on="psf_competency", how="left")
-    psf_references["methods"] = psf_references.psf_competency.map(methods).apply(lambda value: value or [])
+    psf_references = references.merge(psf_demand, on="psf_competency", how="left")
+    psf_references["job_ads"] = psf_references.job_ads.fillna(0).astype(int)
+    psf_references["methods"] = psf_references.psf_competency.map(lambda name: methods.get(name, []))
     education = education_chart_counts(profile["education_level_counts"])
 
     return {
@@ -224,7 +225,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
         "experience": _counts(profile["experience_duration_counts"], "requirement", "job_ads"),
         "psf": [{"label": str(row.psf_competency), "count": int(row.job_ads), "percent": float(row.job_ads_pct)}
                 for row in psf_demand.sort_values(["job_ads", "psf_competency"], ascending=[False, True], kind="stable").itertuples(index=False)],
-        "psfEvidence": [{"label": str(row.psf_competency), "count": int(row.job_ads),
+        "psfEvidence": [{"label": str(row.competency_name), "count": int(row.job_ads), "roles": str(row.job_role),
                          "methods": row.methods, "description": str(row.competency_description),
                          "range": str(row.range_of_application), "sourcePage": str(row.source_page),
                          "sourceUrl": str(row.source_url)}
@@ -339,7 +340,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
                   "releaseNote": getattr(model, "release_note", "")},
         "reference": {"sourceUrl": str(taxonomy.source_url.iloc[0]) if "source_url" in taxonomy and not taxonomy.empty else "",
                       "sourceHash": str(taxonomy.source_hash.iloc[0]) if "source_hash" in taxonomy and not taxonomy.empty else "",
-                      "competencies": len(taxonomy)},
+                      "competencies": len(taxonomy), "roles": psf_reference_roles(taxonomy)},
         "evidence": {"limit": len(evidence), "total": ads, "rows": evidence},
         "alignmentRates": rates,
         "datasetHash": dataset_hash,
