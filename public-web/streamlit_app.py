@@ -39,7 +39,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.112"
+PUBLIC_VERSION = "3.0.113"
 
 
 @st.cache_resource
@@ -136,6 +136,9 @@ def _style():
     .public-result-file-copy strong,.public-result-file-copy small{display:block}
     .public-result-file-copy strong{color:#24303d;font-size:.84rem;line-height:1.3;overflow-wrap:anywhere}
     .public-result-file-copy small{margin-top:.12rem;color:#62585d;font-size:.71rem}
+    .public-linked-chart-indicator{display:flex;align-items:center;justify-content:center;gap:.5rem;margin:.1rem 0;color:#647184;font-size:.73rem;font-weight:650;line-height:1.3;text-align:center}
+    .public-linked-chart-indicator:before,.public-linked-chart-indicator:after{content:"";flex:1;max-width:72px;height:1px;background:#e5d7d5}
+    .public-linked-chart-indicator .material-symbols-rounded{color:#78182b;font-size:18px}
     .public-result-facts{display:flex;flex:2 1 min(32rem,100%);flex-wrap:nowrap;min-width:0;gap:3px;overflow-x:auto;scrollbar-width:thin;container-type:inline-size}
     .public-result-fact{display:inline-flex;flex:none;align-items:center;gap:.35em;min-height:2.5em;padding:.35em .65em;border:1px solid #e9dfdc;border-radius:999px;background:#fcf9f7;font-size:clamp(.5rem,min(1.6cqi,.44rem + .22vw),.64rem);line-height:1.25;white-space:nowrap}
     .public-result-fact span{color:#647184}
@@ -571,6 +574,8 @@ def _roles(result):
             lambda: result_count_chart(location_frame, location_label, "job_ads", location_title, order=order, limit=limit),
             location_summary, top_skills, key="public_locations", insight_title="Location Insight",
             list_title="Top Displayed Skills", render_controls=location_controls)
+        if not skill_frame.empty:
+            st.html('<div class="public-linked-chart-indicator" role="note"><span class="material-symbols-rounded" aria-hidden="true">link</span><span>Both charts follow your selected region and city</span></div>')
     _bar(skill_data, "employer_skill", "employer_demand_count",
          f"Skills in {area}", "Top requested skills", denominator, "location_skills", order, min(limit, 10))
 
