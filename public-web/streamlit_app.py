@@ -37,7 +37,7 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, job_title_trend
 
-PUBLIC_VERSION = "3.0.102"
+PUBLIC_VERSION = "3.0.103"
 
 
 @st.cache_resource
@@ -154,7 +154,6 @@ def _style():
     .public-processing-status{margin-top:1.4rem;color:#4d1020;font-size:.9rem;font-weight:650}
     .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
     .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
-    .st-key-public-processing-overlay .stProgress>div>div{background:#78182b}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tablist"]{display:flex!important;align-items:stretch;width:100%;flex-wrap:nowrap!important;gap:.25rem!important;overflow-x:auto;overflow-y:hidden;border:1px solid #e5d7d5;border-radius:10px;background:#fcf9f7;padding:.25rem;scrollbar-width:thin;scrollbar-color:#d5c4c2 transparent}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]{box-sizing:border-box;display:flex;flex:1 0 188px;align-items:center;justify-content:center;gap:.45rem;min-width:188px!important;max-width:none;min-height:44px;margin:0;padding:.45rem .55rem;border:0!important;border-radius:7px;background:transparent;color:#24303d;white-space:nowrap;font-size:.78rem;line-height:1.2;text-align:center}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]>div{display:flex;align-items:center;justify-content:center;white-space:nowrap}
@@ -671,11 +670,13 @@ def _process_pending_upload():
 
     try:
         result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
+        update(.95, "Preparing charts and insights for your results.")
+        _results(result)
+        update(1.0, "Your results are ready.")
     except Exception as exc:
         st.session_state["public_error"] = str(exc)
         st.session_state["public_stage"] = "review"
         st.rerun()
-    update(1.0, "Analysis complete. Preparing your results.")
     time.sleep(.45)
     st.session_state["public_result"] = result
     st.session_state["public_stage"] = "results"
