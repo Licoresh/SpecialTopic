@@ -2060,15 +2060,24 @@ def _chart_order_note(order, limit):
     return note + "Alphabetical order supports label lookup, rather than demand ranking."
 
 
-def result_chart_options(*, key_prefix="result_chart", note_below=False):
+def result_chart_options(*, key_prefix="result_chart", note_below=False, public=False):
     with st.container(horizontal=True, gap="medium", vertical_alignment="bottom", key=f"result_chart_controls_{key_prefix}"):
         with st.container(horizontal=True, key=f"result_chart_selectors_{key_prefix}"):
-            order = st.selectbox("Chart order", ["Alphabetical", "Highest demand", "Lowest demand"], index=1, key=f"{key_prefix}_order")
-            limit = st.selectbox("Items per chart", [10, 15, 20, 30], index=1, key=f"{key_prefix}_limit")
-        if not note_below:
+            order = st.selectbox(
+                "Sort by" if public else "Chart order",
+                ["Alphabetical", "Highest demand", "Lowest demand"], index=1,
+                format_func=(lambda value: {"Alphabetical": "A–Z", "Highest demand": "Highest count",
+                                           "Lowest demand": "Lowest count"}[value]) if public else None,
+                key=f"{key_prefix}_order",
+            )
+            limit = st.selectbox("Categories to show" if public else "Items per chart",
+                                 [10, 15, 20, 30], index=1, key=f"{key_prefix}_limit")
+        if not note_below and not public:
             with st.container(key=f"result_chart_note_{key_prefix}"):
                 st.caption(_chart_order_note(order, limit))
-    if note_below:
+        elif public:
+            st.caption("Set the sort order and how many categories to show in this view.")
+    if note_below and not public:
         with st.container(key=f"result_chart_note_{key_prefix}"):
             st.caption(_chart_order_note(order, limit))
     return order, limit
@@ -2091,7 +2100,7 @@ def result_single_metric(title, label, value, unit, detail, *, key):
 
 
 def result_count_chart(frame, label, value, title, *, order="Highest demand", limit=15, highlight_max=False,
-                       downloads=True, show_heading=True):
+                       downloads=True, show_heading=True, value_label="Job advertisements"):
     if frame.empty:
         st.caption("No evidence for this chart in the current selection.")
         return
@@ -2099,10 +2108,10 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
         title = re.sub(r"^Top\b", "Least frequent", title)
         title = re.sub(r"^Most common\b", "Least common", title)
     fields = [field for field in (label, value, "job_ads_pct", "employer_demand_pct", "framework_order") if field in frame]
-    chart_key = digest([VERSION, frame[fields].to_dict("list"), label, value, title, order, limit,
+    chart_key = digest([VERSION, frame[fields].to_dict("list"), label, value, title, order, limit, value_label,
                         st.get_option("theme.primaryColor"), st.get_option("theme.chartCategoricalColors")])
     def prepare_chart():
-        prepared = ranked_bar(frame, label, value, title, order=order, limit=limit)
+        prepared = ranked_bar(frame, label, value, title, order=order, limit=limit, value_label=value_label)
         # Plotly binary-array exports are transport data, not iterable count arrays.
         specification = prepared.to_dict()
         specification["data"][0]["x"] = list(prepared.data[0].x)
@@ -2132,7 +2141,7 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
         if pd.notna(share):
             detail = f"{share:.1f}% of selected job advertisements. {detail}"
     key_part = "".join(character.lower() if character.isalnum() else "_" for character in f"{title}_{category}")[:72]
-    result_single_metric(title, category, count, "Job advertisements", detail,
+    result_single_metric(title, category, count, value_label, detail,
                          key=f"result_single_{key_part}")
     return figure
 
@@ -2225,9 +2234,11 @@ def result_insight(title, summary, rows, list_title="Top 3"):
 
 
 def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Key Insight", list_title="Top 3",
-                          heading=None, heading_icon=":material/bar_chart:", render_insight=None, download_slot=None):
+                          heading=None, heading_icon=":material/bar_chart:", render_insight=None, download_slot=None,
+                          render_controls=None, embedded=None, note=None):
     """Use the reference's single chart-and-insight card without changing data."""
-    embedded = key in {"titles", "family_heatmap", "selected_title", "title_timeline", "psf_competency_demand"}
+    if embedded is None:
+        embedded = key in {"titles", "family_heatmap", "selected_title", "title_timeline", "psf_competency_demand"}
     with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
         if download_slot is not None:
             if heading:
@@ -2238,6 +2249,8 @@ def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Ke
                 st.subheader(heading, icon=heading_icon)
         else:
             download_slot = card_download_slot()
+        if render_controls:
+            render_controls()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
         with chart_column, chart_download_target(download_slot):
             figure = render_chart()
@@ -2246,6 +2259,8 @@ def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Ke
                 render_insight(figure)
             else:
                 result_insight(insight_title, summary, rows, list_title)
+        if note:
+            st.caption(note)
 
 
 def result_role_distribution(roles):
@@ -2279,10 +2294,16 @@ def _plotted_counts(figure, label, value):
                          for name, count in zip(trace.y, trace.x)], columns=[label, value])
 
 
-def featured_result_chart(label, value, heading, total, render_chart, *, key):
+def featured_result_chart(label, value, heading, total, render_chart, *, key, render_controls=None,
+                          card_heading=None, embedded=None, note=None):
     """Derive the companion insight from the exact visible chart rows."""
-    embedded = key in {"titles", "selected_title", "unmapped_evidence", "unmapped_recurring"}
+    if embedded is None:
+        embedded = key in {"titles", "selected_title", "unmapped_evidence", "unmapped_recurring", "public_alignment"}
     with st.container(border=not embedded, key=f"job_market_{'embedded' if embedded else 'featured'}_{key}"):
+        if card_heading:
+            st.subheader(card_heading, icon=":material/bar_chart:")
+        if render_controls:
+            render_controls()
         download_slot = card_download_slot()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
         with chart_column, chart_download_target(download_slot):
@@ -2326,6 +2347,8 @@ def featured_result_chart(label, value, heading, total, render_chart, *, key):
         }.get(key, ("Key Insight", "Top Displayed Skills"))
         with insight_column:
             result_insight(insight_title, summary, rows, list_title)
+        if note:
+            st.caption(note)
 
 
 def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row_denominators=None,

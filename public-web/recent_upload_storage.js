@@ -4,6 +4,8 @@ const SESSION_KEY = "future-of-work-streamlit-upload-session";
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const HEARTBEAT = 6 * 60 * 60 * 1000;
 let database;
+let restoreStarted = false;
+let lastSavedRevision;
 
 function openDatabase() {
   database ??= new Promise((resolve, reject) => {
@@ -109,18 +111,24 @@ async function update(record) {
 }
 
 export default function (component) {
-  const { data, parentElement, setStateValue } = component;
-  if (data.action === "restore" && parentElement.dataset.restored !== "true") {
-    parentElement.dataset.restored = "true";
+  const { data, setStateValue } = component ?? {};
+  if (!data || typeof setStateValue !== "function") return;
+  if (data.action === "restore" && !restoreStarted) {
+    restoreStarted = true;
     restore().then(record => setStateValue("recent", record ?? null))
-      .catch(() => setStateValue("error", "Browser storage is unavailable."));
+      .catch(() => {
+        restoreStarted = false;
+        setStateValue("error", "Browser storage is unavailable.");
+      });
     window.setInterval(() => renew().catch(() => {}), HEARTBEAT);
   }
-  if (["save", "update"].includes(data.action) && data.revision &&
-      parentElement.dataset.savedRevision !== data.revision) {
-    parentElement.dataset.savedRevision = data.revision;
+  if (["save", "update"].includes(data.action) && data.revision && lastSavedRevision !== data.revision) {
+    lastSavedRevision = data.revision;
     const saveRecord = data.action === "save" ? save(data.record) : update(data.record);
     saveRecord.then(() => setStateValue("saved", data.revision))
-      .catch(() => setStateValue("error", "Browser storage is unavailable."));
+      .catch(() => {
+        lastSavedRevision = undefined;
+        setStateValue("error", "Browser storage is unavailable.");
+      });
   }
 }

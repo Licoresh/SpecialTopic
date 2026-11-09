@@ -160,8 +160,8 @@ def distribution(frame, field, title, limit=20, *, order="Highest demand"):
     return fig
 
 
-def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
-    """Display already-aggregated advertisement counts without changing their units."""
+def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20, value_label="Job advertisements"):
+    """Display already-aggregated integer counts without changing their units."""
     if order not in ("Highest demand", "Lowest demand", "Alphabetical", "Framework order"):
         raise ValueError("Choose Highest demand, Lowest demand or Alphabetical chart order.")
     if not isinstance(limit, int) or limit < 1:
@@ -169,7 +169,7 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
     data = frame.copy()
     numbers = pd.to_numeric(data[value], errors="coerce")
     if numbers.isna().any() or numbers.lt(0).any() or numbers.mod(1).ne(0).any():
-        raise ValueError("Advertisement counts must be nonnegative whole numbers.")
+        raise ValueError("Counts must be nonnegative whole numbers.")
     data[value] = numbers.astype(int)
     data["_sort_label"] = data[label].astype(str).str.casefold()
     by, ascending = ([value, "_sort_label"], [order == "Lowest demand", True]) if order in ("Highest demand", "Lowest demand") else (["_sort_label"], [True])
@@ -178,7 +178,7 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
     data = data.sort_values(by, ascending=ascending, kind="stable").head(limit)
     data["_hover_label"] = data[label].map(_hover_text)
     custom = ["_hover_label"]
-    hover = "<b>%{customdata[0]}</b><br>Job advertisements: %{x:,d}"
+    hover = f"<b>%{{customdata[0]}}</b><br>{escape(value_label)}: %{{x:,d}}"
     percentage = next((field for field in ("job_ads_pct", "employer_demand_pct") if field in data), None)
     if percentage:
         custom.append(percentage)
@@ -191,7 +191,7 @@ def ranked_bar(frame, label, value, title, *, order="Highest demand", limit=20):
                           textfont=dict(color="#24303D"), cliponaxis=False,
                           hovertemplate=hover + "<extra></extra>"), layout=dict(title=title))
     maximum = data[value].max() if not data.empty else 0
-    fig.update_xaxes(**count_axis(maximum), range=[0, max(1, maximum * 1.18)], title="Job advertisements",
+    fig.update_xaxes(**count_axis(maximum), range=[0, max(1, maximum * 1.18)], title=value_label,
                      showgrid=False, zeroline=False)
     fig.update_yaxes(autorange="reversed", tickmode="array", tickvals=data[label].tolist(),
                      ticktext=data["_hover_label"].tolist(), title=None, showgrid=False)
