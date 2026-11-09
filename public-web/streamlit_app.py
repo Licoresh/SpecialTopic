@@ -42,7 +42,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.119"
+PUBLIC_VERSION = "3.0.120"
 
 
 @st.cache_resource
@@ -226,7 +226,7 @@ def _topbar(step: int):
     st.html('<div class="public-steps" aria-label="Analysis process">' + connectors.join(step_markup) + "</div>")
 
 
-def _stage_heading(step, title, intro, badge, *, download_template=False):
+def _stage_heading(step, title, intro, badge=None, *, download_template=False):
     heading, actions = st.columns([2.8, 1.4] if download_template else [3, 1],
                                   vertical_alignment="center")
     with heading:
@@ -234,7 +234,8 @@ def _stage_heading(step, title, intro, badge, *, download_template=False):
     with actions:
         with st.container(horizontal=True, vertical_alignment="center",
                           horizontal_alignment="right", key="public-stage-actions"):
-            st.html(f'<span class="public-stage-badge">{escape_html(badge)}</span>')
+            if badge:
+                st.html(f'<span class="public-stage-badge">{escape_html(badge)}</span>')
             if download_template:
                 columns = ("job_title", "job_description", "required_skills", "preferred_skills",
                            "qualifications", "education_requirement", "experience_requirement",
@@ -940,7 +941,7 @@ def main():
     mapping = dict(st.session_state.get("public_mapping", {}))
     _topbar(1 if stage == "upload" else 2)
     if stage == "upload":
-        _stage_heading(1, "Upload your job advertisements", "Start by selecting a CSV dataset. We’ll guide you through the rest.", "CSV · Up to 4 MB", download_template=True)
+        _stage_heading(1, "Upload your job advertisements", "Start by selecting a CSV dataset. We’ll guide you through the rest.", download_template=True)
     else:
         _stage_heading(2, "Review your dataset", "Check the detected columns before beginning the analysis.", "Dataset structure")
     if st.session_state.get("public_error"):
