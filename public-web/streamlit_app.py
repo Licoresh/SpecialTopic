@@ -39,7 +39,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.113"
+PUBLIC_VERSION = "3.0.114"
 
 
 @st.cache_resource
@@ -843,7 +843,7 @@ def _results(result):
 
 def _results_screen(result):
     _results(result)
-    st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis · MSU-IIT</footer>')
+    st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis</footer>')
     _persist_recent_upload()
 
 
