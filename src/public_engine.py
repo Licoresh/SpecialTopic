@@ -10,6 +10,7 @@ import unicodedata
 
 import numpy as np
 import pandas as pd
+from .psf_source import reference_role_profiles
 
 from .alignment import calculate_mapping, summarize_alignment
 from .analytics import chart_mapping_rows, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, unmapped_chart_counts
@@ -27,7 +28,7 @@ from .utils import digest
 MAX_LOCAL_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 100_000
-RESULT_SCHEMA_VERSION = 8
+RESULT_SCHEMA_VERSION = 9
 _MODEL_PATH = "public-web/site/model.json"
 _REFERENCE_PATH = "data/reference/psf_aai_default.csv"
 _TOKEN = re.compile(r"(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)", re.UNICODE)
@@ -124,7 +125,8 @@ def _taxonomy():
 
 
 def automatic_asset_revision():
-    return [digest((ROOT / path).read_bytes()) for path in (_MODEL_PATH, _REFERENCE_PATH)]
+    profiles = ROOT / "data/reference/psf_aai_role_profiles.json"
+    return [digest((ROOT / path).read_bytes()) for path in (_MODEL_PATH, _REFERENCE_PATH)] + [digest(profiles.read_bytes()) if profiles.is_file() else ""]
 
 
 def automatic_analysis_revision():
@@ -197,7 +199,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
     psf_demand = psf_tables["psf_chart_demand"].copy()
     psf_roles = role_counts.rename(columns={"psf_job_role": "label", "job_ads": "count"})
     references = taxonomy.reindex(columns=["competency_name", "competency_description", "range_of_application",
-                                            "job_role", "source_page", "source_url"]).fillna("").copy()
+                                            "job_role", "occupational_family", "source_page", "source_url"]).fillna("").copy()
     references["psf_competency"] = references.competency_name.map(normalize_text)
     references = references.drop_duplicates("psf_competency")
     methods = (linked.groupby("psf_competency").match_method.apply(lambda values: sorted(set(map(str, values)))).to_dict()
@@ -232,12 +234,13 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
         "experience": _counts(profile["experience_duration_counts"], "requirement", "job_ads"),
         "psf": [{"label": str(row.psf_competency), "count": int(row.job_ads), "percent": float(row.job_ads_pct)}
                 for row in psf_demand.sort_values(["job_ads", "psf_competency"], ascending=[False, True], kind="stable").itertuples(index=False)],
-        "psfEvidence": [{"label": str(row.competency_name), "count": int(row.job_ads), "roles": str(row.job_role),
+        "psfEvidence": [{"label": str(row.competency_name), "count": int(row.job_ads), "roles": str(row.job_role), "families": str(row.occupational_family),
                          "methods": row.methods, "description": str(row.competency_description),
                          "range": str(row.range_of_application), "sourcePage": str(row.source_page),
                          "sourceUrl": str(row.source_url)}
                         for row in psf_references.itertuples(index=False)],
         "psfRoles": _counts(psf_roles, "label", "count"),
+        "psfRoleProfiles": reference_role_profiles(ROOT, taxonomy),
         "psfHeatmap": [{"role": str(row.psf_job_role), "competency": str(row.psf_competency), "count": int(row.job_ads)}
                        for row in psf_tables["psf_role_competency_demand"].itertuples(index=False)],
         "alignment": [{"label": str(row.label), "count": int(row.count)} for row in

@@ -1,6 +1,7 @@
 """Traceable extraction of the official PSF-AAI PDF; review precedes activation."""
 from pathlib import Path
 import hashlib
+import json
 import re
 import pandas as pd
 from pypdf import PdfReader
@@ -9,7 +10,36 @@ from .storage import atomic_bytes
 from .utils import timestamp
 
 OFFICIAL_URL = "https://www.tesda.gov.ph/Uploads/File/Philippine%20Skills%20Framework/ICT/Philippine%20Skills%20Framework%20for%20Analytics%20and%20Artificial%20Intelligence.pdf"
-COMPETENCY_ALIASES = {"Collaboration": "collaborate", "Research": "conduct research"}
+COMPETENCY_ALIASES = {"Collaboration": "collaborate", "Research": "conduct research",
+                      "Computational Modeling": "computational modelling"}
+OCCUPATIONAL_FAMILIES = ("Business Intelligence & Strategy", "Data Stewardship", "Data Engineering",
+                         "Data Science", "AI Engineering", "Applied Data/AI Research")
+
+
+def _role_context(page_texts, page, role):
+    family_match = re.search(r"Skills\s+Maps\s+(" + "|".join(map(re.escape, OCCUPATIONAL_FAMILIES)) + r")", page_texts[page - 1])
+    family = family_match.group(1) if family_match else ""
+    if not family:
+        raise ValueError(f"No occupational family found for {role} on PDF page {page}.")
+    for index in range(page - 1, max(-1, page - 6), -1):
+        text = re.sub(r"\s+", " ", page_texts[index]).strip()
+        if role in text and "Critical Work" in text:
+            description = text.split("Critical Work", 1)[0].strip()
+            description = description.removeprefix(role).removesuffix(role).strip()
+            if len(description) < 100:
+                continue
+            return {"occupational_family": family, "role_description": description,
+                    "role_source_page": index + 1}
+    raise ValueError(f"No role description found for {role} before PDF page {page}.")
+
+
+def reference_role_profiles(root, taxonomy):
+    """Role context is evidence, not an additional competency or training alias."""
+    path = Path(root) / "data/reference/psf_aai_role_profiles.json"
+    if not path.is_file() or "source_hash" not in taxonomy:
+        return []
+    hashes = set(taxonomy.source_hash)
+    return [row for row in json.loads(path.read_text(encoding="utf-8")) if row["source_hash"] in hashes]
 
 
 def _range_of_application(page_text):
@@ -54,8 +84,8 @@ def parse_framework(path):
     """Read competency heading/description blocks, not arbitrary PDF mentions.
 
     This adapter targets the supplied official edition. It fails closed if the
-    edition's heading layout changes. Role links use literal names and levels;
-    unresolved spelling variants stay absent, never guessed.
+    edition's heading layout changes. Role links use official names and levels,
+    with explicit spelling variants from this edition's role cards.
     """
     path = Path(path)
     source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -107,15 +137,23 @@ def parse_framework(path):
     role_skill = re.compile(r"(?<!\w)(" + alternatives + r")\s+(Level [1-6]|Basic|Intermediate|Advanced)\b", re.I)
     for page, role, text in role_pages:
         flat = re.sub(r"\s+", " ", text)
+        # The role cards use these variants of the official profile headings.
+        flat = re.sub(r"Self-Management", "Self Management", flat, flags=re.I)
+        flat = re.sub(r"Computational Modelling", "Computational Modeling", flat, flags=re.I)
+        context = _role_context(page_texts, page, role)
         for hit in role_skill.finditer(flat):
             links.append({"competency_name": names[hit.group(1).casefold()], "job_role": role,
                           "proficiency_level": hit.group(2), "source_page": page,
-                          "source_url": OFFICIAL_URL, "source_hash": source_hash})
-    roles = pd.DataFrame(links, columns=["competency_name", "job_role", "proficiency_level", "source_page", "source_url", "source_hash"])
+                          "source_url": OFFICIAL_URL, "source_hash": source_hash, **context})
+    roles = pd.DataFrame(links, columns=["competency_name", "job_role", "proficiency_level", "source_page",
+                                       "source_url", "source_hash", "occupational_family",
+                                       "role_description", "role_source_page"])
     roles = roles.drop_duplicates(["competency_name", "job_role", "proficiency_level"])
     if not roles.empty:
         grouped = roles.groupby("competency_name").job_role.agg(lambda values: "; ".join(sorted(set(values))))
         frame["job_role"] = frame.competency_name.map(grouped).fillna("")
+        families = roles.groupby("competency_name").occupational_family.agg(lambda values: "; ".join(sorted(set(values))))
+        frame["occupational_family"] = frame.competency_name.map(families).fillna("")
     for index, row in frame.iterrows():
         profile = _profile_pages(page_texts, int(row["source_page"]))
         detail = _profile_detail(profile)
@@ -140,6 +178,7 @@ def apply_bundled_role_links(frame, root):
 
     keys = ["competency_id", "competency_name", "source_hash"]
     official = bundled[bundled.review_status.eq("Researcher verified")].set_index(keys)
+    official_roles = {normalize_text(term) for value in official.job_role for term in value.split(";") if term.strip()}
     current = frame.copy()
     alias_owners = {}
     for index, row in current.iterrows():
@@ -152,14 +191,17 @@ def apply_bundled_role_links(frame, root):
         key = tuple(row[field] for field in keys)
         if row["review_status"] != "Researcher verified" or key not in official.index or not key[-1]:
             continue
-        for field in ("job_role", "aliases"):
+        for field in ("job_role", "aliases", "occupational_family"):
             terms = {normalize_text(term): term.strip() for term in str(row.get(field, "")).split(";") if term.strip()}
-            original_count = len(terms)
+            original_terms = terms.copy()
+            if field == "job_role":
+                released_roles = {normalize_text(term) for term in official.loc[key, field].split(";") if term.strip()}
+                terms = {key: value for key, value in terms.items() if key not in official_roles or key in released_roles}
             for term in str(official.loc[key].get(field, "")).split(";"):
                 normalized = normalize_text(term)
                 if normalized and (field != "aliases" or alias_owners.get(normalized, {index}) == {index}):
                     terms.setdefault(normalized, term.strip())
-            if len(terms) == original_count:
+            if terms == original_terms:
                 continue
             value = "; ".join(sorted(terms.values())) if field == "job_role" else "; ".join(terms.values())
             if field not in current:

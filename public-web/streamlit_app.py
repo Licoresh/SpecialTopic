@@ -42,7 +42,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.120"
+PUBLIC_VERSION = "3.0.121"
 
 
 @st.cache_resource
@@ -777,8 +777,15 @@ def _psf(result):
         with st.expander("PSF-AAI reference evidence"):
             st.caption("Includes official competencies with zero matching advertisements in this dataset.")
             st.dataframe(pd.DataFrame(charts["psfEvidence"]).rename(columns={
-                "label": "Competency", "count": "Matching ads", "roles": "Framework roles", "sourcePage": "PDF page",
+                "label": "Competency", "count": "Matching ads", "roles": "Framework roles", "families": "Occupational families", "sourcePage": "PDF page",
             }), width="stretch", hide_index=True)
+            if profiles := charts.get("psfRoleProfiles"):
+                st.markdown("**Official role descriptions**")
+                st.caption("Role descriptions provide context and are not additional competency labels.")
+                st.dataframe(pd.DataFrame(profiles).reindex(columns=["job_role", "occupational_family", "role_description", "role_source_page", "source_page"]).rename(columns={
+                    "job_role": "Reference role", "occupational_family": "Occupational family", "role_description": "Role description",
+                    "role_source_page": "Description PDF page", "source_page": "Skills PDF page",
+                }), hide_index=True, width="stretch")
 
 
 def _alignment(result):

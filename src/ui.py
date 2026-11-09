@@ -1413,15 +1413,27 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     roles = psf_reference_roles(active_taxonomy)
                     if roles and "job_role" in active_taxonomy:
                         with detail_tools, st.popover("Reference roles", icon=":material/work:"):
-                            role = st.selectbox("PSF-AAI reference role", sorted(roles), index=None,
+                            from .psf_source import reference_role_profiles
+                            profiles = {normalize_text(row["job_role"]): row for row in reference_role_profiles(storage.ROOT, active_taxonomy)}
+                            family = st.selectbox("Occupational family", ["All families", *sorted({row["occupational_family"] for row in profiles.values()})], key="manual_reference_family")
+                            query = normalize_text(st.text_input("Search roles or role descriptions", key="manual_reference_search"))
+                            options = [key for key in sorted(roles) if
+                                       (family == "All families" or profiles.get(key, {}).get("occupational_family") == family) and
+                                       (not query or query in normalize_text(roles[key] + " " + profiles.get(key, {}).get("role_description", "")))]
+                            if st.session_state.get("manual_reference_role") not in options:
+                                st.session_state["manual_reference_role"] = None
+                            role = st.selectbox("PSF-AAI reference role", options, index=None,
                                                 format_func=roles.__getitem__, key="manual_reference_role",
                                                 placeholder="Choose a framework role")
                             if role:
+                                if profile := profiles.get(role):
+                                    st.write(profile["role_description"])
+                                    st.caption(f"{profile['occupational_family']} · Role description: PDF page {profile['role_source_page']} · Skills: PDF page {profile['source_page']}. Role wording provides context; choose an official competency below only when the advertisement supports it.")
                                 applies = active_taxonomy.job_role.fillna("").map(
                                     lambda values: role in {normalize_text(value) for value in values.split(";")})
-                                fields = [field for field in ("competency_name", "source_page") if field in active_taxonomy]
+                                fields = [field for field in ("competency_name", "occupational_family", "source_page") if field in active_taxonomy]
                                 st.dataframe(active_taxonomy.loc[applies, fields].rename(columns={
-                                    "competency_name": "Competency", "source_page": "Competency PDF page",
+                                    "competency_name": "Competency", "occupational_family": "Occupational families", "source_page": "Competency PDF page",
                                 }), hide_index=True, width="stretch")
                 from .pretrained_suggestions import (
                     MODEL_ID, MODEL_REVISION,

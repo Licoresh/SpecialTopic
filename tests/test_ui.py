@@ -900,11 +900,15 @@ def test_manual_review_multiple_links_roundtrip_and_source_isolation(ui_workspac
 
 def test_manual_review_shows_official_roles_and_searchable_competencies(ui_workspace, jobs):
     import pandas as pd
+    import shutil
     from src.config import ROOT
 
     taxonomy = pd.read_csv(ROOT / "data/reference/psf_aai_default.csv", dtype=str, keep_default_na=False)
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)
+    target = storage.ROOT / "data/reference/psf_aai_role_profiles.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / "data/reference/psf_aai_role_profiles.json", target)
     run_extraction()
     app = page_app("Manual Labeling")
     assert not app.exception and not app.error
@@ -916,6 +920,13 @@ def test_manual_review_shows_official_roles_and_searchable_competencies(ui_works
     picker.set_value("machine learning engineer").run(timeout=60)
     evidence = next(table.value for table in app.dataframe if "Competency PDF page" in table.value)
     assert {"Research", "Collaboration"} <= set(evidence.Competency)
+    app.selectbox(key="manual_reference_family").set_value("Applied Data/AI Research").run(timeout=60)
+    app.text_input(key="manual_reference_search").set_value("actionable business insight").run(timeout=60)
+    assert app.selectbox(key="manual_reference_role").options == ["Research Manager"]
+    app.selectbox(key="manual_reference_role").set_value("research manager").run(timeout=60)
+    evidence = next(table.value for table in app.dataframe if "Competency PDF page" in table.value)
+    assert {"Adaptability", "Self Management", "Research"} <= set(evidence.Competency)
+    assert "Performance Management" not in set(evidence.Competency)
 
 
 def test_manual_review_requires_each_rationale_before_saving_categories(ui_workspace, jobs, taxonomy):

@@ -69,6 +69,33 @@ def test_official_pdf_parser_retains_competency_codes_pages_and_roles():
     assert ("Product Management", "Chief AI Engineer", "Level 5", 89) in evidence
     assert ("Product Management", "Chief Technology Officer", "Level 6", 91) in evidence
     assert ("Research", "Machine Learning Engineer", "Level 3", 72) in evidence
+    assert ("Self Management", "Research Manager", "Basic", 97) in evidence
+    assert ("Computational Modeling", "Machine Learning Engineer", "Level 3", 72) in evidence
+    assert not roles.loc[roles.competency_name.eq("Performance Management"), "job_role"].eq("Research Manager").any()
+    assert roles.loc[roles.job_role.eq("AI Engineer"), "occupational_family"].eq("AI Engineering").all()
+    assert roles.loc[roles.job_role.eq("Data Scientist"), "occupational_family"].eq("Data Science").all()
+    from src.psf_source import OCCUPATIONAL_FAMILIES, reference_role_profiles
+    assert set(frame.set_index("competency_name").loc["Adaptability", "occupational_family"].split("; ")) == set(OCCUPATIONAL_FAMILIES)
+    profiles = reference_role_profiles(ROOT, frame)
+    assert len(profiles) == 31
+    manager = next(row for row in profiles if row["job_role"] == "Research Manager")
+    assert "actionable business insights" in manager["role_description"]
+    assert manager["role_source_page"] == 96 and manager["source_page"] == 97
+    assert all(len(row["role_description"]) > 100 for row in profiles)
+
+    # Independently audit each table line, including known spelling variants.
+    import re
+    from pypdf import PdfReader
+    reader = PdfReader(path)
+    names = {name.casefold(): name for name in frame.competency_name}
+    for page in roles.source_page.unique():
+        actual = set(roles.loc[roles.source_page.eq(page), ["competency_name", "proficiency_level"]].itertuples(index=False, name=None))
+        for line in reader.pages[int(page) - 1].extract_text().splitlines():
+            for hit in re.finditer(r"(.+?)\s+(Level [1-6]|Basic|Intermediate|Advanced)\b", line):
+                name = re.sub(r"^Level [1-6]\s+", "", hit[1].strip()).casefold()
+                name = name.replace("self-management", "self management").replace("modelling", "modeling")
+                assert name in names, (page, name)
+                assert (names[name], hit[2]) in actual, (page, name, hit[2])
 
 
 def test_bundled_default_reference_matches_the_included_official_pdf():
@@ -85,6 +112,8 @@ def test_bundled_default_reference_matches_the_included_official_pdf():
     assert "Machine Learning Engineer" in by_name.loc["Research", "job_role"].split("; ")
     assert by_name.loc["Collaboration", "aliases"] == "collaborate"
     assert by_name.loc["Research", "aliases"] == "conduct research"
+    parsed, _ = parse_framework(ROOT / "data/reference/psf_aai_official.pdf")
+    pd.testing.assert_series_equal(by_name.job_role.sort_index(), parsed.set_index("competency_name").job_role.sort_index())
 
 
 def test_research_reference_gets_released_links_for_the_same_source(workspace):
@@ -95,15 +124,18 @@ def test_research_reference_gets_released_links_for_the_same_source(workspace):
     path.parent.mkdir(parents=True)
     path.write_bytes((ROOT / "data/reference/psf_aai_default.csv").read_bytes())
     reference = pd.read_csv(path, dtype=str, keep_default_na=False).set_index("competency_name", drop=False)
-    saved = reference.loc[["Collaboration", "Research"]].reset_index(drop=True)
+    saved = reference.loc[["Collaboration", "Research", "Performance Management"]].reset_index(drop=True)
     saved.loc[0, "job_role"] = "Researcher custom role"
     saved.loc[0, "aliases"] = ""
     saved.loc[1, "source_hash"] = "other-source"
     saved.loc[1, "aliases"] = "custom wording"
+    saved.loc[2, "job_role"] = "Research Manager; Researcher custom role"
     storage.save_frame("cleaned_psf_aai", saved)
     for effective in (storage.read_frame("cleaned_psf_aai"), training_taxonomy(workspace)):
         assert effective.loc[0, "aliases"] == "collaborate"
         assert {"Researcher custom role", "Data Governance Officer"} <= set(effective.loc[0, "job_role"].split("; "))
         assert effective.loc[1, "aliases"] == "custom wording"
+        assert "Research Manager" not in effective.loc[2, "job_role"].split("; ")
+        assert "Researcher custom role" in effective.loc[2, "job_role"].split("; ")
     original = pd.read_csv(workspace / "data/processed/cleaned_psf_aai.csv", dtype=str, keep_default_na=False)
     assert original.loc[0, "aliases"] == ""
