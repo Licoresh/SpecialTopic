@@ -11,7 +11,6 @@ from pathlib import Path
 import sys
 
 import pandas as pd
-from plotly import graph_objects as go
 import streamlit as st
 
 APP_ICON = Path(__file__).resolve().parent / "site" / "assets" / "job_market_mark.svg"
@@ -36,11 +35,11 @@ from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, automatic_analysis_revision, health
 from src.ui import (analysis_workflow, chart, collect_result_plots, featured_result_chart, featured_visual_chart, job_market_metrics,
                     alignment_status_insight, ordered_result_table, result_chart_options, result_count_chart,
-                    result_heatmap, result_insight, result_role_distribution, result_single_metric)
+                    result_heatmap, result_insight, result_single_metric)
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.111"
+PUBLIC_VERSION = "3.0.112"
 
 
 @st.cache_resource
@@ -709,9 +708,6 @@ def _psf(result):
     order, limit = _chart_state("public_psf")
     _bar(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", "Most represented reference roles", summary["ads"],
          "psf_roles", order, limit, "Top Displayed Roles")
-    if roles:
-        role_frame = pd.DataFrame([{"psf_job_role": row["label"], "job_ads": row["count"]} for row in roles])
-        result_role_distribution(ordered_result_table(role_frame, "psf_job_role", order, "job_ads").head(limit))
     cells = charts.get("psfHeatmap", [])
     role_sizes = {row["label"]: int(row["count"]) for row in roles}
     role_options = sorted({row["role"] for row in cells}, key=lambda name: (-role_sizes.get(name, 0), name))
@@ -777,21 +773,6 @@ def _alignment(result):
                 if status_chart is not None:
                     alignment_status_insight(status_chart)
             st.caption(f"{summary['alignmentGroups']:,} phrase–competency evidence groups. Status labels summarize automatically grouped evidence and may include candidates for manual review.")
-
-            ordered = ordered_result_table(rows, "status", order, "evidence_groups").head(limit)
-            status_colors = {"aligned": "#78182b", "partially aligned": "#d6a33d",
-                             "not mapped": "#a99b92", "unclassified": "#7c8794"}
-            labels = ordered.status.astype(str).tolist()
-            values = ordered.evidence_groups.astype(int).tolist()
-            donut = go.Figure(go.Pie(
-                labels=labels, values=values, hole=.58, sort=False, textinfo="percent",
-                marker={"colors": [status_colors.get(label.casefold(), "#7c8794") for label in labels],
-                        "line": {"color": "#fff", "width": 2}},
-                hovertemplate="%{label}<br>%{value:,d} evidence groups · %{percent}<extra></extra>",
-            ))
-            donut.update_layout(title="Share of evidence groups by status", height=390,
-                                legend={"orientation": "h", "y": -0.08}, margin={"t": 54, "b": 36, "l": 20, "r": 20})
-            chart(donut, show_heading=False)
 
 
 def _unmapped(result):
