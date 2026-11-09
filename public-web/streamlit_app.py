@@ -6,6 +6,7 @@ import base64
 import hashlib
 from html import escape as escape_html
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -18,8 +19,13 @@ st.set_page_config(page_title="Future of Work | Public analyzer", page_icon=APP_
                    layout="wide", initial_sidebar_state="collapsed")
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+source_root = str(ROOT)
+if source_root not in sys.path:
+    sys.path.insert(0, source_root)
+# The Streamlit watcher uses PYTHONPATH for modules outside the entrypoint folder.
+watch_paths = os.environ.get("PYTHONPATH", "").split(os.pathsep)
+if source_root not in watch_paths:
+    os.environ["PYTHONPATH"] = os.pathsep.join([source_root, *filter(None, watch_paths)])
 
 from src.config import FIELDS
 from src.column_mapping import suggest_column_mapping
@@ -31,7 +37,7 @@ from src.ui import (analysis_workflow, featured_result_chart, featured_visual_ch
                     result_role_distribution)
 from src.visualization import education_bar, job_title_trend
 
-PUBLIC_VERSION = "3.0.101"
+PUBLIC_VERSION = "3.0.102"
 
 
 @st.cache_resource
