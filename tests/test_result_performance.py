@@ -1,15 +1,27 @@
 """Synthetic interaction checks; never load or alter research records."""
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 from streamlit.testing.v1.local_script_runner import LocalScriptRunner
 from streamlit.runtime.scriptrunner_utils.script_requests import ScriptRequests
 
 from src import ui
 from test_result_views import result_tables
+
+PUBLIC_APP = Path(__file__).resolve().parents[1] / "public-web/streamlit_app.py"
+
+
+@pytest.fixture
+def public_app():
+    # Each AppTest has a separate component registry.
+    st.cache_resource.clear()
+    yield AppTest.from_file(PUBLIC_APP)
+    st.cache_resource.clear()
 
 
 def _run_fragment(app, monkeypatch, widget_key):
@@ -31,6 +43,68 @@ def _run_fragment(app, monkeypatch, widget_key):
         patch.setattr(LocalScriptRunner, "request_rerun", request)
         app.run(timeout=30)
     assert not app.exception and not app.error
+
+
+def test_public_sort_and_chart_filters_rerun_only_their_own_results(monkeypatch, public_app):
+    from src import public_engine
+
+    content = (b"job_title,job_family,job_description\n"
+               b"Data analyst,Analytics,SQL and data analysis with Python.\n"
+               b"Machine learning engineer,Engineering,Machine learning and data engineering.")
+    mapping = {field: field for field in ("job_title", "job_family", "job_description")}
+    app = public_app
+    app.session_state["public_result"] = public_engine.analyze_upload(content, "synthetic.csv", mapping, hosted=True)
+    counts = Mock(wraps=ui.result_count_chart)
+    heatmaps = Mock(wraps=ui.result_heatmap)
+    monkeypatch.setattr(ui, "result_count_chart", counts)
+    monkeypatch.setattr(ui, "result_heatmap", heatmaps)
+    app.run(timeout=30)
+    assert not app.exception and heatmaps.call_count == 2
+
+    counts.reset_mock()
+    app.selectbox(key="public_skills_order").set_value("Lowest demand")
+    _run_fragment(app, monkeypatch, "public_skills_order")
+    assert counts.call_args_list
+    assert all(call.kwargs["order"] == "Lowest demand" for call in counts.call_args_list)
+    assert heatmaps.call_count == 2
+
+    # AppTest keeps only the rerun fragment's output in its element tree.
+    app.run(timeout=30)
+    counts.reset_mock()
+    heatmaps.reset_mock()
+    app.selectbox(key="public_title_mode").set_value("Specific job titles")
+    _run_fragment(app, monkeypatch, "public_title_mode")
+    assert counts.call_count == 1
+    assert counts.call_args.args[3] == "Specific job titles"
+    assert not heatmaps.called
+
+
+def test_public_mapping_edits_update_validation_without_a_full_rerun(monkeypatch, public_app):
+    from src import public_engine
+
+    health = Mock(wraps=public_engine.health)
+    monkeypatch.setattr(public_engine, "health", health)
+    app = public_app
+    app.session_state["public_stage"] = "review"
+    app.session_state["public_content"] = b"job_title,job_description\nAnalyst,Uses SQL"
+    app.session_state["public_preview"] = pd.DataFrame({"job_title": ["Analyst"], "job_description": ["Uses SQL"]})
+    app.session_state["public_filename"] = "synthetic.csv"
+    app.session_state["public_file_hash"] = "synthetic-file"
+    app.session_state["public_mapping"] = {"job_title": "job_title", "job_description": "job_description"}
+    app.run(timeout=30)
+    assert not app.exception and not app.button(key="public_start_analysis").proto.disabled
+
+    mapping_key = "public-map-synthetic--job_title"
+    app.selectbox(key=mapping_key).set_value("job_description")
+    _run_fragment(app, monkeypatch, mapping_key)
+    assert app.button(key="public_start_analysis").proto.disabled
+    assert app.session_state["public_mapping"]["job_title"] == "job_description"
+    assert health.call_count == 1
+
+    app.selectbox(key=mapping_key).set_value("job_title")
+    _run_fragment(app, monkeypatch, mapping_key)
+    assert not app.button(key="public_start_analysis").proto.disabled
+    assert health.call_count == 1
 
 
 def test_evidence_open_and_pagination_skip_sources_and_charts(monkeypatch):

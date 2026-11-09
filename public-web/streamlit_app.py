@@ -29,7 +29,7 @@ watch_paths = os.environ.get("PYTHONPATH", "").split(os.pathsep)
 if source_root not in watch_paths:
     os.environ["PYTHONPATH"] = os.pathsep.join([source_root, *filter(None, watch_paths)])
 
-from src.config import FIELDS, TEXT_FIELDS
+from src.config import FIELDS, PUBLIC_VERSION, TEXT_FIELDS
 from src.column_mapping import suggest_column_mapping
 from src.analytics import experience_chart_insight, location_chart_insight
 from src.design import apply_design
@@ -41,9 +41,6 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
                     result_heatmap, result_insight, result_single_metric)
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
-
-PUBLIC_VERSION = "3.0.125"
-
 
 @st.cache_resource
 def _recent_upload_component():
@@ -180,7 +177,8 @@ def _style():
     /* Preload every chart, then skip rendering inactive section contents. */
     .st-key-public-results-tabs [data-testid="stTabs"]{position:relative}
     .st-key-public-results-tabs [data-testid="stTabPanel"][data-inert="true"]{display:block!important;position:absolute;inset:0 0 auto;height:0;overflow:hidden;visibility:hidden}
-    .st-key-public-results-tabs.public-results-ready [data-testid="stTabPanel"][data-inert="true"]{content-visibility:hidden}
+    .stApp:not(:has(.st-key-public-processing-overlay:not([hidden]))) .st-key-public-results-tabs [data-testid="stTabPanel"][data-inert="true"]{content-visibility:hidden}
+    .stApp [data-stale="true"]{opacity:1!important;filter:none!important;transition:none!important}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tablist"]{display:flex!important;align-items:stretch;width:100%;flex-wrap:nowrap!important;gap:.25rem!important;overflow-x:auto;overflow-y:hidden;border:1px solid #e5d7d5;border-radius:10px;background:#fcf9f7;padding:.25rem;scrollbar-width:thin;scrollbar-color:#d5c4c2 transparent}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]{box-sizing:border-box;display:flex;flex:1 0 188px;align-items:center;justify-content:center;gap:.45rem;min-width:188px!important;max-width:none;min-height:44px;margin:0;padding:.45rem .55rem;border:0!important;border-radius:7px;background:transparent;color:#24303d;white-space:nowrap;font-size:.78rem;line-height:1.2;text-align:center}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]>div{display:flex;align-items:center;justify-content:center;white-space:nowrap}
@@ -409,6 +407,7 @@ def _restore_recent_upload():
     st.session_state["_public_recent_saved_file_hash"] = file_hash
 
 
+@st.fragment
 def _persist_recent_upload():
     recent = st.session_state.get("public_recent_upload")
     if not recent:
@@ -449,7 +448,13 @@ def _bar(rows, label, value, title, heading, total, key, order, limit, list_titl
          *, extra_controls=None, note=None):
     frame = rows if isinstance(rows, pd.DataFrame) else _frame(rows, label, value, total=total)
     if frame.empty:
-        st.info("No chartable evidence is available for this selection.")
+        if extra_controls:
+            with st.container(border=True, key=f"job_market_featured_{key}"):
+                st.subheader(title, icon=":material/bar_chart:")
+                extra_controls()
+                st.info("No chartable evidence is available for this selection.")
+        else:
+            st.info("No chartable evidence is available for this selection.")
         return
     featured_result_chart(
         label, value, heading, total,
@@ -469,6 +474,7 @@ def _chart_settings(page):
     st.session_state["_table_number"] = 0
 
 
+@st.fragment
 def _skills(result):
     _chart_settings("Job Market Analysis")
     charts, ads = result["charts"], result["summary"]["ads"]
@@ -486,6 +492,8 @@ def _heatmap(matrix, title, summary, rows, key, *, count_label="Job advertisemen
              share_label="Share within group", denominator_label="Advertisements in group", group_label="group",
              transpose=False, render_controls=None):
     if matrix.empty or not matrix.to_numpy().any():
+        if render_controls:
+            render_controls()
         st.info("No chartable evidence is available for this comparison.")
         return
     def render():
@@ -505,11 +513,21 @@ def _heatmap(matrix, title, summary, rows, key, *, count_label="Job advertisemen
                               list_title="Top Skill × Group", render_controls=render_controls, embedded=False)
 
 
+@st.fragment
 def _roles(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
     ads = summary["ads"]
     order, limit = _controls("public_roles")
+    _role_titles(charts, ads, order, limit)
+    _role_family_heatmap(charts, ads, order, limit)
+    _role_skills(charts, ads, order, limit)
+    _role_locations(charts, summary, ads, order, limit)
+    _role_timeline(charts)
+
+
+@st.fragment
+def _role_titles(charts, ads, order, limit):
     title_mode = st.session_state.get("public_title_mode", "Most common job titles")
     if title_mode == "Specific titles (alphabetical)":
         title_mode = "Specific job titles"
@@ -526,6 +544,9 @@ def _roles(result):
     _bar(charts.get(title_source), title_label, "job_ads", title, "Top occupational titles", ads, "titles", title_order, limit,
          extra_controls=title_controls)
 
+
+@st.fragment
+def _role_family_heatmap(charts, ads, order, limit):
     family_sizes = {row["job_family"]: int(row["family_ads"]) for row in charts.get("familyAdCounts", [])}
     skill_rows = _frame(charts.get("skills"), "skill_label", "job_ads", total=ads)
     skills = ordered_result_table(skill_rows, "skill_label", order, "job_ads").head(min(limit, 15)).skill_label.tolist() if not skill_rows.empty else []
@@ -569,6 +590,9 @@ def _roles(result):
     else:
         st.caption("The occupational family heatmap needs job family data and chartable skills.")
 
+
+@st.fragment
+def _role_skills(charts, ads, order, limit):
     title_families = charts.get("titleFamilies", [])
     families_for_titles = sorted({row["job_family"] for row in title_families if row.get("job_family")})
     selected_family = st.session_state.get("public_explore_family", "All")
@@ -590,6 +614,7 @@ def _roles(result):
         if st.session_state.get("public_explore_title", "All") not in ["All", *scoped_titles]:
             st.session_state["public_explore_title"] = "All"
         st.selectbox("Specific job title", ["All", *scoped_titles], key="public_explore_title")
+    family_sizes = {row["job_family"]: int(row["family_ads"]) for row in charts.get("familyAdCounts", [])}
     title_groups = [row for row in scoped if selected_title == "All" or row["job_title"] == selected_title]
     if selected_family == "All" and selected_title == "All":
         selected_skills, selected_ads = charts.get("skills", []), ads
@@ -606,6 +631,9 @@ def _roles(result):
     _bar(selected_skills, "employer_skill", "employer_demand_count", f"Top skills for {label}", "Top requested skills", selected_ads,
          "selected_title", order, min(limit, 10), "Top Displayed Skills", extra_controls=selected_title_controls)
 
+
+@st.fragment
+def _role_locations(charts, summary, ads, order, limit):
     region_rows = charts.get("locations", [])
     regions = sorted(row["label"] for row in region_rows)
     selected_region = st.session_state.get("public_region", "All")
@@ -667,6 +695,9 @@ def _roles(result):
     _bar(skill_data, "employer_skill", "employer_demand_count",
          f"Skills in {area}", "Top requested skills", denominator, "location_skills", order, min(limit, 10))
 
+
+@st.fragment
+def _role_timeline(charts):
     monthly = charts.get("timelineByTitle", [])
     title_totals = {}
     for row in monthly:
@@ -717,6 +748,7 @@ def _roles(result):
             st.info("Choose at least one job title to view posting activity.")
 
 
+@st.fragment
 def _qualifications(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
@@ -771,10 +803,20 @@ def _qualifications(result):
         )
 
 
+@st.fragment
 def _psf(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
     order, limit = _controls("public_psf")
+    _psf_competencies(result, charts, summary, order, limit)
+    _bar(charts.get("psfRoles", []), "psf_job_role", "job_ads", "Related PSF-AAI reference roles",
+         "Most represented reference roles", summary["ads"], "psf_roles", order, limit, "Top Displayed Roles")
+    _psf_heatmap(charts, limit)
+    _psf_reference_evidence(charts)
+
+
+@st.fragment
+def _psf_competencies(result, charts, summary, order, limit):
     roles = charts.get("psfRoles", [])
     role_labels = result.get("reference", {}).get("roles", {})
     role_names = sorted(set(role_labels) | {row["label"] for row in roles})
@@ -795,12 +837,16 @@ def _psf(result):
     _bar(competencies, "psf_competency", "job_ads", "PSF-AAI competencies linked to employer demand", "Most linked competency", denominator,
          "psf_competencies", order, limit, "Top Displayed Competencies",
          extra_controls=psf_role_control)
-    _bar(roles, "psf_job_role", "job_ads", "Related PSF-AAI reference roles", "Most represented reference roles", summary["ads"],
-         "psf_roles", order, limit, "Top Displayed Roles")
+
+
+@st.fragment
+def _psf_heatmap(charts, limit):
     cells = charts.get("psfHeatmap", [])
-    role_sizes = {row["label"]: int(row["count"]) for row in roles}
+    role_sizes = {row["label"]: int(row["count"]) for row in charts.get("psfRoles", [])}
     role_options = sorted({row["role"] for row in cells}, key=lambda name: (-role_sizes.get(name, 0), name))
-    competencies_options = sorted({row["competency"] for row in cells}, key=lambda name: (-int(next((row["count"] for row in charts.get("psf", []) if row["label"] == name), 0)), name))
+    competency_sizes = {row["label"]: int(row["count"]) for row in charts.get("psf", [])}
+    competencies_options = sorted({row["competency"] for row in cells},
+                                  key=lambda name: (-competency_sizes.get(name, 0), name))
     role_defaults, competency_defaults = role_options[:8], competencies_options[:min(limit, 15)]
     saved_roles = st.session_state.get("public_psf_heatmap_roles")
     saved_competencies = st.session_state.get("public_psf_heatmap_competencies")
@@ -836,6 +882,9 @@ def _psf(result):
             st.info("Choose at least one reference role and one competency to display the heatmap.")
     else:
         st.caption("The PSF-AAI heatmap needs advertisements with role and competency links.")
+
+
+def _psf_reference_evidence(charts):
     if charts.get("psfEvidence"):
         with st.expander("PSF-AAI reference evidence"):
             st.caption("Includes official competencies with zero matching advertisements in this dataset.")
@@ -851,6 +900,7 @@ def _psf(result):
                 }), hide_index=True, width="stretch")
 
 
+@st.fragment
 def _alignment(result):
     _chart_settings("Employer–PSF Alignment")
     order, limit = _controls("public_alignment")
@@ -875,6 +925,7 @@ def _alignment(result):
             st.caption(f"{summary['alignmentGroups']:,} phrase–competency evidence groups. Status labels summarize automatically grouped evidence and may include candidates for manual review.")
 
 
+@st.fragment
 def _unmapped(result):
     _chart_settings("Unmapped / Emerging Skills")
     charts, summary = result["charts"], result["summary"]
@@ -912,17 +963,19 @@ def _results(result):
     analysis_workflow()
     job_market_metrics(result["summary"], result["summary"])
 
-    report_rows = []
-    for section, rows in result["charts"].items():
-        if isinstance(rows, list):
-            report_rows.extend({"section": section, **row} for row in rows)
     with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="distribute",
                       key="public-results-heading"):
         st.subheader("Results Section", icon=":material/bar_chart:")
-        if report_rows:
-            st.download_button("Export results", pd.DataFrame(report_rows).to_csv(index=False).encode("utf-8-sig"),
+        if any(isinstance(rows, list) and rows for rows in result["charts"].values()):
+            def report_csv():
+                rows = [{"section": section, **row}
+                        for section, items in result["charts"].items() if isinstance(items, list)
+                        for row in items]
+                return pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
+
+            st.download_button("Export results", report_csv,
                                f"{Path(file_name).stem}-results.csv", "text/csv", key="public_results_csv",
-                               type="primary", icon=":material/download:")
+                               type="primary", icon=":material/download:", on_click="ignore")
     with st.container(key="public-results-tabs"):
         tabs = st.tabs(["Skills", "Roles and locations", "Qualifications", "PSF-AAI demand", "Alignment evidence", "Unmapped / emerging"])
         with tabs[0]: _skills(result)
@@ -933,13 +986,16 @@ def _results(result):
         with tabs[5]: _unmapped(result)
 
 
-def _results_screen(result):
-    with collect_result_plots() as plots:
+def _results_screen(result, *, preload=False):
+    if preload:
+        with collect_result_plots() as plots:
+            _results(result)
+        script = Path(__file__).with_name("result_chart_readiness.js").read_text(encoding="utf-8")
+        st.html(f"<script>({script})({len(plots)});</script>", unsafe_allow_javascript=True)
+    else:
         _results(result)
     st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis</footer>')
     _persist_recent_upload()
-    script = Path(__file__).with_name("result_chart_readiness.js").read_text(encoding="utf-8")
-    st.html(f"<script>({script})({len(plots)});</script>", unsafe_allow_javascript=True)
 
 
 def _process_pending_upload(loading_slot):
@@ -969,7 +1025,7 @@ def _process_pending_upload(loading_slot):
     try:
         result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
         update(.95, "Drawing the charts in all six sections…")
-        _results_screen(result)
+        _results_screen(result, preload=True)
     except Exception as exc:
         st.session_state["public_error"] = str(exc)
         st.session_state["public_stage"] = "review"
@@ -977,6 +1033,88 @@ def _process_pending_upload(loading_slot):
     st.session_state["public_result"] = result
     st.session_state["public_stage"] = "results"
     st.session_state.pop("public_error", None)
+
+
+@st.fragment
+def _review_mapping(preview):
+    file_hash = st.session_state["public_file_hash"]
+    file_name = st.session_state["public_filename"]
+    columns = list(preview.columns)
+    mapping = dict(st.session_state.get("public_mapping", {}))
+    fields = (*PRIMARY_FIELDS, *OPTIONAL_FIELDS)
+    selected = [st.session_state.get(f"public-map-{file_hash[:10]}-{field}", mapping.get(field, "")) for field in fields]
+    counts = {column: selected.count(column) for column in set(selected) if column}
+    duplicate_columns = {column for column, count in counts.items() if count > 1}
+    with st.container(key="public-review-layout"):
+        left, right = st.columns([1.65, .95], gap="medium", vertical_alignment="top")
+        with left, st.container(key="public-mapping-card"):
+            file_icon, file_details, file_status = st.columns([.16, 1.6, .7], vertical_alignment="center")
+            with file_icon:
+                st.html('<span class="public-file-type">CSV</span>')
+            with file_details:
+                st.html(f'<span class="public-filename">{escape_html(file_name)}</span>')
+                st.caption(f"Dataset · {len(preview):,} records detected")
+            with file_status:
+                st.html('<span class="public-map-status" data-state="complete">✓ File ready</span>')
+            st.divider()
+            st.subheader("Detected column mapping")
+            st.caption("Review the suggested matches. Choose a CSV column for each field; you can edit any match before analysis.")
+            def reset_suggestions():
+                fresh, _ = suggest_column_mapping(columns, "jobs")
+                for field, column in fresh.items():
+                    st.session_state[f"public-map-{file_hash[:10]}-{field}"] = column
+            st.button("Re-detect columns", on_click=reset_suggestions)
+            st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
+            for field in PRIMARY_FIELDS:
+                with st.container(key=f"public-map-row-{field}"):
+                    mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
+            with st.expander("Optional fields"):
+                st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
+                for field in OPTIONAL_FIELDS:
+                    with st.container(key=f"public-map-row-{field}"):
+                        mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
+            st.session_state["public_mapping"] = mapping
+            recent = st.session_state.get("public_recent_upload")
+            if recent and recent.get("file_hash") == file_hash:
+                recent["mapping"] = dict(mapping)
+            if duplicate_columns:
+                st.warning("A CSV column is mapped more than once. Choose each source column once to keep its evidence traceable.")
+            with st.expander("Preview sample rows"):
+                st.dataframe(preview.head(8), width="stretch", hide_index=True)
+
+        text_ready = any(mapping.get(field) for field in TEXT_FIELDS["jobs"])
+        unique = not duplicate_columns
+        classifier_ready = bool(ENGINE.get("classifierAvailable"))
+        ready = text_ready and unique and classifier_ready
+        checks = (("CSV structure validated", True),
+                  ("At least one job text column identified", text_ready),
+                  ("Each source column is used once", unique),
+                  ("Public classifier available", classifier_ready))
+        completed = sum(done for _, done in checks)
+        with right, st.container(key="public-workflow-card"):
+            st.html('<h2 class="public-workflow-title">Analysis checklist</h2><p class="public-file-meta">A transparent review before results are generated.</p>')
+            st.html('<div class="public-checklist">' + "".join(
+                f'<div class="public-check" data-state="{"complete" if done else "pending"}"><b aria-hidden="true">{"✓" if done else "○"}</b><span>{label}</span></div>'
+                for label, done in checks) + "</div>")
+            st.html(f'<div class="public-readiness"><span>{"Ready to analyze" if ready else "Complete the review"}</span><span>{completed * 25}%</span></div>')
+            st.progress(completed * 25)
+            st.html('<p class="public-workflow-note">Results depend on the structure, quality, and coverage of the uploaded dataset.</p>')
+            if not classifier_ready:
+                st.warning("The public classifier is unavailable. You can review the columns, but analysis cannot start until it is available.")
+    st.markdown('<p class="public-privacy">Your latest CSV stays available until this browser session ends.</p>', unsafe_allow_html=True)
+    _, back, analyze = st.columns([5, 1, 1.45], gap="small")
+    with back:
+        if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload", width="stretch"):
+            st.session_state["public_stage"] = "upload"
+            st.rerun()
+    with analyze:
+        if st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
+                      disabled=not ready, key="public_start_analysis", width="stretch"):
+            st.session_state["public_stage"] = "processing"
+            st.session_state.pop("public_error", None)
+            st.rerun()
+
+    _persist_recent_upload()
 
 
 def main():
@@ -1094,86 +1232,12 @@ def main():
         if content is None or preview is None:
             st.session_state["public_stage"] = "upload"
             st.rerun()
-        file_hash = st.session_state["public_file_hash"]
-        file_name = st.session_state["public_filename"]
-        columns = list(preview.columns)
-        mapping = dict(st.session_state.get("public_mapping", {}))
-        fields = (*PRIMARY_FIELDS, *OPTIONAL_FIELDS)
-        selected = [st.session_state.get(f"public-map-{file_hash[:10]}-{field}", mapping.get(field, "")) for field in fields]
-        counts = {column: selected.count(column) for column in set(selected) if column}
-        duplicate_columns = {column for column, count in counts.items() if count > 1}
-        with st.container(key="public-review-layout"):
-            left, right = st.columns([1.65, .95], gap="medium", vertical_alignment="top")
-            with left, st.container(key="public-mapping-card"):
-                file_icon, file_details, file_status = st.columns([.16, 1.6, .7], vertical_alignment="center")
-                with file_icon:
-                    st.html('<span class="public-file-type">CSV</span>')
-                with file_details:
-                    st.html(f'<span class="public-filename">{escape_html(file_name)}</span>')
-                    st.caption(f"Dataset · {len(preview):,} records detected")
-                with file_status:
-                    st.html('<span class="public-map-status" data-state="complete">✓ File ready</span>')
-                st.divider()
-                st.subheader("Detected column mapping")
-                st.caption("Review the suggested matches. Choose a CSV column for each field; you can edit any match before analysis.")
-                def reset_suggestions():
-                    fresh, _ = suggest_column_mapping(columns, "jobs")
-                    for field, column in fresh.items():
-                        st.session_state[f"public-map-{file_hash[:10]}-{field}"] = column
-                st.button("Re-detect columns", on_click=reset_suggestions)
-                st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
-                for field in PRIMARY_FIELDS:
-                    with st.container(key=f"public-map-row-{field}"):
-                        mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
-                with st.expander("Optional fields"):
-                    st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
-                    for field in OPTIONAL_FIELDS:
-                        with st.container(key=f"public-map-row-{field}"):
-                            mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
-                st.session_state["public_mapping"] = mapping
-                recent = st.session_state.get("public_recent_upload")
-                if recent and recent.get("file_hash") == file_hash:
-                    recent["mapping"] = dict(mapping)
-                if duplicate_columns:
-                    st.warning("A CSV column is mapped more than once. Choose each source column once to keep its evidence traceable.")
-                with st.expander("Preview sample rows"):
-                    st.dataframe(preview.head(8), width="stretch", hide_index=True)
-
-            text_ready = any(mapping.get(field) for field in TEXT_FIELDS["jobs"])
-            unique = not duplicate_columns
-            classifier_ready = bool(ENGINE.get("classifierAvailable"))
-            ready = text_ready and unique and classifier_ready
-            checks = (("CSV structure validated", True),
-                      ("At least one job text column identified", text_ready),
-                      ("Each source column is used once", unique),
-                      ("Public classifier available", classifier_ready))
-            completed = sum(done for _, done in checks)
-            with right, st.container(key="public-workflow-card"):
-                st.html('<h2 class="public-workflow-title">Analysis checklist</h2><p class="public-file-meta">A transparent review before results are generated.</p>')
-                st.html('<div class="public-checklist">' + "".join(
-                    f'<div class="public-check" data-state="{"complete" if done else "pending"}"><b aria-hidden="true">{"✓" if done else "○"}</b><span>{label}</span></div>'
-                    for label, done in checks) + "</div>")
-                st.html(f'<div class="public-readiness"><span>{"Ready to analyze" if ready else "Complete the review"}</span><span>{completed * 25}%</span></div>')
-                st.progress(completed * 25)
-                st.html('<p class="public-workflow-note">Results depend on the structure, quality, and coverage of the uploaded dataset.</p>')
-                if not classifier_ready:
-                    st.warning("The public classifier is unavailable. You can review the columns, but analysis cannot start until it is available.")
-        st.markdown('<p class="public-privacy">Your latest CSV stays available until this browser session ends.</p>', unsafe_allow_html=True)
-        _, back, analyze = st.columns([5, 1, 1.45], gap="small")
-        with back:
-            if st.button("Back", icon=":material/arrow_back:", key="public_back_to_upload", width="stretch"):
-                st.session_state["public_stage"] = "upload"
-                st.rerun()
-        with analyze:
-            if st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
-                          disabled=not ready, key="public_start_analysis", width="stretch"):
-                st.session_state["public_stage"] = "processing"
-                st.session_state.pop("public_error", None)
-                st.rerun()
+        _review_mapping(preview)
 
     with st.container(key="public-footer"):
         st.caption(f"Future of Work · Philippine job advertisement analysis · v{PUBLIC_VERSION}")
-    _persist_recent_upload()
+    if stage == "upload":
+        _persist_recent_upload()
 
 
 main()
