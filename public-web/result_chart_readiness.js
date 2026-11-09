@@ -1,12 +1,14 @@
 function waitForResultCharts(expectedPlots) {
   const overlay = document.querySelector(".st-key-public-processing-overlay");
   const sections = document.querySelector(".st-key-public-results-tabs");
-  if (!overlay || !sections) return;
+  if (!sections) return;
+  const loading = Boolean(overlay && !overlay.hidden);
+  sections.classList.remove("public-results-ready");
 
-  const meter = overlay.querySelector("progress");
-  const percent = overlay.querySelector(".public-processing-percent");
-  const status = overlay.querySelector(".public-processing-status");
-  const continueButton = overlay.querySelector(".public-processing-continue");
+  const meter = overlay?.querySelector("progress");
+  const percent = overlay?.querySelector(".public-processing-percent");
+  const status = overlay?.querySelector(".public-processing-status");
+  const continueButton = overlay?.querySelector(".public-processing-continue");
   const started = performance.now();
   let readyLastCheck = false;
 
@@ -29,10 +31,12 @@ function waitForResultCharts(expectedPlots) {
   }
 
   function check() {
-    if (!overlay.isConnected || overlay.hidden) return;
+    if (!sections.isConnected || (loading && (!overlay.isConnected || overlay.hidden))) return;
     const charts = [...sections.querySelectorAll('[data-testid="stPlotlyChart"]')];
     const ready = charts.length === expectedPlots && charts.every(plotReady) && timelineReady();
     if (ready && readyLastCheck) {
+      sections.classList.add("public-results-ready");
+      if (!loading) return;
       meter.value = 100;
       percent.textContent = "100%";
       status.textContent = "Your results are ready.";
@@ -40,7 +44,7 @@ function waitForResultCharts(expectedPlots) {
       window.setTimeout(dismiss, 450);
       return;
     }
-    if (performance.now() - started > 30_000 && continueButton.hidden) {
+    if (loading && performance.now() - started > 30_000 && continueButton.hidden) {
       status.textContent = "Some charts are taking longer to draw.";
       continueButton.hidden = false;
     }
@@ -48,7 +52,9 @@ function waitForResultCharts(expectedPlots) {
     window.setTimeout(check, 100);
   }
 
-  sections.inert = true;
-  continueButton.addEventListener("click", dismiss);
+  if (loading) {
+    sections.inert = true;
+    continueButton.addEventListener("click", dismiss);
+  }
   check();
 }

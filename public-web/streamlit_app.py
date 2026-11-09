@@ -42,7 +42,7 @@ from src.ui import (analysis_workflow, chart, collect_result_plots, featured_res
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.117"
+PUBLIC_VERSION = "3.0.118"
 
 
 @st.cache_resource
@@ -175,9 +175,10 @@ def _style():
     .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
     .public-processing-continue{min-height:44px;padding:0 .9rem;border:0;border-radius:8px;background:#78182b;color:white}
     .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
-    /* Plotly needs a measurable width even when a result tab is inactive. */
+    /* Preload every chart, then skip rendering inactive section contents. */
     .st-key-public-results-tabs [data-testid="stTabs"]{position:relative}
     .st-key-public-results-tabs [data-testid="stTabPanel"][data-inert="true"]{display:block!important;position:absolute;inset:0 0 auto;height:0;overflow:hidden;visibility:hidden}
+    .st-key-public-results-tabs.public-results-ready [data-testid="stTabPanel"][data-inert="true"]{content-visibility:hidden}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tablist"]{display:flex!important;align-items:stretch;width:100%;flex-wrap:nowrap!important;gap:.25rem!important;overflow-x:auto;overflow-y:hidden;border:1px solid #e5d7d5;border-radius:10px;background:#fcf9f7;padding:.25rem;scrollbar-width:thin;scrollbar-color:#d5c4c2 transparent}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]{box-sizing:border-box;display:flex;flex:1 0 188px;align-items:center;justify-content:center;gap:.45rem;min-width:188px!important;max-width:none;min-height:44px;margin:0;padding:.45rem .55rem;border:0!important;border-radius:7px;background:transparent;color:#24303d;white-space:nowrap;font-size:.78rem;line-height:1.2;text-align:center}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]>div{display:flex;align-items:center;justify-content:center;white-space:nowrap}
@@ -846,9 +847,12 @@ def _results(result):
 
 
 def _results_screen(result):
-    _results(result)
+    with collect_result_plots() as plots:
+        _results(result)
     st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis</footer>')
     _persist_recent_upload()
+    script = Path(__file__).with_name("result_chart_readiness.js").read_text(encoding="utf-8")
+    st.html(f"<script>({script})({len(plots)});</script>", unsafe_allow_javascript=True)
 
 
 def _process_pending_upload(loading_slot):
@@ -878,10 +882,7 @@ def _process_pending_upload(loading_slot):
     try:
         result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
         update(.95, "Drawing the charts in all six sections…")
-        with collect_result_plots() as plots:
-            _results_screen(result)
-        script = Path(__file__).with_name("result_chart_readiness.js").read_text(encoding="utf-8")
-        st.html(f"<script>({script})({len(plots)});</script>", unsafe_allow_javascript=True)
+        _results_screen(result)
     except Exception as exc:
         st.session_state["public_error"] = str(exc)
         st.session_state["public_stage"] = "review"
