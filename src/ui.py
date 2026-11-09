@@ -2,7 +2,7 @@ from .category_schema import category_path
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from html import escape
 from textwrap import wrap
@@ -31,7 +31,7 @@ from .labeling import annotation_conflicts, save_annotations, save_correction, c
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
 from .analytics import experience_chart_insight, location_chart_insight, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline, selected_timeline
-from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
+from .chart_exports import chart_downloads, chart_filename, chart_group_downloads, chart_table
 from .timeline_table import timeline_table
 from .geography import location_tables
 from .alignment import STATUSES, ALIGNMENT_COLUMNS
@@ -53,6 +53,7 @@ from . import background_tasks
 
 MANUAL_REVIEW_COLUMNS = ["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"]
 _CHART_DOWNLOAD_TARGET = ContextVar("chart_download_target", default=None)
+_CHART_EVIDENCE_TARGET = ContextVar("chart_evidence_target", default=None)
 _RESULT_PLOTS = ContextVar("result_plots", default=None)
 
 
@@ -102,6 +103,54 @@ def chart_download_target(target):
         yield
     finally:
         _CHART_DOWNLOAD_TARGET.reset(token)
+
+
+@contextmanager
+def chart_evidence_target(target):
+    token = _CHART_EVIDENCE_TARGET.set(target)
+    try:
+        yield
+    finally:
+        _CHART_EVIDENCE_TARGET.reset(token)
+
+
+@st.fragment
+def _chart_evidence_panel(fig, title, key):
+    panel = _icon_expander("View chart evidence", key=f"chart_evidence_{key}",
+                           icon=":material/table_view:", on_change="rerun")
+    if not panel.open:
+        return
+    with panel:
+        frame = chart_table(fig)
+        if any(trace.type == "pie" for trace in fig.data):
+            frame = frame.rename(columns={"Value": "Count"})
+        if frame.empty:
+            st.caption("No evidence rows are available for this chart.")
+            return
+        if isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline"):
+            frame = frame.rename(columns={"Series": "Job title"})
+            st.caption("All months for the selected job titles. Playback changes the visible period on the graph.")
+        else:
+            st.caption("Exact values for the categories and filters shown in this chart. Percentage columns use the chart's denominator.")
+        shares = {column: f"{column} (%)" for column in frame if "share" in column.casefold()}
+        frame = frame.rename(columns=shares)
+        text = [column for column in frame if not pd.api.types.is_numeric_dtype(frame[column])]
+        frame = frame[text + [column for column in frame if column not in text]]
+        st.caption(f"{len(frame):,} evidence rows · {title}")
+        st.html('<p class="fow-chart-evidence-mobile-hint">Swipe the table sideways to see all columns.</p>')
+        columns = {column: st.column_config.TextColumn(width="medium") for column in text}
+        columns.update({column: st.column_config.NumberColumn(width="small") for column in frame if column not in text})
+        columns.update({column: st.column_config.NumberColumn(format="%.1f%%", width="small") for column in shares.values()})
+        display(frame, key=f"chart_evidence_page_{key}", column_config=columns)
+        st.download_button("Download evidence (CSV)", data=lambda: export_csv(frame),
+                           file_name=f"{chart_filename(title)}-evidence.csv", mime="text/csv",
+                           key=f"chart_evidence_csv_{key}", icon=":material/download:", on_click="ignore")
+
+
+def chart_evidence(fig, title, key):
+    target = _CHART_EVIDENCE_TARGET.get()
+    with target if target is not None else nullcontext():
+        _chart_evidence_panel(fig, title, key)
 
 
 def card_download_slot():
@@ -365,7 +414,7 @@ def cached_clean(frame, kind, duplicate_list):
 def cached_nlp():
     return get_nlp()
 
-def display(frame, *, key=None):
+def display(frame, *, key=None, column_config=None):
     if frame.empty:
         st.caption("No records to display for the current selection.")
     if len(frame) > 100:
@@ -381,6 +430,7 @@ def display(frame, *, key=None):
         frame, _, _ = _paginate_frame(frame, page)
     text_columns = {key: st.column_config.TextColumn(width="large") for key in
                     ("original_text", "job_description", "rationale", "interpretation", "competency_description", "range_of_application") if key in frame}
+    text_columns.update(column_config or {})
     row_height = 30 if st.session_state.get("_fow_current_page") == "PSF Mapping" else 38
     st.dataframe(frame, width="stretch", hide_index=True, row_height=row_height,
                  column_config=text_columns, height=min(480, max(100, 40 + row_height * len(frame))),
@@ -489,6 +539,8 @@ def chart(fig, *, key=None, title=None, show_heading=True, downloads=True):
         plot_options = {"key": f"{plotly_key}_{VERSION}" + (f"_{key}" if timeline else "")} if plotly_key else {}
         st.plotly_chart(fig, width="stretch", config=plot_config,
                         alt=title, **plot_options)
+    if result_page:
+        chart_evidence(fig, title, export_key)
 
 def page_intro(title, description):
     key = {"Job Market Analysis": "job_market_heading", "PSF Mapping": "psf_mapping_heading",
@@ -2143,6 +2195,7 @@ def result_count_chart(frame, label, value, title, *, order="Highest demand", li
     key_part = "".join(character.lower() if character.isalnum() else "_" for character in f"{title}_{category}")[:72]
     result_single_metric(title, category, count, value_label, detail,
                          key=f"result_single_{key_part}")
+    chart_evidence(figure, title, key_part)
     return figure
 
 
@@ -2252,7 +2305,8 @@ def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Ke
         if render_controls:
             render_controls()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
-        with chart_column, chart_download_target(download_slot):
+        evidence_slot = st.container()
+        with chart_column, chart_download_target(download_slot), chart_evidence_target(evidence_slot):
             figure = render_chart()
         with insight_column:
             if render_insight:
@@ -2287,6 +2341,7 @@ def result_role_distribution(roles):
                             hole=.65, marker_colors=list(colors), textinfo="percent",
                             hovertemplate="%{label}<br>Reference roles: %{value:,d}<extra></extra>"))
     chart_downloads(donut, "Reference-role distribution", key="reference_role_distribution")
+    chart_evidence(donut, "Reference-role distribution", "reference_role_distribution")
 
 
 def _plotted_counts(figure, label, value):
@@ -2306,7 +2361,8 @@ def featured_result_chart(label, value, heading, total, render_chart, *, key, re
             render_controls()
         download_slot = card_download_slot()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
-        with chart_column, chart_download_target(download_slot):
+        evidence_slot = st.container()
+        with chart_column, chart_download_target(download_slot), chart_evidence_target(evidence_slot):
             figure = render_chart()
         data = _plotted_counts(figure, label, value)
         data = data.sort_values([value, label], ascending=[False, True], kind="stable")
@@ -2369,6 +2425,10 @@ def result_heatmap(matrix, title, *, count_label="Count", share_matrix=None, row
         result_single_metric(title, label, matrix.iat[0, 0], count_label,
                              detail,
                              key=f"result_single_heatmap_{digest([title])}")
+        chart_evidence(heatmap(matrix, title, count_label=count_label, share_matrix=share_matrix,
+                               row_denominators=row_denominators, share_label=share_label,
+                               denominator_label=denominator_label, transpose=transpose),
+                       title, f"single_heatmap_{digest([title])}")
     else:
         key = digest([VERSION, frame_hash(matrix), matrix.index.name, matrix.columns.name, title,
                       frame_hash(pd.DataFrame(share_matrix)) if share_matrix is not None else None,

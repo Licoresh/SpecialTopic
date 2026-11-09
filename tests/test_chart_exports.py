@@ -85,3 +85,74 @@ def test_section_download_keeps_both_graphs_and_their_counts():
     html = chart_exports.chart_group_html(figures, "Geography <selection>")
     assert html.count('class="plotly-graph-div"') == 2
     assert "Geography &lt;selection&gt;" in html
+
+
+def test_chart_evidence_is_lazy_inside_card_and_tracks_filters():
+    from streamlit.testing.v1 import AppTest
+
+    source = '''
+import pandas as pd
+import streamlit as st
+from src.ui import chart, featured_visual_chart
+from src.visualization import ranked_bar
+st.session_state["_fow_current_page"] = "Job Market Analysis"
+selected = st.selectbox("Category selection", ["All", "python"])
+rows = pd.DataFrame({"skill": ["sql", "python"], "ads": [2, 1], "job_ads_pct": [50., 25.]})
+if selected != "All":
+    rows = rows[rows.skill.eq(selected)]
+featured_visual_chart(lambda: chart(ranked_bar(rows, "skill", "ads", "Selected skills"), key="evidence_bar"),
+                      "Selected skills", [], key="evidence_demo", heading="Selected skills")
+'''
+    app = AppTest.from_string(source).run(timeout=30)
+    assert not app.exception
+    assert not app.dataframe
+    card = app.get_by_key("job_market_featured_evidence_demo")
+    assert any(panel.label == "View chart evidence" for panel in card.expander)
+    app.session_state["chart_evidence_evidence_bar"] = True
+    app.run(timeout=30)
+    assert not app.exception
+    table = app.get_by_key("job_market_featured_evidence_demo").dataframe[0].value
+    assert table.columns.tolist() == ["Category", "Job advertisements", "Share of selected ads (%)"]
+    assert table.to_dict("records") == [
+        {"Category": "sql", "Job advertisements": 2, "Share of selected ads (%)": 50.},
+        {"Category": "python", "Job advertisements": 1, "Share of selected ads (%)": 25.},
+    ]
+    app.selectbox[0].set_value("python")
+    # AppTest does not serialize expander widget state on other widget events.
+    app.session_state["chart_evidence_evidence_bar"] = True
+    app.run(timeout=30)
+    assert not app.exception
+    assert app.dataframe[0].value.Category.tolist() == ["python"]
+    app.session_state["chart_evidence_evidence_bar"] = False
+    app.run(timeout=30)
+    assert not app.exception and not app.dataframe
+
+
+def test_heatmap_evidence_pages_cells_and_preserves_counts_and_shares():
+    from streamlit.testing.v1 import AppTest
+
+    source = '''
+import pandas as pd
+import streamlit as st
+from src.ui import chart
+from src.visualization import heatmap
+st.session_state["_fow_current_page"] = "Job Market Analysis"
+counts = pd.DataFrame(2, index=[f"Family {i}" for i in range(12)], columns=[f"Skill {i}" for i in range(10)])
+counts.index.name, counts.columns.name = "family", "skill"
+chart(heatmap(counts, "Skill comparison", share_matrix=counts * 10,
+              row_denominators=pd.Series(10, index=counts.index),
+              count_label="Job advertisements"), key="evidence_matrix")
+'''
+    app = AppTest.from_string(source).run(timeout=30)
+    assert not app.exception and not app.dataframe
+    app.session_state["chart_evidence_evidence_matrix"] = True
+    app.run(timeout=30)
+    assert not app.exception
+    table = app.dataframe[0].value
+    assert len(table) == 100
+    assert table["Job advertisements"].eq(2).all()
+    assert table["Share within row group (%)"].eq(20).all()
+    app.number_input(key="chart_evidence_page_evidence_matrix").set_value(2)
+    app.session_state["chart_evidence_evidence_matrix"] = True
+    app.run(timeout=30)
+    assert not app.exception and len(app.dataframe[0].value) == 20

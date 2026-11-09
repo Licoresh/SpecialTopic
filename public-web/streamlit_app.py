@@ -34,12 +34,12 @@ from src.job_profile import selected_timeline
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, automatic_analysis_revision, health
 from src.ui import (analysis_workflow, chart, collect_result_plots, featured_result_chart, featured_visual_chart, job_market_metrics,
-                    alignment_status_insight, ordered_result_table, result_chart_options, result_count_chart,
+                    alignment_status_insight, chart_evidence_target, ordered_result_table, result_chart_options, result_count_chart,
                     result_heatmap, result_insight, result_single_metric)
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.115"
+PUBLIC_VERSION = "3.0.116"
 
 
 @st.cache_resource
@@ -769,7 +769,8 @@ def _alignment(result):
             st.subheader("Phrase–competency evidence by status", icon=":material/fact_check:")
             order, limit = _controls("public_alignment")
             bar_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
-            with bar_column:
+            evidence_slot = st.container()
+            with bar_column, chart_evidence_target(evidence_slot):
                 status_chart = result_count_chart(
                     rows, "status", "evidence_groups", "Status of Phrase–Competency Evidence Groups",
                     order=order, limit=limit, show_heading=False, value_label="Evidence groups",

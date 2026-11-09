@@ -292,6 +292,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 :is([data-testid="stButton"], [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"]) button:hover { border-color: #C98E99; box-shadow: 0 2px 7px rgb(77 16 32 / .08); }
 [data-testid="stExpander"] { border: 1px solid var(--fow-border); border-radius: var(--fow-radius); background: var(--fow-surface); box-shadow: none; }
 [data-testid="stExpander"] details summary { min-height: 46px; font-weight: 550; }
+[data-testid="stExpander"]:has([class*="st-key-chart_evidence_"]) { margin-top: .6rem; border: 0; border-top: 1px solid var(--fow-border); border-radius: 0; background: transparent; }
+[data-testid="stExpander"]:has([class*="st-key-chart_evidence_"]) details summary { min-height: 44px; padding-inline: .35rem; color: var(--fow-accent); }
+.fow-chart-evidence-mobile-hint { display: none; }
+@media (max-width: 640px) { .fow-chart-evidence-mobile-hint { display: block; color: var(--fow-muted); font-size: .75rem; } }
 [data-testid="stFileUploader"] { background: var(--fow-surface); border-radius: var(--fow-radius); }
 [data-testid="stFileUploaderDropzone"] { background: var(--fow-soft); border: 1px dashed #C98E99; border-radius: var(--fow-radius); }
 [data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--fow-border); }
