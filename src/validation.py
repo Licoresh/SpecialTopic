@@ -1,4 +1,5 @@
 import pandas as pd
+from .config import TEXT_FIELDS
 
 def validate_mapping(frame, mapping, kind):
     used = [v for v in mapping.values() if v]
@@ -8,8 +9,7 @@ def validate_mapping(frame, mapping, kind):
         raise ValueError("A mapped column is missing from this file.")
     if kind == "psf_aai" and not mapping.get("competency_name"):
         raise ValueError("Map a competency name column for PSF-AAI.")
-    required = {"jobs": ["job_description", "required_skills", "qualifications", "job_title"]}
-    if kind in required and not any(mapping.get(c) for c in required[kind]):
+    if kind == "jobs" and not any(mapping.get(field) for field in TEXT_FIELDS["jobs"]):
         raise ValueError("Map at least one text field for analysis.")
 
 def validate_taxonomy(frame):

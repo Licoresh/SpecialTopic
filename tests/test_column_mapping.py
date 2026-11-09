@@ -67,13 +67,19 @@ def test_ui_prefills_saves_and_redetects(workspace):
     assert storage.read_json("mapping_jobs")["job_description"] == ""
 
 def test_ui_applies_automatic_mapping(workspace):
-    raw = b"job_title,job_description,location,source_url,salary,employment_size\nAnalyst,Uses SQL,Manila,https://example.test,PHP 50000,10-99"
+    raw = ("job_title,job_description,Details,location,source_url,salary,employment_size\n"
+           "Analyst,Uses SQL,Café,Manila,https://example.test,PHP 50000,10-99").encode("cp1252")
+    storage.save_json("mapping_jobs", {"job_description": "Details", "location": ""})
+    storage.save_json("mapping_audit_jobs", {"dataset_hash": "previous-upload"})
     storage.archive_raw(raw, "philjobnet_jobs.csv", "jobs")
     app = AppTest.from_string("from src.ui import column_mapping\ncolumn_mapping()").run(timeout=60)
     assert not app.exception and not app.error
     next(button for button in app.button if button.label == "Apply automatic mapping").click().run(timeout=60)
     assert not app.exception and not app.error
     assert storage.read_json("mapping_jobs")["url"] == "source_url"
+    assert storage.read_json("mapping_jobs")["job_description"] == "job_description"
     mapped = storage.read_frame("mapped_jobs")
+    assert mapped.loc[0, "job_description"] == "Uses SQL"
+    assert mapped.loc[0, "location"] == "Manila"
     assert mapped.loc[0, "salary"] == "PHP 50000"
     assert mapped.loc[0, "employment_size"] == "10-99"

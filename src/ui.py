@@ -1,4 +1,4 @@
-from .category_schema import category_path, category_parent
+from .category_schema import category_path
 from io import BytesIO
 from pathlib import Path
 from copy import deepcopy
@@ -16,10 +16,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from openpyxl import load_workbook
 from . import storage
-from .config import ROOT, FIELDS, LABELS, VERSION
+from .config import ROOT, FIELDS, LABELS, TEXT_FIELDS, VERSION
 from .loaders import load_data, map_columns
 from .column_mapping import suggest_column_mapping
-from .cleaning import clean_dataset, duplicate_ids, normalize_text, analysis_job_values, analysis_jobs
+from .cleaning import clean_dataset, duplicate_ids, job_comparison_csv, normalize_text, analysis_job_values, analysis_jobs
 from .preprocessing import get_nlp
 from .validation import validate_taxonomy
 from .classification import VECTORIZER_CONFIG, predict_competency_category, SELECTION_BASIS
@@ -29,8 +29,8 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
-from .analytics import job_market_kpis, skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
-from .job_profile import job_profile_tables, job_title_timeline
+from .analytics import job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
+from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline, selected_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads
 from .timeline_table import timeline_table
 from .geography import location_tables
@@ -737,7 +737,8 @@ def upload(kind=None):
                 st.success("PSF-AAI draft imported. Review its column mapping below; the active reference is unchanged until researcher review.")
         uploaded = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"])
         st.caption("Accepted formats: CSV and Excel (.xlsx). Preview the file, save the original, then review its column mapping.")
-        encoding = st.selectbox("CSV encoding", ["utf-8-sig", "cp1252", "utf-16"])
+        encoding = st.selectbox("CSV encoding", ["auto", "utf-8-sig", "cp1252", "utf-16"],
+                                format_func=lambda value: "Automatic" if value == "auto" else value)
     if uploaded:
         content = uploaded.getvalue()
         sheet = 0
@@ -783,22 +784,28 @@ def column_mapping(kind="jobs"):
             st.info("Save a raw upload first.")
             return
         entry = manifest[kind]
-        opts = storage.read_json(f"read_options_{kind}", {"sheet": 0, "encoding": "utf-8-sig"})
+        opts = storage.read_json(f"read_options_{kind}", {"sheet": 0, "encoding": "auto"})
         path = storage.raw_upload_path(entry, kind)
         stat = path.stat()
         frame = cached_load_path(str(path), stat.st_mtime_ns, stat.st_size, entry["hash"], opts["sheet"], opts["encoding"])
         saved = storage.read_json(f"mapping_{kind}", {})
-        suggested, evidence = suggest_column_mapping(frame.columns, kind, saved)
-        fresh, _ = suggest_column_mapping(frame.columns, kind)
+        fresh, fresh_evidence = suggest_column_mapping(frame.columns, kind)
+        if kind == "jobs":
+            suggested, evidence = fresh, fresh_evidence
+            audit = storage.read_json("mapping_audit_jobs", {})
+            form_choices = saved if audit.get("dataset_hash") == entry["hash"] else suggested
+        else:
+            suggested, evidence = suggest_column_mapping(frame.columns, kind, saved)
+            form_choices = suggested
         scope = f"mapping_{kind}_{entry['hash'][:16]}_{frame_hash(pd.DataFrame(columns=frame.columns))[:8]}"
         with content():
-            st.caption("Columns are matched automatically using saved choices, standard names, common aliases and conservative spelling similarity. Review the prefilled fields, then save. Ambiguous columns stay unassigned.")
+            st.caption("Automatic matching uses standard names, common aliases and conservative spelling similarity. Review the prefilled fields, then save. Ambiguous columns stay unassigned.")
             st.info(f"{sum(bool(value) for value in suggested.values())} of {len(suggested)} fields matched. Missing optional fields can remain blank.")
             with _icon_expander("Automatic matching details"):
                 display(pd.DataFrame(evidence))
                 st.caption("Scores measure header similarity, not validated mapping accuracy. Source content is not sent to an AI service.")
             mapping_fields = (("competency_id", "competency_name", "range_of_application") if kind == "psf_aai"
-                              else ("job_title", "job_description", "required_skills", "qualifications"))
+                              else TEXT_FIELDS.get(kind, ()))
             if any(suggested.get(field) for field in mapping_fields):
                 help_text = ("Save the detected PSF-AAI columns, including Range of Application. Review them before activation."
                              if kind == "psf_aai" else
@@ -810,6 +817,8 @@ def column_mapping(kind="jobs"):
                     storage.save_json(f"mapping_{kind}", suggested)
                     storage.save_frame("mapped_"+kind, mapped)
                     storage.save_json(f"mapping_audit_{kind}", {"timestamp": timestamp(), "dataset_hash": entry["hash"], "suggestions": evidence, "saved_mapping": suggested})
+                    for field, column in suggested.items():
+                        st.session_state[f"{scope}_{field}"] = column
                     st.success("Automatic mapping saved. Review Data Quality before activating the cleaned dataset.")
             options = [""] + list(frame.columns)
             mapping = {}
@@ -817,7 +826,7 @@ def column_mapping(kind="jobs"):
                 for start in range(0, len(FIELDS[kind]), 2):
                     for column, field in zip(st.columns(2), FIELDS[kind][start:start + 2]):
                         with column:
-                            default = suggested[field]
+                            default = form_choices.get(field, "")
                             mapping[field] = st.selectbox(field.replace("_", " ").title(), options, index=options.index(default) if default in options else 0, key=f"{scope}_{field}")
                 if action_form_submit_button("Save mapping", type="primary"):
                     mapped = map_columns(frame, mapping, kind, entry["hash"])
@@ -906,6 +915,11 @@ def quality():
             if frame.empty:
                 st.info("Map this dataset first.")
                 return
+            if kind == "jobs" and "_dataset_hash" in frame:
+                latest = storage.read_json("uploads", {}).get("jobs", {})
+                if latest.get("hash") and not frame["_dataset_hash"].eq(latest["hash"]).all():
+                    st.warning("The latest job upload has no saved column mapping yet. Apply its mapping before saving a new cleaned dataset.")
+                    return
             mapped_source_hash = frame_hash(frame)
             screening = pd.DataFrame(columns=["source_id", "exclude", "exclusion_reason"])
             if kind == "jobs":
@@ -2399,8 +2413,12 @@ def _job_market_content(tables, meta, revision=None):
         input_id = meta.get("analysis_input_id", "")
         details = [meta.get("filename"), f"Dataset ID `{meta['dataset_id'][:16]}`",
                    f"Analysis input ID `{input_id[:16]}`" if input_id else "",
-                   f"Model ID `{meta['classifier_version']}`", "Same automatic analysis as the public analyzer"]
+                   f"Model ID `{meta['classifier_version']}`"]
         st.caption(" · ".join(detail for detail in details if detail))
+        st.download_button("Download analysis input CSV", data=lambda: job_comparison_csv(jobs),
+                           file_name="job-market-analysis-input.csv", mime="text/csv", icon=":material/download:",
+                           help="Upload this CSV to the public analyzer and keep the suggested mappings. Compare the Analysis input ID on both results pages.",
+                           on_click="ignore")
     chart_keys = {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review", "chart_skill_family_demand", "chart_family_ad_counts"}
     views = (tables if chart_keys.issubset(tables) else _session_cached_value(
         "_fow_market_skill_cache", revision, lambda: skill_chart_tables(tables["extracted_job_skills"], jobs),
@@ -2426,18 +2444,8 @@ def _job_market_content(tables, meta, revision=None):
 
     @st.fragment
     def skill_overview():
-        def summarize_types():
-            kinds = skills.get("skill_type", pd.Series("", index=skills.index))
-            typed = {kind: skill_counts(skills[kinds.eq(kind)], denominator)
-                     for kind in ("Technical", "Soft / Enabling")}
-            groups = skills.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
-            if "category_conflict" in skills:
-                groups = groups.mask(skills.category_conflict.eq(True), "category needs review")
-            broad = (skills.assign(category_group=groups).groupby("category_group")
-                     .source_id.nunique().rename("job_ads").reset_index())
-            return typed, broad
-
-        typed, broad = _session_cached_value("_fow_market_skill_types", revision, summarize_types,
+        typed, broad = _session_cached_value("_fow_market_skill_types", revision,
+                                              lambda: job_skill_breakdown(skills, denominator),
                                               ttl=None, max_entries=1, clone=lambda value: value)
         order, limit = result_chart_options()
 
@@ -2700,7 +2708,7 @@ def _job_market_content(tables, meta, revision=None):
                 with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
                     st.subheader("Job-title posting timeline", icon=":material/timeline:")
                     timeline_download_slot = st.container(width="content")
-                totals = monthly.groupby("job_title").job_ads.sum().sort_values(ascending=False)
+                totals = monthly.groupby("job_title").job_ads.sum().sort_values(ascending=False, kind="stable")
                 title_options = sorted(date_evidence.loc[date_evidence.job_title.ne(""), "job_title"].unique())
                 default_titles = totals.head(5).index.tolist() or title_options[:5]
                 selection_key = "result_timeline_titles"
@@ -2711,11 +2719,7 @@ def _job_market_content(tables, meta, revision=None):
                 chosen = st.multiselect("Job titles to compare", title_options, default=default_titles,
                                         max_selections=8, key=selection_key,
                                         help="Compare up to 8 grouped job titles. Seniority variants use the same grouping as Most common job titles.")
-                selected = monthly.loc[monthly.job_title.isin(chosen)]
-                if not selected.empty:
-                    months = pd.period_range(monthly.month.min(), monthly.month.max(), freq="M").astype(str)
-                    grid = pd.MultiIndex.from_product([months, sorted(selected.job_title.unique())], names=["month", "job_title"])
-                    selected = selected.set_index(["month", "job_title"]).reindex(grid, fill_value=0).reset_index()
+                selected = selected_timeline(monthly, chosen)
                 selected_evidence = date_evidence.loc[date_evidence.job_title.isin(chosen)]
                 undated_titles = sorted(set(chosen) - set(selected.job_title.unique()))
                 dated = int(selected_evidence.loc[selected_evidence.date_status.eq("Dated"), "source_id"].nunique())
@@ -2792,17 +2796,7 @@ def _job_market_content(tables, meta, revision=None):
         needs_review_education = int(education_evidence.loc[
             education_evidence.parse_status.eq("Needs review"), "source_id"
         ].nunique())
-        education_chart = education.assign(education_level=education.education_level.replace({
-            "undergraduate / college level": "College / undergraduate",
-            "associate degree": "College / undergraduate",
-            "bachelor's degree": "College / undergraduate",
-            "postgraduate degree": "Postgraduate",
-            "master's degree": "Postgraduate",
-            "doctoral degree": "Postgraduate",
-        })).groupby("education_level", as_index=False, sort=False).agg(
-            job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"),
-            level_order=("level_order", "min"),
-        ).sort_values("level_order", kind="stable").reset_index(drop=True)
+        education_chart = education_chart_counts(education)
         with st.container(key="job_market_education"):
             if education_chart.empty:
                 summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
@@ -3187,6 +3181,12 @@ def research_page(page):
             })
             tables = {**tables, "corrections": corrections(), **_load_report_tables()}
         with content():
+            if automatic:
+                pending = storage.read_json("uploads", {}).get("jobs", {})
+                active_id = meta.get("dataset_id")
+                if active_id and pending.get("hash") and pending["hash"] != active_id:
+                    st.warning(f"Upload pending: {pending.get('filename') or 'Job CSV'} (Dataset ID {pending['hash'][:16]}). "
+                               "These results still use the last saved cleaned dataset. Map the new upload, then save it in Review data quality to update these results.")
             _research_results_content(page, tables, meta, active_reference)
 
 

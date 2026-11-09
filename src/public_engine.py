@@ -12,23 +12,22 @@ import numpy as np
 import pandas as pd
 
 from .alignment import calculate_mapping, summarize_alignment
-from .analytics import chart_mapping_rows, job_market_kpis, skill_chart_tables, psf_demand_tables, unmapped_chart_counts
-from .category_schema import category_parent
-from .cleaning import analysis_job_values, clean_dataset, duplicate_ids, normalize_text
+from .analytics import chart_mapping_rows, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, unmapped_chart_counts
+from .cleaning import clean_dataset, duplicate_ids, job_comparison_csv, normalize_text
 from .config import DEFAULTS, FIELDS, ROOT
 from .gap_analysis import calculate_gaps
 from .geography import location_tables
-from .job_profile import job_profile_tables, job_title_timeline
+from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline
 from .loaders import load_data, map_columns
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
-from .utils import digest, frame_hash
+from .utils import digest
 
 
 MAX_LOCAL_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 100_000
-RESULT_SCHEMA_VERSION = 5
+RESULT_SCHEMA_VERSION = 6
 _MODEL_PATH = "public-web/site/model.json"
 _REFERENCE_PATH = "data/reference/psf_aai_default.csv"
 _TOKEN = re.compile(r"(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)", re.UNICODE)
@@ -129,13 +128,17 @@ def automatic_asset_revision():
 
 
 def automatic_job_scope(jobs):
-    """Use rows with job text and retain possible duplicates for review."""
+    """Rebuild the automatic input from mapped values, after any manual screening."""
     if jobs.empty:
         return jobs, {"rows": 0, "blank": 0, "duplicates": 0}, ""
+    columns = ["source_id", "_dataset_hash", "_raw_row", *FIELDS["jobs"]]
+    if "_raw_row" in jobs:
+        jobs = jobs.sort_values("_raw_row", key=lambda values: pd.to_numeric(values, errors="coerce"), kind="stable")
+    jobs, _ = clean_dataset(jobs.reindex(columns=columns, fill_value=""), "jobs")
     included = jobs.loc[jobs.cleaned_text.fillna("").str.strip().ne("")]
     duplicates = duplicate_ids(included.reindex(columns=["source_id", *FIELDS["jobs"]]))
     quality = {"rows": len(jobs), "blank": len(jobs) - len(included), "duplicates": len(duplicates)}
-    return included, quality, frame_hash(analysis_job_values(included))
+    return included, quality, digest(job_comparison_csv(included))
 
 
 def automatic_job_analysis(jobs, model, progress=None):
@@ -158,14 +161,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
     occurrences = chart_views["chart_skill_occurrences"]
     chartable = occurrences
     demand = chart_views["chart_skill_demand"]
-    categories = occurrences.groupby("competency_category").source_id.nunique().rename("job_ads").reset_index()
-    parents = occurrences.assign(category_group=occurrences.competency_category.map(category_parent)
-                                 .replace("Not applicable", "Category needs review"))
-    if "category_conflict" in parents:
-        parents.loc[parents.category_conflict.eq(True), "category_group"] = "Category needs review"
-    broad = parents.groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
-    technical = occurrences[occurrences.skill_type.eq("Technical")].groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
-    enabling = occurrences[occurrences.skill_type.eq("Soft / Enabling")].groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
+    typed, broad = job_skill_breakdown(occurrences, jobs.source_id.nunique())
 
     locations = geography["location_evidence"]
     region_counts = locations[locations.region.ne("")].groupby("region").source_id.nunique().rename("job_ads").reset_index()
@@ -187,7 +183,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
     linked = chart_mapping_rows(mapping)
     linked = linked.loc[linked.status.isin(["ALIGNED", "PARTIALLY ALIGNED"]) &
                         linked.psf_competency.fillna("").ne("")].copy()
-    role_rows = linked.assign(psf_job_role=linked.psf_job_role.fillna("").astype(str).str.casefold().str.split("; ")).explode("psf_job_role")
+    role_rows = linked.assign(psf_job_role=linked.psf_job_role.map(normalize_text).str.split("; ")).explode("psf_job_role")
     role_rows = role_rows[role_rows.psf_job_role.ne("")]
     role_counts = role_rows.groupby("psf_job_role").source_id.nunique().rename("job_ads").reset_index()
     psf_tables = psf_demand_tables(linked, jobs, taxonomy)
@@ -201,27 +197,16 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
                if not linked.empty and "match_method" in linked else {})
     psf_references = psf_demand.merge(references, on="psf_competency", how="left")
     psf_references["methods"] = psf_references.psf_competency.map(methods).apply(lambda value: value or [])
-    education = profile["education_level_counts"].copy()
-    education["education_level"] = education.education_level.replace({
-        "undergraduate / college level": "College / undergraduate", "associate degree": "College / undergraduate",
-        "bachelor's degree": "College / undergraduate", "postgraduate degree": "Postgraduate",
-        "master's degree": "Postgraduate", "doctoral degree": "Postgraduate",
-    })
-    education = education.groupby("education_level", as_index=False, sort=False).agg(
-        job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"), level_order=("level_order", "min"))
-    education = education.sort_values("level_order", kind="stable")
-    title_options = profile["job_title_source_evidence"].drop_duplicates("source_id")
-    title_counts = title_options.groupby("job_title").source_id.nunique().rename("job_ads").reset_index()
-    title_counts = title_counts[title_counts.job_title.astype(str).str.strip().ne("")]
+    education = education_chart_counts(profile["education_level_counts"])
 
     return {
         "skills": _counts(demand, "employer_skill", "employer_demand_count"),
-        "technicalSkills": _counts(technical, "skill_label", "job_ads"),
-        "enablingSkills": _counts(enabling, "skill_label", "job_ads"),
+        "technicalSkills": _counts(typed["Technical"], "skill_label", "job_ads"),
+        "enablingSkills": _counts(typed["Soft / Enabling"], "skill_label", "job_ads"),
         "broadAreas": _counts(broad, "category_group", "job_ads"),
         "titles": _counts(profile["common_job_title_counts"], "common_job_title", "job_ads"),
         "roleGroups": _counts(profile["job_role_group_counts"], "job_role_group", "job_ads"),
-        "sourceTitles": _counts(title_counts, "job_title", "job_ads"),
+        "sourceTitles": _counts(profile["job_title_counts"], "job_title", "job_ads"),
         "titleFamilies": _records(profile["job_title_family_counts"]),
         "families": _counts(profile["job_family_counts"], "job_family", "job_ads"),
         "locations": _counts(region_counts, "region", "job_ads"),
@@ -270,8 +255,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
         raise ValueError(f"This analysis server accepts CSV files up to {maximum // (1024 * 1024)} MB.")
     if Path(filename).suffix.lower() != ".csv":
         raise ValueError("Use a CSV file for public analysis.")
-    encoding = "utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
-    raw = load_data(content, Path(filename).name, encoding=encoding)
+    raw = load_data(content, Path(filename).name, encoding="auto")
     if len(raw) > MAX_ROWS:
         raise ValueError("This public analysis is limited to 100,000 rows per upload.")
 
@@ -286,15 +270,10 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     selected = {}
     for field in FIELDS["jobs"]:
         header = str(mapping.get(field) or "")
-        selected[field] = header if header in raw.columns else header_aliases.get(header, "")
-    selected.pop("source_id", None)
-    if not selected.get("job_title") or not any(selected.get(field) for field in ("job_description", "required_skills", "preferred_skills", "qualifications")):
-        raise ValueError("Map Job title and at least one description, skills, or qualifications column.")
-
+        selected[field] = header if header in raw.columns else header_aliases.get(header, header)
     dataset_hash = digest(content)
     mapped = map_columns(raw, selected, "jobs", dataset_hash)
-    jobs, _ = clean_dataset(mapped, "jobs")
-    jobs, quality, analysis_id = automatic_job_scope(jobs)
+    jobs, quality, analysis_id = automatic_job_scope(mapped)
     if jobs.empty:
         raise ValueError("The mapped CSV has no job advertisement text.")
     settings = DEFAULTS

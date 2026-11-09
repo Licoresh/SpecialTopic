@@ -566,6 +566,32 @@ def _requirements(jobs, field, patterns=(), missing_check=None):
     return summary, evidence
 
 
+def selected_timeline(monthly, titles):
+    """Keep the same full posting period when comparing a subset of titles."""
+    selected = monthly.loc[monthly.job_title.isin(titles)]
+    if selected.empty:
+        return selected
+    months = pd.period_range(monthly.month.min(), monthly.month.max(), freq="M").astype(str)
+    grid = pd.MultiIndex.from_product([months, sorted(selected.job_title.unique())], names=["month", "job_title"])
+    return selected.set_index(["month", "job_title"]).reindex(grid, fill_value=0).reset_index()
+
+
+def education_chart_counts(level_counts):
+    """Combine related stated levels for the education comparison chart."""
+    groups = {
+        "undergraduate / college level": "College / undergraduate",
+        "associate degree": "College / undergraduate",
+        "bachelor's degree": "College / undergraduate",
+        "postgraduate degree": "Postgraduate",
+        "master's degree": "Postgraduate",
+        "doctoral degree": "Postgraduate",
+    }
+    return (level_counts.assign(education_level=level_counts.education_level.replace(groups))
+            .groupby("education_level", as_index=False, sort=False).agg(
+                job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"), level_order=("level_order", "min"))
+            .sort_values("level_order", kind="stable").reset_index(drop=True))
+
+
 def job_profile_tables(jobs):
     """Build export-ready job-market tables using unique advertisements as units."""
     job_ads = jobs.drop_duplicates("source_id") if "source_id" in jobs else jobs.copy()

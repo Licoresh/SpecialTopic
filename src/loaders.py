@@ -29,7 +29,16 @@ def load_data(content, filename, sheet=0, encoding="utf-8-sig"):
     ext = Path(filename).suffix.lower()
     try:
         if ext == ".csv":
-            text = content.decode(encoding)
+            if encoding == "auto":
+                if content.startswith((b"\xff\xfe", b"\xfe\xff")):
+                    text = content.decode("utf-16")
+                else:
+                    try:
+                        text = content.decode("utf-8-sig")
+                    except UnicodeDecodeError:
+                        text = content.decode("cp1252")
+            else:
+                text = content.decode(encoding)
             reader = csv.reader(StringIO(text))
             header = next(reader, [])
             if not header:

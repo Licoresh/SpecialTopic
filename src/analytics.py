@@ -1,5 +1,5 @@
 import pandas as pd
-from .category_schema import requirement_type
+from .category_schema import category_parent, requirement_type
 from .cleaning import normalize_text
 from .job_profile import experience_phrase_reason
 from .skill_extraction import GENERAL
@@ -396,6 +396,21 @@ def skill_chart_tables(skills, jobs, *, allowed_phrases=None):
             "chart_skill_family_demand": family_demand,
             "chart_family_ad_counts": family_ads.sort_values(["family_ads", "job_family"],
                                                               ascending=[False, True], kind="stable").reset_index(drop=True)}
+
+
+def job_skill_breakdown(skills, denominator):
+    """Count distinct ads per skill type and broader competency group."""
+    kinds = skills.get("skill_type", pd.Series("", index=skills.index))
+    typed = {}
+    for kind in ("Technical", "Soft / Enabling"):
+        counts = skills[kinds.eq(kind)].groupby("skill_label").source_id.nunique().rename("job_ads").reset_index()
+        counts["job_ads_pct"] = counts.job_ads / denominator * 100 if denominator else float("nan")
+        typed[kind] = counts
+    groups = skills.competency_category.map(category_parent).replace("Not applicable", "Category needs review").str.casefold()
+    if "category_conflict" in skills:
+        groups = groups.mask(skills.category_conflict.eq(True), "category needs review")
+    broad = skills.assign(category_group=groups).groupby("category_group").source_id.nunique().rename("job_ads").reset_index()
+    return typed, broad
 
 
 def job_market_kpis(jobs, views, reference):

@@ -27,17 +27,19 @@ watch_paths = os.environ.get("PYTHONPATH", "").split(os.pathsep)
 if source_root not in watch_paths:
     os.environ["PYTHONPATH"] = os.pathsep.join([source_root, *filter(None, watch_paths)])
 
-from src.config import FIELDS
+from src.config import FIELDS, TEXT_FIELDS
 from src.column_mapping import suggest_column_mapping
 from src.design import apply_design
+from src.job_profile import selected_timeline
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, RESULT_SCHEMA_VERSION, analyze_upload, health
-from src.ui import (analysis_workflow, featured_result_chart, featured_visual_chart, job_market_metrics, result_chart_options,
-                    result_count_chart, result_heatmap, result_insight,
-                    result_role_distribution)
+from src.ui import (analysis_workflow, chart, featured_result_chart, featured_visual_chart, job_market_metrics,
+                    ordered_result_table, result_chart_options, result_count_chart, result_heatmap, result_insight,
+                    result_role_distribution, result_single_metric)
 from src.visualization import education_bar, job_title_trend
+from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.103"
+PUBLIC_VERSION = "3.0.104"
 
 
 @st.cache_resource
@@ -57,8 +59,8 @@ FIELD_LABELS = {
     "employment_type": "Employment type", "salary": "Salary", "employment_size": "Employer size",
     "search_term": "Search term", "collected_at_utc": "Collection date",
 }
-REQUIRED_FIELDS = ("job_title", "job_description", "required_skills", "preferred_skills", "qualifications")
-OPTIONAL_FIELDS = tuple(field for field in FIELDS["jobs"] if field not in REQUIRED_FIELDS and field != "source_id")
+PRIMARY_FIELDS = ("job_title", "job_description", "required_skills", "preferred_skills", "qualifications")
+OPTIONAL_FIELDS = tuple(field for field in FIELDS["jobs"] if field not in PRIMARY_FIELDS)
 ENGINE = health(hosted=True)
 
 
@@ -222,8 +224,8 @@ def _mapping_row(field, columns, mapping, file_hash, duplicate_columns=()):
         st.markdown(f"**{label}**")
     with status:
         duplicate = value in duplicate_columns
-        state = "error" if duplicate else "complete" if value else "required" if field == "job_title" else "pending"
-        text = "Duplicate" if duplicate else "Matched" if value else "Required" if field == "job_title" else "Choose a column"
+        state = "error" if duplicate else "complete" if value else "pending"
+        text = "Duplicate" if duplicate else "Matched" if value else "Choose a column"
         st.html(f'<span class="public-map-status" data-state="{state}">{text}</span>')
     return value
 
@@ -235,8 +237,7 @@ def _read_upload(upload):
 def _read_content(content, filename):
     if len(content) > MAX_HOSTED_UPLOAD_BYTES:
         raise ValueError("This public Streamlit app accepts CSV files up to 4 MB.")
-    encoding = "utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
-    frame = load_data(content, Path(filename).name, encoding=encoding)
+    frame = load_data(content, Path(filename).name, encoding="auto")
     if len(frame) > 100_000:
         raise ValueError("This public analysis is limited to 100,000 rows per upload.")
     return content, frame
@@ -382,7 +383,7 @@ def _roles(result):
 
     family_sizes = {row["job_family"]: int(row["family_ads"]) for row in charts.get("familyAdCounts", [])}
     skill_rows = _frame(charts.get("skills"), "skill_label", "job_ads", total=ads)
-    skills = skill_rows.sort_values(["job_ads", "skill_label"], ascending=[False, True], kind="stable").head(min(limit, 15)).skill_label.tolist() if not skill_rows.empty else []
+    skills = ordered_result_table(skill_rows, "skill_label", order, "job_ads").head(min(limit, 15)).skill_label.tolist() if not skill_rows.empty else []
     families = [name for name, _ in sorted(family_sizes.items(), key=lambda row: (-row[1], row[0])) if name != "not stated"]
     if families and skills:
         defaults = families[:8]
@@ -404,7 +405,8 @@ def _roles(result):
             if len(cells) > 1 and best and sum(cell[4] == best[4] for cell in cells) > 1:
                 ties = sum(cell[4] == best[4] for cell in cells)
                 text = f"{ties:,} displayed skill–family pairs tie for the highest within-family share ({best[4]:.1f}%)."
-            _heatmap(matrix, "Top requested skills by occupational family", text,
+            title = "Least frequent requested skills by occupational family" if order == "Lowest demand" else "Top requested skills by occupational family"
+            _heatmap(matrix, title, text,
                      [(f"{skill} · {family}", count) for skill, family, count, _, _ in cells[:3]],
                      "public_family_heatmap", shares=shares, denominators=denominators,
                      share_label="Share of family ads", denominator_label="Advertisements in family",
@@ -447,18 +449,20 @@ def _roles(result):
         location_title, location_label = "Advertisements by Philippine region", "region"
     else:
         location_data = [{"label": row["label"], "count": row["count"]} for row in city_rows if selected_city == "All" or row["label"] == selected_city]
-        denominator = int(next((row["count"] for row in region_rows if row["label"] == selected_region), 0)) if selected_city == "All" else int(next((row["count"] for row in city_rows if row["label"] == selected_city), 0))
-        location_title, location_label = (f"Cities and municipalities in {selected_region}", "location") if selected_city == "All" else (f"Advertisements in {selected_city}", "location")
-    _bar(location_data, "location", "job_ads", location_title, "Top occupational titles", denominator, "locations", order, limit)
+        denominator = int(next((row["count"] for row in region_rows if row["label"] == selected_region), 0))
+        location_title, location_label = f"Cities and municipalities in {selected_region}", "locality"
+    _bar(location_data, location_label, "job_ads", location_title, "Top occupational titles", denominator, "locations", order, limit)
     if selected_region == "All":
         skill_data = [row for row in charts.get("regionSkillDemand", []) if row["region"]]
         area = "All regions"
         denominator = summary["withLocation"]
+    elif selected_city == "All":
+        skill_data = [row for row in charts.get("regionSkillDemand", []) if row["region"] == selected_region]
+        area = selected_region
     else:
-        skill_data = [row for row in charts.get("citySkillDemand", []) if row["region"] == selected_region and (selected_city == "All" or row["locality"] == selected_city)]
-        area = selected_city if selected_city != "All" else selected_region
-        denominator = int(next((row["count"] for row in (city_rows if selected_city != "All" else region_rows)
-                               if row["label"] == (selected_city if selected_city != "All" else selected_region)), 0))
+        skill_data = [row for row in charts.get("citySkillDemand", []) if row["region"] == selected_region and row["locality"] == selected_city]
+        area = selected_city
+        denominator = int(next((row["count"] for row in city_rows if row["label"] == selected_city), 0))
     skill_counts = {}
     for row in skill_data:
         skill_counts[row["skill_label"]] = skill_counts.get(row["skill_label"], 0) + int(row["job_ads"])
@@ -469,21 +473,30 @@ def _roles(result):
     title_totals = {}
     for row in monthly:
         title_totals[row["label"]] = title_totals.get(row["label"], 0) + int(row["count"])
-    title_options = sorted(title_totals, key=lambda name: (-title_totals[name], name))
-    timeline_titles = st.multiselect("Job titles to compare", title_options, default=title_options[:5], key="public_timeline_titles")
+    coverage = pd.DataFrame(charts.get("timelineCoverage", []), columns=["label", "dated", "undated"])
+    title_options = sorted(name for name in coverage.label if name)
+    defaults = sorted(title_totals, key=lambda name: (-title_totals[name], name))[:5] or title_options[:5]
+    timeline_titles = st.multiselect("Job titles to compare", title_options, default=defaults,
+                                     max_selections=8, key="public_timeline_titles")
     if timeline_titles:
-        selected = [row for row in monthly if row["label"] in timeline_titles]
-        monthly_frame = pd.DataFrame([{"month": row["month"], "job_title": row["label"], "job_ads": row["count"]} for row in selected])
-        totals = pd.DataFrame(charts.get("timelineCoverage", []))
-        dated = int(totals.loc[totals.label.isin(timeline_titles), "dated"].sum()) if not totals.empty else sum(title_totals.get(title, 0) for title in timeline_titles)
-        undated = int(totals.loc[totals.label.isin(timeline_titles), "undated"].sum()) if not totals.empty else 0
+        all_months = pd.DataFrame(monthly, columns=["month", "label", "count"]).rename(columns={"label": "job_title", "count": "job_ads"})
+        monthly_frame = selected_timeline(all_months, timeline_titles)
+        totals = coverage.loc[coverage.label.isin(timeline_titles)]
+        dated, undated = int(totals.dated.sum()), int(totals.undated.sum())
         by_month = monthly_frame.groupby("month", as_index=False).job_ads.sum() if not monthly_frame.empty else pd.DataFrame()
         peak = int(by_month.job_ads.max()) if not by_month.empty else 0
         peak_months = by_month.loc[by_month.job_ads.eq(peak), "month"].astype(str).tolist()[:3] if peak else []
         summary_text = f"The chosen titles appear in {dated:,} dated ads. The highest recorded monthly count is {peak:,}, in {', '.join(peak_months)}."
         top = [(title, title_totals.get(title, 0)) for title in timeline_titles]
-        featured_visual_chart(lambda: job_title_trend(monthly_frame, "Job-title posting timeline"), summary_text, top,
-                              key="title_timeline", insight_title="Timeline Insight", list_title="Dated ads by selected title")
+        if monthly_frame.empty:
+            st.info("No usable posting dates are available for these job titles.")
+        elif monthly_frame.month.nunique() > 1:
+            featured_visual_chart(lambda: chart(job_title_trend(monthly_frame), show_heading=False),
+                                  summary_text, top, key="title_timeline",
+                                  insight_title="Timeline Insight", list_title="Dated ads by selected title")
+        else:
+            st.info("Only one posting month is available; the table shows counts without implying a time trend.")
+            timeline_table(monthly_frame, timeline_titles)
         st.caption(f"{dated:,} dated ads; {undated:,} ads with missing or invalid dates are excluded.")
 
 
@@ -502,12 +515,18 @@ def _qualifications(result):
                 if len(leaders) > 1 else
                 f"{leaders[0]} has the highest classified count ({max_value:,} of {classified:,} ads with one recognized level).")
         top = list(education.sort_values(["job_ads", "level_order"], ascending=[False, True]).head(3)[["education_level", "job_ads"]].itertuples(index=False, name=None))
-        featured_visual_chart(lambda: education_bar(education), text, top, key="education", insight_title="Education Insight", list_title="Classified levels", heading="Stated education requirements by level")
+        heading = "Stated education requirements by level"
+        if len(education) == 1:
+            result_single_metric(heading, leaders[0], max_value, "Job advertisements", text, key="public_education_single")
+        else:
+            featured_visual_chart(lambda: chart(education_bar(education), title=heading, show_heading=False),
+                                  text, top, key="education", insight_title="Education Insight",
+                                  list_title="Classified levels", heading=heading)
     else:
         st.info("No single education level could be classified from the stated requirements.")
     st.caption(f"Education is stated in {summary['withEducation']:,} of {summary['ads']:,} ads. Not stated does not mean education was not required; {summary['educationNeedsReview']:,} stated ads need review.")
     experience = _frame(charts.get("experience"), "requirement", "job_ads", total=summary["ads"])
-    shown = experience.sort_values(["job_ads", "requirement"], ascending=[order != "Lowest demand", True]).head(limit) if not experience.empty else experience
+    shown = ordered_result_table(experience, "requirement", order, "job_ads").head(limit)
     if shown.empty:
         st.info("No experience durations could be compared in this selection.")
     else:
@@ -542,7 +561,7 @@ def _psf(result):
          "psf_roles", order, limit, "Top Displayed Roles")
     if roles:
         role_frame = pd.DataFrame([{"psf_job_role": row["label"], "job_ads": row["count"]} for row in roles])
-        result_role_distribution(role_frame)
+        result_role_distribution(ordered_result_table(role_frame, "psf_job_role", order, "job_ads").head(limit))
     cells = charts.get("psfHeatmap", [])
     role_sizes = {row["label"]: int(row["count"]) for row in roles}
     role_options = sorted({row["role"] for row in cells}, key=lambda name: (-role_sizes.get(name, 0), name))
@@ -691,7 +710,7 @@ def main():
     if result and result.get("schemaVersion") != RESULT_SCHEMA_VERSION:
         st.session_state.pop("public_result")
         st.session_state["public_stage"] = "review"
-        st.info("The counting rules have changed. Start analysis to update your results.")
+        st.info("Analysis has been updated. Start analysis again to refresh your results.")
         result = None
     if result:
         _results(result)
@@ -740,9 +759,7 @@ def main():
                             st.session_state["public_filename"] = Path(uploaded.name).name
                             st.session_state["public_content"] = content
                             st.session_state["public_preview"] = preview
-                            prior = st.session_state.get("public_recent_upload") or {}
-                            prior_mapping = prior.get("mapping", {}) if prior.get("file_hash") == file_hash else {}
-                            st.session_state["public_mapping"] = dict(prior_mapping) or suggest_column_mapping(preview.columns, "jobs")[0]
+                            st.session_state["public_mapping"] = suggest_column_mapping(preview.columns, "jobs")[0]
                             st.session_state.pop("public_error", None)
                         else:
                             content = st.session_state["public_content"]
@@ -801,7 +818,7 @@ def main():
         file_name = st.session_state["public_filename"]
         columns = list(preview.columns)
         mapping = dict(st.session_state.get("public_mapping", {}))
-        fields = (*REQUIRED_FIELDS, *OPTIONAL_FIELDS)
+        fields = (*PRIMARY_FIELDS, *OPTIONAL_FIELDS)
         selected = [st.session_state.get(f"public-map-{file_hash[:10]}-{field}", mapping.get(field, "")) for field in fields]
         counts = {column: selected.count(column) for column in set(selected) if column}
         duplicate_columns = {column for column, count in counts.items() if count > 1}
@@ -819,8 +836,13 @@ def main():
                 st.divider()
                 st.subheader("Detected column mapping")
                 st.caption("Review the suggested matches. Choose a CSV column for each field; you can edit any match before analysis.")
+                def reset_suggestions():
+                    fresh, _ = suggest_column_mapping(columns, "jobs")
+                    for field, column in fresh.items():
+                        st.session_state[f"public-map-{file_hash[:10]}-{field}"] = column
+                st.button("Re-detect columns", on_click=reset_suggestions)
                 st.html('<div class="public-map-head"><span>CSV column</span><span>Used as</span><span>Status</span></div>')
-                for field in REQUIRED_FIELDS:
+                for field in PRIMARY_FIELDS:
                     with st.container(key=f"public-map-row-{field}"):
                         mapping[field] = _mapping_row(field, columns, mapping, file_hash, duplicate_columns)
                 with st.expander("Optional fields"):
@@ -837,13 +859,12 @@ def main():
                 with st.expander("Preview sample rows"):
                     st.dataframe(preview.head(8), width="stretch", hide_index=True)
 
-            title_ready = bool(mapping.get("job_title"))
-            detail_ready = any(mapping.get(field) for field in REQUIRED_FIELDS[1:])
+            text_ready = any(mapping.get(field) for field in TEXT_FIELDS["jobs"])
             unique = not duplicate_columns
             classifier_ready = bool(ENGINE.get("classifierAvailable"))
-            ready = title_ready and detail_ready and unique and classifier_ready
+            ready = text_ready and unique and classifier_ready
             checks = (("CSV structure validated", True),
-                      ("Job title and detail columns identified", title_ready and detail_ready),
+                      ("At least one job text column identified", text_ready),
                       ("Each source column is used once", unique),
                       ("Public classifier available", classifier_ready))
             completed = sum(done for _, done in checks)

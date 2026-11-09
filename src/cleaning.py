@@ -13,7 +13,7 @@ DERIVED_FIELDS = {"original_text", "cleaned_text", "empty_text", "posting_date_p
                   "empty_job_description", "education_detected", "experience_detected"}
 EDUCATION = re.compile(r"\b(?:bachelor(?:['’]s)?(?:\s+degree)?|master(?:['’]s)?(?:\s+degree)?|doctoral(?:\s+degree)?|doctorate|ph\.?d\.?|undergraduate|associate(?:['’]s)?\s+degree|high\s+school|senior\s+high(?:\s+school)?|shs|grade\s*1[12]|college(?:\s+(?:graduate|level|degree))?|vocational(?:\s+graduate)?|technical[ -]?vocational|certification)\b", re.I)
 _DURATION_NUMBER = r"(?:\d+(?:\.\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?"
-EXPERIENCE = re.compile(rf"\b{_DURATION_NUMBER}\s*(?:(?:[-–]|\bto\b)\s*{_DURATION_NUMBER})?\+?\s*(?:years?|yrs?)\s*['’]?\s+(?:(?:of|relevant|professional|work|related|prior)\s+){0,3}experience\b", re.I)
+EXPERIENCE = re.compile(rf"\b{_DURATION_NUMBER}\s*(?:(?:[-–]|\bto\b)\s*{_DURATION_NUMBER})?\+?\s*(?:years?|yrs?)\s*['’]?\s+(?:(?:of|relevant|professional|work|related|prior)\s+){{0,3}}experience\b", re.I)
 
 def clean_text(value):
     if value is None or pd.isna(value):
@@ -49,6 +49,12 @@ def analysis_job_values(frame):
         source = cleaned if field not in identity and cleaned in refreshed else field
         values[field] = refreshed.get(source, pd.Series("", index=refreshed.index))
     return values
+
+
+def job_comparison_csv(jobs):
+    """Export mapped source values for a lossless rerun with default column matches."""
+    return jobs.reindex(columns=FIELDS["jobs"], fill_value="").to_csv(
+        index=False, lineterminator="\r\n").encode("utf-8-sig")
 
 
 def normalize_url(value):

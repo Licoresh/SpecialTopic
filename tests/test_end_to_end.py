@@ -52,10 +52,10 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     from src.workflow import job_market_bundle
 
     filename = "synthetic.csv"
-    content = (b"job_title,job_description,source_name\nAnalyst,Python and data analysis.,Synthetic"
-               b"\nAnalyst,Python and data analysis.,Synthetic\n,,")
+    content = ("job_title,job_description,source_name\nAnalyst,Python and data analysis.,Café"
+               "\nAnalyst,Python and data analysis.,Café\n,,").encode("cp1252")
     dataset_id = digest(content)
-    raw = load_data(content, filename)
+    raw = load_data(content, filename, encoding="auto")
     mapping, _ = suggest_column_mapping(raw.columns, "jobs")
     jobs, _ = clean_dataset(map_columns(raw, mapping, "jobs", dataset_id), "jobs")
     storage.save_frame("cleaned_jobs", jobs)
@@ -87,6 +87,41 @@ def test_job_market_matches_public_with_private_research_inputs(workspace, taxon
     assert metrics["Distinct chart skills"] == str(public["summary"]["chartSkills"])
     assert metrics["Distinct phrases withheld"] == str(public["summary"]["withheldPhrases"])
     assert any("Possible duplicate rows included: 1" in caption.value for caption in app.caption)
+    assert any("Upload pending: pending.csv" in warning.value for warning in app.warning)
+
+
+def test_research_input_csv_preserves_reviewed_scope_and_rebuilds_cleaning(workspace):
+    from src.cleaning import clean_dataset, duplicate_ids, job_comparison_csv
+    from src.column_mapping import suggest_column_mapping
+    from src.loaders import load_data, map_columns
+    from src.public_engine import analyze_upload
+    from src.utils import digest
+    from src.workflow import job_market_bundle
+
+    content = (b"Position,Details,Location,Posted Date\n"
+               b"Analyst,<p>Python and data analysis</p>,Manila,2025-01-02\n"
+               b"Analyst,<p>Python and data analysis</p>,Manila,2025-01-02\n"
+               b"Engineer,SQL and data engineering,Cebu City,2025-02-03\n"
+               b"Screened out,Financial management,Manila,2025-03-02")
+    raw = load_data(content, "jobs.csv", encoding="auto")
+    mapping, _ = suggest_column_mapping(raw.columns, "jobs")
+    mapped = map_columns(raw, mapping, "jobs", digest(content)).iloc[:3]
+    saved, _ = clean_dataset(mapped, "jobs", duplicate_ids(mapped))
+    storage.save_frame("cleaned_jobs", saved.iloc[::-1].assign(
+        cleaned_text="stale text", posting_date_parsed="1900-01-01"))
+    tables, meta = job_market_bundle()
+    comparison = job_comparison_csv(tables["cleaned_jobs"])
+    preview = load_data(comparison, "comparison.csv", encoding="auto")
+    defaults, _ = suggest_column_mapping(preview.columns, "jobs")
+    public = analyze_upload(comparison, "comparison.csv", defaults, hosted=True)
+    assert public["datasetHash"] != meta["dataset_id"]
+    assert public["analysisInputHash"] == meta["analysis_input_id"]
+    assert {key: public["summary"][key] for key in meta["kpis"]} == meta["kpis"]
+    assert meta["kpis"]["ads"] == 2
+    assert public["summary"]["duplicates"] == 0
+    assert [row["postingMonth"] for row in public["evidence"]["rows"]] == ["2025-01", "2025-02"]
+    assert set(tables["cleaned_jobs"].job_title) == {"Analyst", "Engineer"}
+    assert "stale text" not in tables["cleaned_jobs"].cleaned_text.tolist()
 
 
 def test_public_results_render_family_and_psf_heatmaps():

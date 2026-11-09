@@ -184,7 +184,7 @@ def job_market_bundle():
     """Compare the active jobs using the public preset and released reference."""
     from .public_engine import _model, automatic_job_analysis, automatic_job_scope
 
-    jobs, quality, analysis_id = automatic_job_scope(analysis_jobs(storage.read_frame("cleaned_jobs")))
+    jobs, quality, analysis_id = automatic_job_scope(storage.read_frame("cleaned_jobs"))
     if jobs.empty:
         return {}, {}
     model = _model()
