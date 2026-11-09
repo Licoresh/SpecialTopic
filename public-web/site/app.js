@@ -23,7 +23,7 @@ const optional = [
 const views = {
   skills: [["skills", "Employer-requested skills"], ["technicalSkills", "Technical skills"], ["enablingSkills", "Enabling and interpersonal skills"], ["broadAreas", "Broad competency areas"]],
   roles: [["titles", "Job-title overview"], ["familyHeatmap", "Skills by occupational family"], ["selectedTitleSkills", "Skills for selected titles"], ["locations", "Geographical distribution"], ["locationSkills", "Skills by selected location"], ["timeline", "Job-title posting timeline"]],
-  qualifications: [["education", "Stated education requirements by level"], ["experience", "Experience requirements"]],
+  qualifications: [["education", "Education and entry requirements"], ["experience", "Experience requirements"]],
   psf: [["psf", "PSF-AAI competencies linked to employer demand"], ["psfRoles", "Related PSF-AAI reference roles"], ["psfHeatmap", "Role–competency demand"]],
   alignment: [["alignment", "Status of phrase–competency evidence groups"]],
   unmapped: [["unmapped", "Unmapped skill labels"], ["recurring", "Recurring labels for review"]],
@@ -599,27 +599,34 @@ function renderRoles() {
 
 function renderQualifications() {
   const { charts, summary } = result;
-  sectionHeading("What qualifications are stated?", `Education is stated in ${integer.format(summary.withEducation)} of ${integer.format(summary.ads)} ads. Experience is identified in ${integer.format(summary.withExperience)} ads from source fields or advertisement text.`);
+  sectionHeading("What qualifications are stated?", `Education or entry-eligibility evidence was found in ${integer.format(summary.withEducation)} of ${integer.format(summary.ads)} ads. Experience evidence was found in ${integer.format(summary.withExperience)} ads from source fields or advertisement text.`);
   const education = (charts.education || []).map(row => ({ label: row.education_level, count: Number(row.job_ads), order: Number(row.level_order) }));
   education.sort((a, b) => a.order - b.order);
+  const educationTableRows = charts.educationTable || charts.education || [];
+  const hasUnspecifiedEducation = educationTableRows.some(row => row.education_level === "Unspecified");
+  const educationTableData = educationTableRows.length ? [
+    ["Education category", "Job ads", "Share of selected ads (%)"],
+    ...educationTableRows.map(row => [row.education_level, integer.format(Number(row.job_ads)), `${Number(row.job_ads_pct || 0).toFixed(1)}%`]),
+  ] : undefined;
   const missing = Number(summary.notStatedEducation || 0);
-  const needsReview = Number(summary.educationNeedsReview || 0);
   const educationSummary = !education.length
-    ? "No single education level could be classified from the stated requirements."
+    ? hasUnspecifiedEducation
+      ? "Education evidence was found only at the general Unspecified level; see the table for its count."
+      : "No education or entry-eligibility evidence was detected in the selected ads."
     : education.length === 1
-      ? `Only one classifiable stated level appears in this selection: ${education[0].label} (${integer.format(education[0].count)} ads).`
+      ? `${education[0].label} appears in ${integer.format(education[0].count)} distinct ads in this selection.`
       : (() => {
         const maximum = Math.max(...education.map(row => row.count));
         const leaders = education.filter(row => row.count === maximum).map(row => row.label);
-        const classified = education.reduce((sum, row) => sum + row.count, 0);
         return leaders.length > 1
-          ? `${integer.format(leaders.length)} displayed levels share the highest count (${integer.format(maximum)} ads each): ${leaders.join(", ")}. There are ${integer.format(classified)} ads with one recognized level.`
-          : `${leaders[0]} has the highest classified count (${integer.format(maximum)} of ${integer.format(classified)} ads with one recognized level).`;
+          ? `${integer.format(leaders.length)} categories share the highest count (${integer.format(maximum)} ads each): ${leaders.join(", ")}. Categories may overlap within an ad.`
+          : `${leaders[0]} appears in the most ads (${integer.format(maximum)}). Categories may overlap within an ad.`;
       })();
-  const educationChart = chartCard("Stated education requirements by level", education, {
+  const educationChart = chartCard("Education and entry requirements", education, {
     single: education.length === 1, total: summary.ads, insight: educationSummary, insightTitle: "Education Insight",
-    topRows: education.length > 1 ? topRows(education) : [], listTitle: "Classified levels",
-    note: `Not stated: ${integer.format(missing)} of ${integer.format(summary.ads)} ads. ${integer.format(summary.withEducation)} ads state education, including ${integer.format(needsReview)} that could not be assigned one unambiguous level. Not stated does not mean education was not required.`,
+    topRows: education.length > 1 ? topRows(education) : [], listTitle: "Most mentioned categories",
+    note: `${integer.format(missing)} ads had no detected education or entry-eligibility evidence. Fresh-graduate eligibility and unspecified degree levels are grouped under College / Undergraduate. General education-requirement-unspecified evidence is kept in the table and omitted from the chart; categories can overlap.`,
+    tableData: educationTableData,
   });
   displayed.push(educationChart);
   $("panel").append(educationChart.card);

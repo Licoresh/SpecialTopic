@@ -253,7 +253,7 @@ async function downloadPng(node, filename) {
 }
 
 export function chartCard(title, rows, { note, total, type = "bars", single = false, fullRows = rows,
-  insight: insightText, insightTitle = "Key Insight", topRows = [], matrix, listTitle = "Top Displayed Categories" } = {}) {
+  insight: insightText, insightTitle = "Key Insight", topRows = [], matrix, listTitle = "Top Displayed Categories", tableData } = {}) {
   const card = html("article", undefined, "card chart-card");
   const head = html("div", undefined, "section-head");
   const heading = html("h3");
@@ -262,6 +262,15 @@ export function chartCard(title, rows, { note, total, type = "bars", single = fa
   card.append(head);
   if (!rows.length) {
     card.append(html("p", note || "No classifiable evidence in this dataset.", "chart-note"));
+    if (tableData?.length) {
+      const detail = html("details", undefined, "chart-data");
+      const body = html("div", undefined, "table-wrap detail-body");
+      detail.append(html("summary", "View data table"), body);
+      detail.addEventListener("toggle", () => {
+        if (detail.open && !body.firstChild) body.append(table(tableData[0], tableData.slice(1)));
+      });
+      card.append(detail);
+    }
     return { card, destroy() {} };
   }
   const insightBox = html("aside", undefined, "insight");
@@ -369,7 +378,8 @@ export function chartCard(title, rows, { note, total, type = "bars", single = fa
   detail.append(html("summary", "View data table"), body);
   detail.addEventListener("toggle", () => {
     if (detail.open && !body.firstChild) {
-      if (type === "heatmap") body.append(table(["Row", "Column", "Job ads", "Share", "Group ads"], fullRows.map(row => [row.row, row.column, format.format(row.count), `${(row.share * 100).toFixed(1)}%`, format.format(row.denominator)])));
+      if (tableData?.length) body.append(table(tableData[0], tableData.slice(1)));
+      else if (type === "heatmap") body.append(table(["Row", "Column", "Job ads", "Share", "Group ads"], fullRows.map(row => [row.row, row.column, format.format(row.count), `${(row.share * 100).toFixed(1)}%`, format.format(row.denominator)])));
       else if (type === "multi-line") body.append(table(["Series", "Month", "Job ads"], fullRows.map(row => [row.series, row.label, format.format(row.count)])));
       else body.append(table(["Label", "Job ads"], rows.map(row => [row.label, format.format(row.count)])));
     }

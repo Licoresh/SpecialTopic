@@ -30,7 +30,7 @@ from .training_sources import (resolve_training_file, inspect_training_folder, t
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
 from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
 from .analytics import experience_chart_insight, location_chart_insight, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
-from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline, selected_timeline
+from .job_profile import experience_exact_years, job_profile_tables, job_title_timeline, selected_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads, chart_table
 from .timeline_table import timeline_table
 from .geography import location_tables
@@ -54,6 +54,8 @@ from . import background_tasks
 MANUAL_REVIEW_COLUMNS = ["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"]
 _CHART_DOWNLOAD_TARGET = ContextVar("chart_download_target", default=None)
 _CHART_EVIDENCE_TARGET = ContextVar("chart_evidence_target", default=None)
+_CHART_EVIDENCE_FRAME = ContextVar("chart_evidence_frame", default=None)
+_CHART_EVIDENCE_NOTE = ContextVar("chart_evidence_note", default=None)
 _RESULT_PLOTS = ContextVar("result_plots", default=None)
 
 
@@ -106,28 +108,34 @@ def chart_download_target(target):
 
 
 @contextmanager
-def chart_evidence_target(target):
+def chart_evidence_target(target, evidence_frame=None, evidence_note=None):
     token = _CHART_EVIDENCE_TARGET.set(target)
+    frame_token = _CHART_EVIDENCE_FRAME.set(evidence_frame)
+    note_token = _CHART_EVIDENCE_NOTE.set(evidence_note)
     try:
         yield
     finally:
+        _CHART_EVIDENCE_NOTE.reset(note_token)
+        _CHART_EVIDENCE_FRAME.reset(frame_token)
         _CHART_EVIDENCE_TARGET.reset(token)
 
 
 @st.fragment
-def _chart_evidence_panel(fig, title, key):
+def _chart_evidence_panel(fig, title, key, evidence_frame=None, evidence_note=None):
     panel = _icon_expander("View chart evidence", key=f"chart_evidence_{key}",
                            icon=":material/table_view:", on_change="rerun")
     if not panel.open:
         return
     with panel:
-        frame = chart_table(fig)
-        if any(trace.type == "pie" for trace in fig.data):
+        frame = evidence_frame.copy() if evidence_frame is not None else chart_table(fig)
+        if evidence_frame is None and any(trace.type == "pie" for trace in fig.data):
             frame = frame.rename(columns={"Value": "Count"})
         if frame.empty:
             st.caption("No evidence rows are available for this chart.")
             return
-        if isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline"):
+        if evidence_note:
+            st.caption(evidence_note)
+        elif isinstance(fig.layout.meta, dict) and fig.layout.meta.get("fow_title_timeline"):
             frame = frame.rename(columns={"Series": "Job title"})
             st.caption("All months for the selected job titles. Playback changes the visible period on the graph.")
         else:
@@ -150,7 +158,7 @@ def _chart_evidence_panel(fig, title, key):
 def chart_evidence(fig, title, key):
     target = _CHART_EVIDENCE_TARGET.get()
     with target if target is not None else nullcontext():
-        _chart_evidence_panel(fig, title, key)
+        _chart_evidence_panel(fig, title, key, _CHART_EVIDENCE_FRAME.get(), _CHART_EVIDENCE_NOTE.get())
 
 
 def card_download_slot():
@@ -254,7 +262,7 @@ cached_label_validation = st.cache_data(show_spinner=False, ttl=60, max_entries=
 
 # Bump only when the calculated result tables or their research meaning change.
 # UI, style, and performance releases must not invalidate the expensive bundle.
-RESULTS_BUNDLE_VERSION = 4
+RESULTS_BUNDLE_VERSION = 6
 
 
 def _clone_analysis_bundle(value):
@@ -2398,7 +2406,7 @@ def result_insight(title, summary, rows, list_title="Top 3"):
 
 def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Key Insight", list_title="Top 3",
                           heading=None, heading_icon=":material/bar_chart:", render_insight=None, download_slot=None,
-                          render_controls=None, embedded=None, note=None):
+                          render_controls=None, embedded=None, note=None, evidence_frame=None, evidence_note=None):
     """Use the reference's single chart-and-insight card without changing data."""
     if embedded is None:
         embedded = key in {"titles", "family_heatmap", "selected_title", "title_timeline", "psf_competency_demand"}
@@ -2417,7 +2425,8 @@ def featured_visual_chart(render_chart, summary, rows, *, key, insight_title="Ke
             render_controls()
         chart_column, insight_column = st.columns([3.2, 1], vertical_alignment="center")
         evidence_slot = st.container()
-        with chart_column, chart_download_target(download_slot), chart_evidence_target(evidence_slot):
+        with chart_column, chart_download_target(download_slot), chart_evidence_target(
+                evidence_slot, evidence_frame=evidence_frame, evidence_note=evidence_note):
             figure = render_chart()
         with insight_column:
             if render_insight:
@@ -2999,88 +3008,93 @@ def _job_market_content(tables, meta, revision=None):
 
     def qualification_charts(profile):
         order, limit = result_chart_options(key_prefix="result_qualifications")
-        coverage = profile["requirement_field_coverage"].set_index("source_field")
-        education_stated = int(coverage.loc["education_requirement", "stated_job_ads"])
+        contextual_coverage = profile["qualification_evidence_coverage"].set_index("requirement_type")
+        education_stated = int(contextual_coverage.loc["Education and entry eligibility", "detected_job_ads"])
         experience_evidence = profile["experience_analysis_year_evidence"]
-        experience_status = experience_evidence["parse_status"].fillna("").astype(str)
-        experience_observed = int(experience_evidence.loc[
-            experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"
-        ].nunique())
+        experience_observed = int(contextual_coverage.loc["Experience", "detected_job_ads"])
         with st.container(border=True, key="job_market_qualification_summary"):
             st.subheader("What qualifications are stated?", icon=":material/school:")
-            st.write(f"Education: stated in {education_stated:,} of {denominator:,} ads.")
-            st.write(f"Experience: identified in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text.")
+            st.write(f"Education or entry-eligibility evidence: detected in {education_stated:,} of {denominator:,} ads.")
+            st.write(f"Experience evidence: detected in {experience_observed:,} of {denominator:,} ads from source fields or advertisement text.")
         education = profile["education_level_counts"]
-        missing_education = int(coverage.loc["education_requirement", "not_stated_job_ads"])
-        stated_education = int(coverage.loc["education_requirement", "stated_job_ads"])
+        missing_education = int(contextual_coverage.loc["Education and entry eligibility", "not_detected_job_ads"])
+        stated_education = education_stated
         education_evidence = profile["education_level_evidence"]
         needs_review_education = int(education_evidence.loc[
             education_evidence.parse_status.eq("Needs review"), "source_id"
         ].nunique())
-        education_chart = education_chart_counts(education)
+        education_chart = profile["education_chart_counts"]
+        has_education_evidence = education_stated > 0
+        education_table = profile["education_category_counts"][["education_level", "job_ads", "job_ads_pct"]].rename(columns={
+            "education_level": "Education category", "job_ads": "Job advertisements", "job_ads_pct": "Share",
+        })
         with st.container(key="job_market_education"):
             if education_chart.empty:
-                summary, top_levels = ("No single education level could be classified from the stated requirements.", [])
+                summary = ("Education evidence is categorized as Unspecified and remains in the evidence table."
+                           if has_education_evidence else "No education or entry-eligibility evidence was detected in the selected ads.")
+                top_levels = []
             elif len(education_chart) == 1:
                 only = education_chart.iloc[0]
-                summary = (f"Only one classifiable stated level appears in this selection: "
-                           f"{only.education_level} ({int(only.job_ads):,} ads).")
+                summary = (f"{only.education_level} appears in "
+                           f"{int(only.job_ads):,} distinct ads in this selection.")
                 top_levels = []
             else:
                 maximum = int(education_chart.job_ads.max())
                 leaders = education_chart.loc[education_chart.job_ads.eq(maximum), "education_level"].astype(str).tolist()
                 leader_text = ", ".join(leaders)
-                classified_total = int(education_chart.job_ads.sum())
                 if len(leaders) > 1:
-                    summary = (f"{len(leaders):,} displayed levels share the highest count "
-                               f"({maximum:,} ads each): {leader_text}. There are {classified_total:,} "
-                               "ads with one recognized level.")
+                    summary = (f"{len(leaders):,} displayed categories share the highest count "
+                               f"({maximum:,} ads each): {leader_text}. Categories can overlap when an ad "
+                               "mentions more than one education or entry requirement.")
                 else:
-                    summary = (f"{leader_text} has the highest classified count ({maximum:,} of "
-                               f"{classified_total:,} ads with one recognized level).")
+                    summary = (f"{leader_text} appears in the most ads ({maximum:,}). Categories can overlap "
+                               "when an ad mentions more than one education or entry requirement.")
                 top_levels = list(education_chart.sort_values(
                     ["job_ads", "level_order"], ascending=[False, True], kind="stable"
                 ).loc[:, ["education_level", "job_ads"]].itertuples(index=False, name=None))
             if len(education_chart) > 1:
                 featured_visual_chart(
-                    lambda: chart(education_bar(education_chart), title="Stated education requirements by level",
+                    lambda: chart(education_bar(education_chart), title="Education and entry requirements",
                                   show_heading=False),
                     summary, top_levels, key="education", insight_title="Education Insight",
-                    list_title="Classified levels", heading="Stated education requirements by level",
+                    list_title="Most mentioned categories", heading="Education and entry requirements",
+                    evidence_frame=education_table,
+                    evidence_note="All education categories, including Unspecified. Unspecified is included in this table but excluded from the chart; categories count distinct ads and may overlap.",
                 )
             else:
                 with st.container(border=True, key="job_market_featured_education_summary"):
-                    st.subheader("Stated education requirements by level", icon=":material/bar_chart:")
+                    st.subheader("Education and entry requirements", icon=":material/bar_chart:")
                     education_column, insight_column = st.columns([2.7, 1.2], vertical_alignment="center")
                     with education_column:
                         if len(education_chart) == 1:
                             level = education_chart.iloc[0]
                             st.metric(str(level.education_level), f"{int(level.job_ads):,}",
-                                      help="Distinct selected job advertisements with this stated education level.")
-                            st.caption("Job advertisements with a classifiable stated education level.")
+                                      help="Distinct selected job advertisements mentioning this category.")
+                            st.caption("Distinct ads per category; one ad may appear in several categories.")
                         else:
-                            st.info("No stated education requirement has one unambiguous level to compare in this selection.")
+                            st.info("Education evidence is categorized as Unspecified and remains in the evidence table."
+                                    if has_education_evidence else "No education or entry-eligibility evidence was detected in this selection.")
                     with insight_column:
-                        result_insight("Education Insight", summary, top_levels, "Classified levels")
+                        result_insight("Education Insight", summary, top_levels, "Most mentioned categories")
             stated_pct = 100 * stated_education / denominator if denominator else 0.0
             missing_pct = 100 * missing_education / denominator if denominator else 0.0
-            st.caption(f"Not stated: {missing_education:,} of {denominator:,} selected ads ({missing_pct:.1f}%). "
-                       f"An education requirement appears in {stated_education:,} ads ({stated_pct:.1f}%), including {needs_review_education:,} "
-                       "that could not be assigned one unambiguous level and remain available in the evidence table. Not stated does not mean education was not required.")
+            st.caption(f"No education or entry-eligibility evidence detected: {missing_education:,} of {denominator:,} selected ads ({missing_pct:.1f}%). "
+                       f"Contextual evidence appears in {stated_education:,} ads ({stated_pct:.1f}%); {needs_review_education:,} ads contain multiple, conditional, or unmatched wording that remains reviewable. "
+                       "Counts are distinct ads per category and may overlap. Fresh-graduate eligibility does not imply zero years of experience. Not stated does not mean no requirement exists.")
             education_fields = profile["education_requirement_counts"].rename(columns={
                 "requirement": "Education requirement", "job_ads": "Job advertisements",
                 "job_ads_pct": "Share of selected ads (%)",
             })
             with _icon_expander("Education requirement counts", expanded=False):
-                st.caption("‘Not stated’ is shown for coverage and is excluded from the stated-level comparison above.")
+                st.caption("Source-field values are shown here. Contextual mentions are summarized in the chart and evidence table.")
                 display(education_fields, key="result_education_requirement_counts")
             evidence_tables("Education standardization evidence", {
-                "Recognized qualification levels": education.drop(columns="level_order", errors="ignore"),
+                "Education categories, including Unspecified": profile["education_category_counts"],
+                "Detailed recognized mentions": education.drop(columns="level_order", errors="ignore"),
                 "Source education requirements": profile["education_level_evidence"]}, key="result_education_evidence")
         with st.container(key="job_market_experience"):
             st.caption(f"No experience duration identified in {denominator - experience_observed:,} of {denominator:,} selected ads.")
-            exact_year_rows = experience_evidence.loc[experience_evidence.parse_status.eq("Parsed stated years")].drop_duplicates("source_id")
-            exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
+            exact_years = experience_exact_years(experience_evidence)
             if len(exact_years) >= 2:
                 exact_pct = 100 * len(exact_years) / denominator if denominator else 0
                 st.caption(f"Single-value numeric requirements: median {exact_years.median():g} years (observed range {exact_years.min():g}–{exact_years.max():g}), from {len(exact_years):,} of {denominator:,} selected ads ({exact_pct:.1f}%). Ranges and open-ended wording are excluded from these statistics.")

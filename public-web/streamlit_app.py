@@ -753,20 +753,24 @@ def _qualifications(result):
     _chart_settings("Job Market Analysis")
     charts, summary = result["charts"], result["summary"]
     order, limit = _controls("public_qualifications")
-    education_note = (f"Education is stated in {summary['withEducation']:,} of {summary['ads']:,} ads. "
-                      f"Not stated does not mean education was not required; {summary['educationNeedsReview']:,} stated ads need review.")
+    education_note = (f"Education or entry-eligibility evidence was found in {summary['withEducation']:,} of {summary['ads']:,} ads. "
+                      "Fresh-graduate eligibility and unspecified degree levels are grouped under College / Undergraduate. "
+                      "General education-requirement-unspecified evidence is kept in the table and omitted from the chart; categories can overlap.")
     education = pd.DataFrame(charts.get("education", []))
+    education_table = pd.DataFrame(charts.get("educationTable", []))
+    education_evidence = (education_table[["education_level", "job_ads", "job_ads_pct"]].rename(columns={
+        "education_level": "Education category", "job_ads": "Job advertisements", "job_ads_pct": "Share",
+    }) if not education_table.empty else pd.DataFrame(columns=["Education category", "Job advertisements", "Share"]))
     if not education.empty:
         max_value = int(education.job_ads.max())
         leaders = education.loc[education.job_ads.eq(max_value), "education_level"].tolist()
-        classified = int(education.job_ads.sum())
-        text = (f"Only one classifiable stated level appears in this selection: {education.iloc[0].education_level} ({int(education.iloc[0].job_ads):,} ads)."
+        text = (f"{education.iloc[0].education_level} appears in {int(education.iloc[0].job_ads):,} distinct ads in this selection."
                 if len(education) == 1 else
-                f"{len(leaders):,} displayed levels share the highest count ({max_value:,} ads each): {', '.join(leaders)}. There are {classified:,} ads with one recognized level."
+                f"{len(leaders):,} displayed categories share the highest count ({max_value:,} ads each): {', '.join(leaders)}. Categories may overlap within an ad."
                 if len(leaders) > 1 else
-                f"{leaders[0]} has the highest classified count ({max_value:,} of {classified:,} ads with one recognized level).")
+                f"{leaders[0]} appears in the most ads ({max_value:,}). Categories may overlap within an ad.")
         top = list(education.sort_values(["job_ads", "level_order"], ascending=[False, True]).head(3)[["education_level", "job_ads"]].itertuples(index=False, name=None))
-        heading = "Stated education requirements by level"
+        heading = "Education and entry requirements"
         figure = education_bar(education)
         if len(education) == 1:
             def render_education_metric():
@@ -774,14 +778,28 @@ def _qualifications(result):
                                      key="public_education_single", figure=figure)
                 return figure
             featured_visual_chart(render_education_metric, text, top, key="education",
-                                  insight_title="Education Insight", list_title="Classified levels",
-                                  heading=heading, note=education_note)
+                                  insight_title="Education Insight", list_title="Most mentioned categories",
+                                  heading=heading, note=education_note, evidence_frame=education_evidence,
+                                  evidence_note="All education categories, including Unspecified. Unspecified is included in this table but excluded from the chart; categories count distinct ads and may overlap.")
         else:
             featured_visual_chart(lambda: chart(figure, title=heading, show_heading=False),
                                   text, top, key="education", insight_title="Education Insight",
-                                  list_title="Classified levels", heading=heading, note=education_note)
+                                  list_title="Most mentioned categories", heading=heading, note=education_note,
+                                  evidence_frame=education_evidence,
+                                  evidence_note="All education categories, including Unspecified. Unspecified is included in this table but excluded from the chart; categories count distinct ads and may overlap.")
     else:
-        st.info("No single education level could be classified from the stated requirements.")
+        with st.container(border=True, key="public-education-unspecified-card"):
+            st.subheader("Education and entry requirements", icon=":material/bar_chart:")
+            if summary["withEducation"]:
+                st.info("Education evidence is present, but only at the general Unspecified level. It appears in the evidence table and is intentionally omitted from the chart.")
+                with st.expander("View education evidence table"):
+                    st.caption("Distinct advertisements by grouped education category. General Unspecified evidence is table-only.")
+                    if education_evidence.empty:
+                        st.info("No grouped education evidence rows are available.")
+                    else:
+                        display(education_evidence, key="public_education_unspecified_evidence")
+            else:
+                st.info("No education or entry-eligibility evidence was detected in the selected ads.")
     experience = _frame(charts.get("experience"), "requirement", "job_ads", total=summary["ads"])
     if experience.empty:
         st.info("No experience durations could be compared in this selection.")
@@ -798,7 +816,7 @@ def _qualifications(result):
             "", [], key="public_experience", insight_title="Experience Insight",
             list_title="Displayed durations", heading="Experience requirements",
             render_insight=experience_insight, embedded=False,
-            note=(f"Experience was identified in {summary['withExperience']:,} ads. Exact-year median: "
+            note=(f"Experience evidence was found in {summary['withExperience']:,} ads. Exact-year median: "
                   f"{summary['experienceExactMedian']} from {summary['experienceExactCount']:,} ads; ranges and open-ended wording remain separate."),
         )
 

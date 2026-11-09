@@ -18,7 +18,7 @@ from .cleaning import clean_dataset, duplicate_ids, job_comparison_csv, normaliz
 from .config import DEFAULTS, FIELDS, ROOT
 from .gap_analysis import calculate_gaps
 from .geography import location_tables
-from .job_profile import education_chart_counts, job_profile_tables, job_title_timeline
+from .job_profile import experience_exact_years, job_profile_tables, job_title_timeline
 from .loaders import load_data, map_columns
 from .psf_mapping import TaxonomyMatcher
 from .skill_extraction import extract_skills
@@ -28,7 +28,7 @@ from .utils import digest
 MAX_LOCAL_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_HOSTED_UPLOAD_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 100_000
-RESULT_SCHEMA_VERSION = 9
+RESULT_SCHEMA_VERSION = 11
 _MODEL_PATH = "public-web/site/model.json"
 _REFERENCE_PATH = "data/reference/psf_aai_default.csv"
 _TOKEN = re.compile(r"(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)", re.UNICODE)
@@ -207,7 +207,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
     psf_references = references.merge(psf_demand, on="psf_competency", how="left")
     psf_references["job_ads"] = psf_references.job_ads.fillna(0).astype(int)
     psf_references["methods"] = psf_references.psf_competency.map(lambda name: methods.get(name, []))
-    education = education_chart_counts(profile["education_level_counts"])
+    education = profile["education_chart_counts"]
 
     return {
         "skills": _counts(demand, "employer_skill", "employer_demand_count"),
@@ -231,6 +231,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
                                                              undated=date_evidence.date_status.ne("Dated").astype(int))
                              .groupby("job_title", as_index=False)[["dated", "undated"]].sum().itertuples(index=False)],
         "education": _records(education),
+        "educationTable": _records(profile["education_category_counts"]),
         "experience": _counts(profile["experience_duration_counts"], "requirement", "job_ads"),
         "psf": [{"label": str(row.psf_competency), "count": int(row.job_ads), "percent": float(row.job_ads_pct)}
                 for row in psf_demand.sort_values(["job_ads", "psf_competency"], ascending=[False, True], kind="stable").itertuples(index=False)],
@@ -318,22 +319,20 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     kpis = job_market_kpis(jobs, views, taxonomy)
     ads = kpis["ads"]
     experience_evidence = profile["experience_analysis_year_evidence"]
-    experience_status = experience_evidence.parse_status.fillna("").astype(str)
-    exact_year_rows = experience_evidence.loc[experience_status.eq("Parsed stated years")].drop_duplicates("source_id")
-    exact_years = pd.to_numeric(exact_year_rows.min_years, errors="coerce").dropna()
+    exact_years = experience_exact_years(experience_evidence)
     dated_ads = int(monthly.job_ads.sum()) if not monthly.empty else 0
     metrics = {
         **kpis, **quality,
         "withLocation": int(geography["location_evidence"].loc[geography["location_evidence"].region.ne(""), "source_id"].nunique()),
-        "withEducation": int(profile["requirement_field_coverage"].loc[profile["requirement_field_coverage"].source_field.eq("education_requirement"), "stated_job_ads"].sum()),
-        "withExperience": int(experience_evidence.loc[experience_status.str.startswith("Parsed") | experience_status.eq("Needs review"), "source_id"].nunique()),
+        "withEducation": int(profile["qualification_evidence_coverage"].loc[profile["qualification_evidence_coverage"].requirement_type.eq("Education and entry eligibility"), "detected_job_ads"].sum()),
+        "withExperience": int(profile["qualification_evidence_coverage"].loc[profile["qualification_evidence_coverage"].requirement_type.eq("Experience"), "detected_job_ads"].sum()),
         "withDate": dated_ads,
         "experienceExactCount": int(len(exact_years)),
         "experienceExactMedian": float(exact_years.median()) if not exact_years.empty else None,
         "experienceExactMin": float(exact_years.min()) if not exact_years.empty else None,
         "experienceExactMax": float(exact_years.max()) if not exact_years.empty else None,
         "educationNeedsReview": int(profile["education_level_evidence"].loc[profile["education_level_evidence"].parse_status.eq("Needs review"), "source_id"].nunique()),
-        "notStatedEducation": int(profile["requirement_field_coverage"].loc[profile["requirement_field_coverage"].source_field.eq("education_requirement"), "not_stated_job_ads"].sum()),
+        "notStatedEducation": int(profile["qualification_evidence_coverage"].loc[profile["qualification_evidence_coverage"].requirement_type.eq("Education and entry eligibility"), "not_detected_job_ads"].sum()),
         "notStatedLocation": int(geography["location_evidence"].loc[geography["location_evidence"].location_status.eq("not stated"), "source_id"].nunique()),
         "unresolvedLocation": int(geography["location_evidence"].loc[geography["location_evidence"].region.eq("") & geography["location_evidence"].location_status.ne("not stated"), "source_id"].nunique()),
         "withPsf": int(mapping_rows.loc[mapping_rows.psf_competency.fillna("").ne(""), "source_id"].nunique()) if not mapping_rows.empty else 0,

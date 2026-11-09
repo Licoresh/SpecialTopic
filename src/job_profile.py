@@ -38,6 +38,14 @@ _EDUCATION_DURATION_BEFORE = re.compile(
 _EXPERIENCE_CONTEXT = re.compile(r"\b(?:experience|experienced|employment|work\s+history|worked|working|career|tenure|professional\s+background)\b", re.I)
 _ROLE_DURATION_CONTEXT = re.compile(r"\b(?:years?|yrs?)\s+(?:of\s+(?:this\s+)?(?:job|role|position|profession|industry|field)|as\s+(?:an?\s+)?|in\s+(?:the\s+)?(?:(?:same|similar|related|relevant|previous)\s+)?(?:job|role|position|field|industry))\b", re.I)
 _QUALIFICATION_CONTEXT = re.compile(r"\b(?:relevant|professional|related|prior|proven|minimum|at\s+least|must\s+have|required|requirement)\b", re.I)
+_EDUCATION_REQUIREMENT_CONTEXT = re.compile(
+    r"\b(?:education(?:al)?|qualification(?:s)?|requirement(?:s)?|required|preferred|preferably|must|minimum|"
+    r"completed|possess(?:es)?|holder|graduate\s+of|degree\s+(?:in|holder|required|preferred)|"
+    r"open\s+to|eligible|welcome|encouraged|may\s+apply|advantage(?:ous)?|asset|plus|benefit)\b", re.I)
+_FRESH_GRADUATE = re.compile(r"\b(?:fresh|recent|new)\s+(?:college\s+)?(?:grad|graduate)s?\b", re.I)
+_FRESH_GRADUATE_ELIGIBILITY = re.compile(
+    r"\b(?:fresh|recent|new)\s+(?:college\s+)?(?:grad|graduate)s?\b.{0,70}\b(?:welcome|encouraged|accepted|eligible|apply|open|preferred|considered)\b|"
+    r"\b(?:welcome|encouraged|accepting|open\s+to|eligible\s+for|preferred|considered)\b.{0,70}\b(?:fresh|recent|new)\s+(?:college\s+)?(?:grad|graduate)s?\b", re.I)
 _EMPLOYER_HISTORY_BEFORE = re.compile(r"\b(?:we|our company|the company|the firm|the organization)\s+(?:have|has|bring|brings|boast|boasts)\s*$", re.I)
 _EMPLOYER_HISTORY_AFTER = re.compile(r"^\s+of\s+experience\s*,\s+(?:we|our)\b", re.I)
 _TEXT_REQUIREMENT_FIELDS = ("qualifications", "job_description", "required_skills", "preferred_skills")
@@ -213,32 +221,96 @@ _EDUCATION_LEVELS = [
     ("associate degree", r"\bassociate(?:['’]s)?\s+(?:degree|of)\b"),
     ("bachelor's degree", r"\b(?:bachelor(?:['’]?s)?|baccalaureate|b\.?\s*sc\.?|b\.?s\.?|b\.?a\.?)\b"),
     ("postgraduate degree", r"\bpostgraduate\s+(?:degree|qualification)\b"),
-    ("master's degree", r"\b(?:master(?:['’]?s)?|m\.?\s*sc\.?|m\.?s\.?|m\.?a\.?|mba)\b"),
+    ("master's degree", r"\b(?:master(?:['’]?s)?(?:\s+(?:degree|of|in))?|m\.?\s*sc\.?|m\.?s\.?|m\.?a\.?|mba)\b"),
     ("doctoral degree", r"\b(?:doctorate|doctoral|doctor\s+of|ph\.?\s*d\.?)\b"),
+    ("diploma / certificate", r"\b(?:diploma|certificates?|certifications?|professional\s+license|licensed\s+professional)\b"),
+    ("degree level unspecified", r"\bdegree\s+level\s+(?:unspecified|not\s+specified)\b|\b(?:university|college)\s+degree\b|\bdegree\s+(?:in|holder|required|preferred)\b|\b(?:completed|possess(?:es)?)\s+(?:a\s+)?degree\b|\bgraduate\s+(?:of|in)\s+(?:any\s+)?(?:related\s+)?(?:course|program|field|discipline)\b"),
+    ("education requirement (level unspecified)", r"\b(?:education(?:al)?\s+(?:background|attainment|requirement(?:s)?|qualification(?:s)?|level)|education(?:al)?\s+(?:(?:is|would\s+be|is\s+considered)\s+)?(?:an?\s+)?(?:advantage(?:ous)?|asset|plus|benefit)|academic\s+(?:background|qualification(?:s)?)|post[- ]secondary\s+education)\b"),
+    ("fresh graduate eligibility", r"\b(?:fresh|recent|new)\s+(?:college\s+)?(?:grad|graduate)s?\b"),
 ]
 _EXPERIENCE_BANDS = ["no experience required", "less than 1 year", "1–2 years", "3–5 years", "6–10 years", "more than 10 years"]
+
+
+def _requirement_clauses(value):
+    """Split HTML, lists, paragraphs and sentences while preserving reviewable wording."""
+    raw = "" if value is None or pd.isna(value) else str(value)
+    raw = html.unescape(raw)
+    raw = re.sub(r"(?i)<\s*/?\s*(?:br|p|li|ul|ol|div|tr|h[1-6])\b[^>]*>", "\n", raw)
+    raw = re.sub(r"[\r\n]+|[•▪◦●]+", "\n", raw)
+    clauses = []
+    for block in raw.splitlines():
+        block = clean_text(block).lstrip("-–—* ")
+        if block:
+            clauses.extend(clean_text(clause) for clause in re.split(r"(?<=[.!?;])\s+", block) if clean_text(clause))
+    return clauses
 
 
 def _education_tables(jobs):
     rows = []
     for index, job in jobs.iterrows():
-        raw = job.get("education_requirement", "")
-        original = "" if raw is None or pd.isna(raw) else str(raw)
-        text = normalize_text(original)
-        levels = [name for name, pattern in _EDUCATION_LEVELS if re.search(pattern, text)]
-        if "senior high school" in levels and "high school" in levels:
-            levels.remove("high school")
-        status = "Not stated" if _education_missing(text) else "Needs review"
+        source_id = clean_text(job.get("source_id", str(index)))
+        explicit = clean_text(job.get("education_requirement", ""))
+        mentions = {}
+        for field in ("education_requirement", *_TEXT_REQUIREMENT_FIELDS):
+            raw = job.get(field, "")
+            if field == "education_requirement" and _education_missing(raw):
+                continue
+            trusted_requirement_field = field in {"education_requirement", "qualifications", "required_skills", "preferred_skills"}
+            for clause in _requirement_clauses(raw):
+                text = normalize_text(clause)
+                if not text:
+                    continue
+                generic_names = {"fresh graduate eligibility", "degree level unspecified", "education requirement (level unspecified)"}
+                patterns = [(name, pattern) for name, pattern in _EDUCATION_LEVELS if name not in generic_names]
+                specific_levels = [name for name, pattern in patterns if re.search(pattern, text, re.I)]
+                if "senior high school" in specific_levels and "high school" in specific_levels:
+                    specific_levels.remove("high school")
+                if not specific_levels:
+                    unspecified_patterns = dict(_EDUCATION_LEVELS)
+                    specific_levels = [name for name in ("degree level unspecified", "education requirement (level unspecified)")
+                                       if re.search(unspecified_patterns[name], text, re.I)]
+                if _FRESH_GRADUATE.search(text):
+                    if trusted_requirement_field or _FRESH_GRADUATE_ELIGIBILITY.search(text):
+                        specific_levels.append("fresh graduate eligibility")
+                if not specific_levels:
+                    continue
+                # Description text needs a clear education/qualification cue; dedicated
+                # qualifications and requirement fields are already scoped to criteria.
+                if field == "job_description" and not _EDUCATION_REQUIREMENT_CONTEXT.search(text):
+                    if not re.search(r"\b(?:degree|diploma|certificate|certification)\s+(?:in|holder|required|preferred)\b", text, re.I):
+                        continue
+                if re.search(r"\b(?:not required|no degree required|without a degree)\b", text, re.I):
+                    continue
+                for name in dict.fromkeys(specific_levels):
+                    bucket = mentions.setdefault(name, {"fields": [], "evidence": []})
+                    if field not in bucket["fields"]:
+                        bucket["fields"].append(field)
+                    excerpt = clause[:500]
+                    item = f"{field}: {excerpt}"
+                    if item not in bucket["evidence"]:
+                        bucket["evidence"].append(item)
+
+        levels = [name for name, _ in _EDUCATION_LEVELS if name in mentions]
+        status = "Not stated" if _education_missing(explicit) and not levels else "Needs review"
         level = ""
-        # Alternatives, preferences and negated credentials are not a minimum degree.
-        conditional = re.search(r"\b(?:preferred|preferably|optional|not required|no degree|equivalent experience)\b", text)
-        if len(levels) == 1 and not conditional:
-            level, status = levels[0], "Parsed single level"
-        rows.append({"source_id": job.get("source_id", str(index)), "original_requirement": original,
+        if len(levels) == 1:
+            source_evidence = " ".join(item for item in mentions[levels[0]]["evidence"]).casefold()
+            conditional = re.search(r"\b(?:preferred|preferably|optional|equivalent experience|advantage(?:ous)?|asset|plus|benefit)\b", source_evidence)
+            if not conditional:
+                level, status = levels[0], "Parsed single level"
+        source_fields = list(dict.fromkeys(field for value in mentions.values() for field in value["fields"]))
+        evidence_context = " | ".join(dict.fromkeys(item for value in mentions.values() for item in value["evidence"]))
+        original = explicit or evidence_context
+        rows.append({"source_id": source_id, "original_requirement": original,
                      "education_level": level, "mentioned_levels": "; ".join(levels), "parse_status": status,
-                     "source_field": "education_requirement", "url": job.get("url", "")})
-    evidence = pd.DataFrame(rows, columns=["source_id", "original_requirement", "education_level", "mentioned_levels", "parse_status", "source_field", "url"])
-    summary = _counts(evidence[evidence.parse_status.eq("Parsed single level")], "education_level", "job_ads")
+                     "source_field": "; ".join(source_fields) if source_fields else "education_requirement",
+                     "evidence": evidence_context, "url": job.get("url", "")})
+    evidence = pd.DataFrame(rows, columns=["source_id", "original_requirement", "education_level", "mentioned_levels",
+                                          "parse_status", "source_field", "evidence", "url"])
+    expanded = evidence.loc[evidence.mentioned_levels.fillna("").ne(""), ["source_id", "mentioned_levels"]].copy()
+    expanded["education_level"] = expanded.mentioned_levels.str.split("; ")
+    expanded = expanded.explode("education_level").drop_duplicates(["source_id", "education_level"])
+    summary = _counts(expanded, "education_level", "job_ads")
     order = {name: index for index, (name, _) in enumerate(_EDUCATION_LEVELS)}
     summary["level_order"] = summary.education_level.map(order)
     denominator = len(jobs)
@@ -425,22 +497,21 @@ def _experience_text_candidates(job):
     """Find source clauses that clearly state a duration of work or role experience."""
     candidates = []
     for field in _TEXT_REQUIREMENT_FIELDS:
-        raw = job.get(field, "")
-        raw = "" if raw is None or pd.isna(raw) else str(raw)
-        # Preserve list and paragraph boundaries before clean_text collapses whitespace.
-        raw = html.unescape(raw)
-        raw = re.sub(r"(?i)<\s*/?\s*(?:br|p|li|ul|ol|div|tr|h[1-6])\b[^>]*>", "\n", raw)
-        raw = re.sub(r"[\r\n]+|[•▪◦●]+", "\n", raw)
-        clauses = []
-        for block in raw.splitlines():
-            block = clean_text(block).lstrip("-–—* ")
-            if block:
-                clauses.extend(re.split(r"(?<=[.!?;])\s+", block))
-        for clause in clauses:
-            clause = clean_text(clause)
+        for clause in _requirement_clauses(job.get(field, "")):
             if not clause:
                 continue
             matches = list(_YEARS.finditer(clause))
+            if not matches and _NO_EXPERIENCE.search(clause):
+                candidates.append({
+                    "source_id": clean_text(job.get("source_id", "")),
+                    "job_title": clean_text(job.get("job_title", "")),
+                    "candidate_phrase": clean_text(_NO_EXPERIENCE.search(clause).group()),
+                    "original_requirement": clause,
+                    "duration_clause": clause,
+                    "source_field": field,
+                    "evidence": clause,
+                    "url": clean_text(job.get("url", "")),
+                })
             for match, duration_clause in zip(matches, _duration_clauses(clause, matches)):
                 left = clause[max(0, match.start() - 90):match.start()]
                 right = clause[match.end():min(len(clause), match.end() + 90)]
@@ -481,39 +552,19 @@ def _experience_text_tables(jobs):
     candidate_rows, analysis_rows = [], []
     for index, job in jobs.iterrows():
         source_id = clean_text(job.get("source_id", str(index)))
-        explicit = job.get("experience_requirement", "")
-        if not _missing(explicit):
-            continue
         candidates = _experience_text_candidates(job)
-        parsed = []
         for candidate in candidates:
             label, minimum, maximum, status = _experience_years(candidate["duration_clause"])
             candidate_rows.append({**candidate, "requirement": label, "min_years": minimum,
                                    "max_years": maximum, "parse_status": status,
                                    "evidence_status": "Text evidence; researcher should verify context"})
-            parsed.append((label, minimum, maximum, status, candidate))
-        if not parsed:
-            continue
-        signatures = {(item[1], item[2], item[3]) for item in parsed if item[3].startswith("Parsed")}
-        all_parsed = all(item[3].startswith("Parsed") for item in parsed)
-        consistent = all_parsed and len(signatures) == 1
-        first = parsed[0]
-        if consistent:
-            label, minimum, maximum, status = first[:4]
-            source_fields = "; ".join(dict.fromkeys(item[4]["source_field"] for item in parsed))
-            original = " | ".join(dict.fromkeys(item[4]["original_requirement"] for item in parsed))
-        else:
-            label = "; ".join(dict.fromkeys(item[0] for item in parsed if item[3].startswith("Parsed")))
-            minimum, maximum, status = None, None, "Needs review"
-            source_fields = "; ".join(dict.fromkeys(item[4]["source_field"] for item in parsed))
-            original = " | ".join(dict.fromkeys(item[4]["original_requirement"] for item in parsed))
-        analysis_rows.append({
-            "source_id": source_id, "job_title": clean_text(job.get("job_title", "")),
-            "original_requirement": original, "requirement": label,
-            "min_years": minimum, "max_years": maximum, "parse_status": status,
-            "source_field": source_fields, "url": clean_text(job.get("url", "")),
-            "evidence": original, "evidence_origin": "text fallback",
-        })
+            analysis_rows.append({
+                "source_id": source_id, "job_title": clean_text(job.get("job_title", "")),
+                "original_requirement": candidate["original_requirement"], "requirement": label,
+                "min_years": minimum, "max_years": maximum, "parse_status": status,
+                "source_field": candidate["source_field"], "url": candidate["url"],
+                "evidence": candidate["evidence"], "evidence_origin": "contextual text",
+            })
     candidate_columns = ["source_id", "job_title", "candidate_phrase", "original_requirement", "duration_clause", "requirement",
                          "min_years", "max_years", "parse_status", "source_field", "evidence", "url", "evidence_status"]
     analysis_columns = ["source_id", "job_title", "original_requirement", "requirement", "min_years", "max_years",
@@ -576,20 +627,71 @@ def selected_timeline(monthly, titles):
     return selected.set_index(["month", "job_title"]).reindex(grid, fill_value=0).reset_index()
 
 
-def education_chart_counts(level_counts):
-    """Combine related stated levels for the education comparison chart."""
+def education_category_counts(level_counts, evidence=None, denominator=None):
+    """Group education mentions into the shared chart/table categories."""
     groups = {
-        "undergraduate / college level": "College / undergraduate",
-        "associate degree": "College / undergraduate",
-        "bachelor's degree": "College / undergraduate",
-        "postgraduate degree": "Postgraduate",
-        "master's degree": "Postgraduate",
-        "doctoral degree": "Postgraduate",
+        "high school": "High School",
+        "senior high school": "Senior High School",
+        "vocational / technical": "Technical-Vocational",
+        "diploma / certificate": "Technical-Vocational",
+        "undergraduate / college level": "College / Undergraduate",
+        "associate degree": "College / Undergraduate",
+        "degree level unspecified": "College / Undergraduate",
+        "fresh graduate eligibility": "College / Undergraduate",
+        "bachelor's degree": "Bachelor's Degree",
+        "postgraduate degree": "Postgraduate (Master's / Doctoral)",
+        "master's degree": "Postgraduate (Master's / Doctoral)",
+        "doctoral degree": "Postgraduate (Master's / Doctoral)",
+        "education requirement (level unspecified)": "Unspecified",
     }
-    return (level_counts.assign(education_level=level_counts.education_level.replace(groups))
+    order = {"High School": 0, "Senior High School": 1, "Technical-Vocational": 2,
+             "College / Undergraduate": 3, "Bachelor's Degree": 4,
+             "Postgraduate (Master's / Doctoral)": 5, "Unspecified": 6}
+    if evidence is not None:
+        columns = ["education_level", "job_ads", "job_ads_pct", "level_order"]
+        if evidence.empty or not {"source_id", "mentioned_levels"}.issubset(evidence.columns):
+            return pd.DataFrame(columns=columns)
+        mentions = evidence.loc[evidence.mentioned_levels.fillna("").ne(""), ["source_id", "mentioned_levels"]].copy()
+        mentions["education_level"] = mentions.mentioned_levels.str.split("; ")
+        mentions = mentions.explode("education_level").drop(columns="mentioned_levels")
+        mentions["education_level"] = mentions.education_level.map(lambda value: groups.get(value, value))
+        mentions = mentions.drop_duplicates(["source_id", "education_level"])
+        summary = mentions.groupby("education_level", as_index=False, sort=False).source_id.nunique().rename(columns={"source_id": "job_ads"})
+        summary["level_order"] = summary.education_level.map(order).fillna(99).astype(int)
+        total = int(denominator if denominator is not None else evidence.source_id.nunique())
+        summary["job_ads_pct"] = (100 * summary.job_ads / total).round(1) if total else 0.0
+        return summary.sort_values(["level_order", "education_level"], kind="stable").reset_index(drop=True)
+    mapped = level_counts.assign(education_level=level_counts.education_level.map(lambda value: groups.get(value, value)))
+    return (mapped
             .groupby("education_level", as_index=False, sort=False).agg(
                 job_ads=("job_ads", "sum"), job_ads_pct=("job_ads_pct", "sum"), level_order=("level_order", "min"))
             .sort_values("level_order", kind="stable").reset_index(drop=True))
+
+
+def experience_exact_years(evidence):
+    """Return one exact-year value per ad only when all parsed evidence agrees."""
+    if evidence.empty or not {"source_id", "parse_status", "min_years", "max_years"}.issubset(evidence.columns):
+        return pd.Series(dtype=float, name="years")
+    rows = evidence.copy()
+    rows["min_years"] = pd.to_numeric(rows["min_years"], errors="coerce")
+    rows["max_years"] = pd.to_numeric(rows["max_years"], errors="coerce")
+    status = rows.parse_status.fillna("").astype(str)
+    # Ignore the one placeholder row for ads with no requirement, but keep ambiguous
+    # evidence in the group so it cannot be silently overridden by one exact phrase.
+    active = rows.loc[status.str.startswith("Parsed") | status.eq("Needs review")].copy()
+    if active.empty:
+        return pd.Series(dtype=float, name="years")
+    active["is_exact"] = (active.parse_status.eq("Parsed stated years")
+                          & active.min_years.notna() & active.max_years.notna()
+                          & active.min_years.eq(active.max_years))
+    grouped = active.groupby("source_id", sort=False).agg(
+        all_exact=("is_exact", "all"),
+        value_count=("min_years", "nunique"),
+        years=("min_years", "first"),
+    )
+    exact = grouped.loc[grouped.all_exact & grouped.value_count.eq(1), "years"].dropna()
+    exact.name = "years"
+    return exact.sort_index()
 
 
 def job_profile_tables(jobs):
@@ -606,6 +708,7 @@ def job_profile_tables(jobs):
     evidence = pd.concat([education_evidence, experience_evidence], ignore_index=True)
     years, year_evidence, coverage = _experience_tables(job_ads)
     year_evidence = year_evidence.copy()
+    year_evidence["source_id"] = year_evidence.source_id.fillna("").astype(str)
     year_evidence["evidence_origin"] = "explicit field"
     text_year_evidence, text_analysis_evidence = _experience_text_tables(job_ads)
     if not text_year_evidence.empty:
@@ -613,31 +716,51 @@ def job_profile_tables(jobs):
         text_requirement_evidence = text_requirement_evidence.rename(columns={"candidate_phrase": "phrase"})
         text_requirement_evidence["requirement_type"] = "Experience"
         evidence = pd.concat([evidence, text_requirement_evidence], ignore_index=True, sort=False)
-    text_source_ids = set(text_analysis_evidence.source_id) if not text_analysis_evidence.empty else set()
     year_evidence["evidence"] = year_evidence["original_requirement"]
-    explicit_analysis_evidence = year_evidence.loc[~year_evidence.source_id.isin(text_source_ids)].copy()
-    if text_analysis_evidence.empty:
-        analysis_year_evidence = explicit_analysis_evidence.reset_index(drop=True)
-    elif explicit_analysis_evidence.empty:
-        analysis_year_evidence = text_analysis_evidence.reset_index(drop=True)
-    else:
-        for frame in (explicit_analysis_evidence, text_analysis_evidence):
-            for column in ("min_years", "max_years"):
-                frame[column] = pd.to_numeric(frame[column], errors="coerce").astype(float)
-        analysis_year_evidence = pd.concat(
-            [explicit_analysis_evidence, text_analysis_evidence], ignore_index=True, sort=False
-        )
-    text_parsed = text_year_evidence[text_year_evidence.parse_status.str.startswith("Parsed")]
-    analysis_parsed = analysis_year_evidence[analysis_year_evidence.parse_status.str.startswith("Parsed")]
+    analysis_year_evidence = pd.concat([year_evidence, text_analysis_evidence], ignore_index=True, sort=False)
+    for column in ("min_years", "max_years"):
+        analysis_year_evidence[column] = pd.to_numeric(analysis_year_evidence[column], errors="coerce").astype(float)
+    analysis_year_evidence["_duration_key"] = analysis_year_evidence.requirement.fillna("").map(normalize_text)
+    analysis_year_evidence = analysis_year_evidence.drop_duplicates(
+        ["source_id", "_duration_key", "parse_status", "min_years", "max_years"], keep="first"
+    ).drop(columns="_duration_key").reset_index(drop=True)
+    text_parsed = text_year_evidence.loc[
+        text_year_evidence.parse_status.str.startswith("Parsed") & text_year_evidence.requirement.fillna("").ne("")
+    ]
+    analysis_parsed = analysis_year_evidence.loc[
+        analysis_year_evidence.parse_status.str.startswith("Parsed") & analysis_year_evidence.requirement.fillna("").ne("")
+    ]
     text_year_counts = _counts(text_parsed, "requirement", "job_ads")
     analysis_year_counts = _counts(analysis_parsed, "requirement", "job_ads")
     denominator = job_ads.source_id.nunique() if "source_id" in job_ads else len(job_ads)
-    duration_mentions = analysis_year_evidence[["source_id", "requirement"]].copy()
+    duration_mentions = analysis_year_evidence.loc[
+        analysis_year_evidence.requirement.fillna("").ne(""), ["source_id", "requirement"]
+    ].copy()
     duration_mentions["requirement"] = duration_mentions.requirement.str.split("; ")
     duration_counts = _counts(duration_mentions.explode("requirement"), "requirement", "job_ads")
     for counts in (text_year_counts, analysis_year_counts, duration_counts):
         counts["job_ads_pct"] = (100 * pd.to_numeric(counts.job_ads) / denominator).round(1) if denominator else 0.0
     education_levels, education_level_evidence = _education_tables(job_ads)
+    education_ids = set(education_level_evidence.loc[
+        education_level_evidence.mentioned_levels.fillna("").ne(""), "source_id"
+    ].astype(str))
+    source_ids = job_ads.get("source_id", pd.Series(job_ads.index.astype(str), index=job_ads.index)).fillna("").astype(str)
+    explicit_education = job_ads.get("education_requirement", pd.Series("", index=job_ads.index)).map(_education_missing).eq(False)
+    education_ids.update(source_ids.loc[explicit_education].tolist())
+    education_stated = len(education_ids)
+    education_categories = education_category_counts(education_levels, education_level_evidence, denominator)
+    education_charts = education_categories.loc[education_categories.education_level.ne("Unspecified")].reset_index(drop=True)
+    experience_ids = set(analysis_year_evidence.loc[
+        analysis_year_evidence.parse_status.fillna("").astype(str).str.startswith("Parsed")
+        | analysis_year_evidence.parse_status.fillna("").astype(str).eq("Needs review"), "source_id"
+    ].astype(str))
+    contextual_coverage = pd.DataFrame([
+        {"requirement_type": "Education and entry eligibility", "detected_job_ads": education_stated},
+        {"requirement_type": "Experience", "detected_job_ads": len(experience_ids)},
+    ])
+    contextual_coverage["not_detected_job_ads"] = (len(job_ads) - contextual_coverage.detected_job_ads).clip(lower=0)
+    contextual_coverage["job_ads"] = len(job_ads)
+    contextual_coverage["detected_pct"] = (100 * contextual_coverage.detected_job_ads / len(job_ads)).round(1) if len(job_ads) else 0.0
     experience_bands, experience_band_evidence = _experience_bands(analysis_year_evidence, len(job_ads))
     tables = {"job_title_counts": titles,
               "common_job_title_counts": common_titles,
@@ -657,7 +780,10 @@ def job_profile_tables(jobs):
               "experience_duration_counts": duration_counts,
               "experience_analysis_year_evidence": analysis_year_evidence,
               "requirement_field_coverage": coverage,
+              "qualification_evidence_coverage": contextual_coverage,
               "education_level_counts": education_levels,
+              "education_category_counts": education_categories,
+              "education_chart_counts": education_charts,
               "education_level_evidence": education_level_evidence,
               "experience_band_counts": experience_bands,
               "experience_band_evidence": experience_band_evidence,
