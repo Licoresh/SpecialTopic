@@ -53,6 +53,17 @@ from . import background_tasks
 
 MANUAL_REVIEW_COLUMNS = ["Phrase", "Category", "PSF-AAI competencies", "AI category draft", "AI PSF-AAI drafts", "Source ads", "Source advertisement"]
 _CHART_DOWNLOAD_TARGET = ContextVar("chart_download_target", default=None)
+_RESULT_PLOTS = ContextVar("result_plots", default=None)
+
+
+@contextmanager
+def collect_result_plots():
+    plots = []
+    token = _RESULT_PLOTS.set(plots)
+    try:
+        yield plots
+    finally:
+        _RESULT_PLOTS.reset(token)
 
 
 def _expander_icon(title):
@@ -461,6 +472,9 @@ def chart(fig, *, key=None, title=None, show_heading=True, downloads=True):
     elif visible_heading:
         icon = "grid_view" if any(trace.type == "heatmap" for trace in fig.data) else "bar_chart"
         st.subheader(title, icon=f":material/{icon}:")
+    plots = _RESULT_PLOTS.get()
+    if plots is not None:
+        plots.append(title)
     if any(trace.type == "heatmap" for trace in fig.data):
         columns = max(len(trace.x) for trace in fig.data if trace.type == "heatmap")
         minimum = max(640, 280 + 72 * columns)

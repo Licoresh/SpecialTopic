@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 
 import pandas as pd
 import streamlit as st
@@ -33,13 +32,13 @@ from src.design import apply_design
 from src.job_profile import selected_timeline
 from src.loaders import load_data
 from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, RESULT_SCHEMA_VERSION, analyze_upload, health
-from src.ui import (analysis_workflow, chart, featured_result_chart, featured_visual_chart, job_market_metrics,
+from src.ui import (analysis_workflow, chart, collect_result_plots, featured_result_chart, featured_visual_chart, job_market_metrics,
                     ordered_result_table, result_chart_options, result_count_chart, result_heatmap, result_insight,
                     result_role_distribution, result_single_metric)
 from src.visualization import education_bar, job_title_trend
 from src.timeline_table import timeline_table
 
-PUBLIC_VERSION = "3.0.104"
+PUBLIC_VERSION = "3.0.105"
 
 
 @st.cache_resource
@@ -144,6 +143,7 @@ def _style():
     .st-key-public-upload-footer{margin-top:1rem;padding-top:.75rem;border-top:1px solid #e6d9d7}
     .st-key-public-upload-footer [data-testid="stHorizontalBlock"]{align-items:center}
     .st-key-public-processing-overlay{position:fixed!important;z-index:100000!important;inset:0!important;width:100vw!important;height:100dvh!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:clamp(1rem,5vw,3rem)!important;overflow:auto!important;background:#19171870!important;backdrop-filter:blur(2px)}
+    .st-key-public-processing-overlay[hidden]{display:none!important}
     [data-testid="stElementContainer"]:has(.st-key-public-processing-overlay){height:0!important;margin:0!important;padding:0!important}
     .st-key-public-processing-card{position:fixed!important;z-index:100001!important;top:50dvh!important;left:50vw!important;transform:translate(-50%,-50%)!important;width:min(760px,calc(100vw - 2rem))!important;max-height:calc(100dvh - 2rem);margin:0!important;padding:clamp(1.6rem,5vw,3.5rem);overflow:auto;border:1px solid #ffffffb8;border-radius:18px;background:#fff;box-shadow:0 18px 60px #4d10201c;text-align:center}
     .public-processing-brand{display:inline-flex;align-items:center;gap:.7rem;margin-bottom:1.7rem;text-align:left}
@@ -154,8 +154,17 @@ def _style():
     .public-processing-title{margin:.2rem 0 .5rem;color:#24303d;font-size:clamp(1.8rem,4vw,2.5rem);letter-spacing:-.035em}
     .public-processing-copy{color:#62585d}
     .public-processing-status{margin-top:1.4rem;color:#4d1020;font-size:.9rem;font-weight:650}
+    .public-processing-meter{display:flex;align-items:center;gap:1rem}
+    .public-processing-meter progress{appearance:none;flex:1;min-width:0;height:8px;border:0;border-radius:999px;background:#f2eeec;overflow:hidden}
+    .public-processing-meter progress::-webkit-progress-bar{background:#f2eeec}
+    .public-processing-meter progress::-webkit-progress-value{background:#78182b}
+    .public-processing-meter progress::-moz-progress-bar{background:#78182b}
     .public-processing-percent{color:#4d1020;font-size:.83rem;font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
+    .public-processing-continue{min-height:44px;padding:0 .9rem;border:0;border-radius:8px;background:#78182b;color:white}
     .public-processing-privacy{margin:1.3rem 0 0;color:#62585d;font-size:.76rem}
+    /* Plotly needs a measurable width even when a result tab is inactive. */
+    .st-key-public-results-tabs [data-testid="stTabs"]{position:relative}
+    .st-key-public-results-tabs [data-testid="stTabPanel"][data-inert="true"]{display:block!important;position:absolute;inset:0 0 auto;height:0;overflow:hidden;visibility:hidden}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tablist"]{display:flex!important;align-items:stretch;width:100%;flex-wrap:nowrap!important;gap:.25rem!important;overflow-x:auto;overflow-y:hidden;border:1px solid #e5d7d5;border-radius:10px;background:#fcf9f7;padding:.25rem;scrollbar-width:thin;scrollbar-color:#d5c4c2 transparent}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]{box-sizing:border-box;display:flex;flex:1 0 188px;align-items:center;justify-content:center;gap:.45rem;min-width:188px!important;max-width:none;min-height:44px;margin:0;padding:.45rem .55rem;border:0!important;border-radius:7px;background:transparent;color:#24303d;white-space:nowrap;font-size:.78rem;line-height:1.2;text-align:center}
     .st-key-public-results-tabs [data-testid="stTabs"] [role="tab"]>div{display:flex;align-items:center;justify-content:center;white-space:nowrap}
@@ -174,7 +183,7 @@ def _style():
     .st-key-public-results-heading{align-items:center;justify-content:space-between;gap:1rem;margin:.35rem 0 .5rem;padding-top:.6rem;border-top:1px solid #e5e3e0}
     .st-key-public-results-heading [data-testid="stDownloadButton"] button{min-height:44px;white-space:nowrap}
     .st-key-public-footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e3e0;color:#647184;font-size:.75rem}
-    .stApp:has(.st-key-public-processing-overlay){overflow:hidden}
+    .stApp:has(.st-key-public-processing-overlay:not([hidden])){overflow:hidden}
     @media(max-width:720px){.public-steps{grid-template-columns:1fr;gap:.45rem}.public-step-line{display:none}.public-step small{display:none}.stMainBlockContainer{--public-page-pad:1rem;padding-inline:var(--public-page-pad);border-radius:14px}.public-map-head{grid-template-columns:1.2fr 1fr .8fr;gap:.35rem;font-size:.65rem}[class*="st-key-public-map-row-"]{padding-inline:.25rem}.public-topbar{min-height:90px;padding-inline:var(--public-page-pad)}.public-topbar:after{width:48%;opacity:.4}.public-result-facts{flex-basis:100%}.st-key-public-processing-overlay{padding:1rem!important}.st-key-public-processing-card{padding:1.5rem 1rem}}
     @media(max-width:475px){.st-key-public-results-heading{align-items:stretch;flex-wrap:wrap}.st-key-public-results-heading [data-testid="stDownloadButton"]{width:100%}.st-key-public-results-heading [data-testid="stDownloadButton"] button{width:100%}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]{min-height:280px;padding-top:8.5rem!important}.st-key-public-upload-card [data-testid="stFileUploaderDropzone"]:after{top:5.7rem;font-size:.82rem}.public-topbar{min-height:82px;padding-block:.75rem}.public-topbar img{width:145px}.public-version{padding:.28rem .48rem;font-size:.67rem}.public-stage-heading{gap:.5rem}.public-stage-heading h1{font-size:1.35rem}.public-stage-badge{padding:.25rem .45rem;font-size:.64rem}.public-process-rail{gap:.25rem}.public-process-rail li{gap:.4rem;padding-inline:.25rem}.public-step-number{width:28px;height:28px;font-size:.7rem}.public-process-rail strong{font-size:.78rem;line-height:1.25}.public-process-rail small{font-size:.68rem;line-height:1.3}.public-actions{gap:.4rem}.public-actions [data-testid="stButton"]{flex:1}}
     </style>""".replace("__HERO_ART__", hero_art)
@@ -496,7 +505,8 @@ def _roles(result):
                                   insight_title="Timeline Insight", list_title="Dated ads by selected title")
         else:
             st.info("Only one posting month is available; the table shows counts without implying a time trend.")
-            timeline_table(monthly_frame, timeline_titles)
+            with st.container(key="public-posting-timeline"):
+                timeline_table(monthly_frame, timeline_titles)
         st.caption(f"{dated:,} dated ads; {undated:,} ads with missing or invalid dates are excluded.")
 
 
@@ -659,7 +669,13 @@ def _results(result):
         with tabs[5]: _unmapped(result)
 
 
-def _process_pending_upload():
+def _results_screen(result):
+    _results(result)
+    st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis · MSU-IIT</footer>')
+    _persist_recent_upload()
+
+
+def _process_pending_upload(loading_slot):
     content = st.session_state.get("public_content")
     file_name = st.session_state.get("public_filename")
     mapping = dict(st.session_state.get("public_mapping", {}))
@@ -668,39 +684,35 @@ def _process_pending_upload():
         st.rerun()
 
     mark_uri = "data:image/svg+xml;base64," + base64.b64encode(APP_ICON.read_bytes()).decode("ascii")
-    with st.container(key="public-processing-overlay"):
+    with loading_slot.container(key="public-processing-overlay"):
         with st.container(key="public-processing-card"):
-            st.html(f'<div class="public-processing-brand"><img alt="" src="{mark_uri}"><span><strong>Future of Work</strong><small>MSU-IIT · Job Market Analytics</small></span></div><h1 class="public-processing-title">Analyzing your dataset</h1><p class="public-processing-copy">Applying the public classifier and shared analysis pipeline.</p>')
-            message = st.empty()
-            message.html('<p class="public-processing-status">Preparing your dataset analysis…</p>')
-            bar, value = st.columns([1, .07], vertical_alignment="center", gap="small")
-            with bar:
-                progress = st.progress(0)
-            with value:
-                percent = st.empty()
-                percent.html('<span class="public-processing-percent">0%</span>')
+            st.html(f'<div class="public-processing-brand"><img alt="" src="{mark_uri}"><span><strong>Future of Work</strong><small>Job Market Analytics</small></span></div><h1 class="public-processing-title">Analyzing your dataset</h1><p class="public-processing-copy">Applying the public classifier and shared analysis pipeline.</p>')
+            meter = st.empty()
+            st.html('<button type="button" class="public-processing-continue" hidden>View available results</button>')
             st.html('<p class="public-processing-privacy">Your recent upload stays available in this browser session.</p>')
 
     def update(value, text):
-        percentage = min(100, max(0, int(round(float(value) * 100))))
-        progress.progress(percentage)
-        message.html(f'<p class="public-processing-status">{escape_html(str(text))}</p>')
-        percent.html(f'<span class="public-processing-percent">{percentage}%</span>')
+        percentage = min(95, max(0, round(float(value) * 100)))
+        meter.html(f'<p class="public-processing-status" role="status">{escape_html(str(text))}</p>'
+                   '<div class="public-processing-meter">'
+                   f'<progress aria-label="Analysis progress" max="100" value="{percentage}"></progress>'
+                   f'<span class="public-processing-percent" aria-hidden="true">{percentage}%</span></div>')
 
+    update(0, "Preparing your dataset analysis…")
     try:
         result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
-        update(.95, "Preparing charts and insights for your results.")
-        _results(result)
-        update(1.0, "Your results are ready.")
+        update(.95, "Drawing the charts in all six sections…")
+        with collect_result_plots() as plots:
+            _results_screen(result)
+        script = Path(__file__).with_name("result_chart_readiness.js").read_text(encoding="utf-8")
+        st.html(f"<script>({script})({len(plots)});</script>", unsafe_allow_javascript=True)
     except Exception as exc:
         st.session_state["public_error"] = str(exc)
         st.session_state["public_stage"] = "review"
         st.rerun()
-    time.sleep(.45)
     st.session_state["public_result"] = result
     st.session_state["public_stage"] = "results"
     st.session_state.pop("public_error", None)
-    st.rerun()
 
 
 def main():
@@ -712,10 +724,9 @@ def main():
         st.session_state["public_stage"] = "review"
         st.info("Analysis has been updated. Start analysis again to refresh your results.")
         result = None
+    loading_slot = st.empty()
     if result:
-        _results(result)
-        st.html('<footer class="st-key-public-footer">Future of Work · Philippine job advertisement analysis · MSU-IIT</footer>')
-        _persist_recent_upload()
+        _results_screen(result)
         return
 
     stage = st.session_state.get("public_stage", "upload")
@@ -726,6 +737,9 @@ def main():
     if stage in {"review", "processing"} and st.session_state.get("public_preview") is None:
         st.session_state["public_stage"] = stage = "upload"
         processing = False
+    if processing:
+        _process_pending_upload(loading_slot)
+        return
     content = st.session_state.get("public_content")
     preview = st.session_state.get("public_preview")
     mapping = dict(st.session_state.get("public_mapping", {}))
@@ -886,7 +900,7 @@ def main():
                 st.rerun()
         with analyze:
             if st.button("Start analysis", type="primary", icon=":material/arrow_forward:",
-                          disabled=not ready or processing, key="public_start_analysis", width="stretch"):
+                          disabled=not ready, key="public_start_analysis", width="stretch"):
                 st.session_state["public_stage"] = "processing"
                 st.session_state.pop("public_error", None)
                 st.rerun()
@@ -894,8 +908,6 @@ def main():
     with st.container(key="public-footer"):
         st.caption(f"Future of Work · Philippine job advertisement analysis · v{PUBLIC_VERSION}")
     _persist_recent_upload()
-    if processing:
-        _process_pending_upload()
 
 
 main()
