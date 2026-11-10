@@ -365,6 +365,11 @@ def _build_manual_review_data():
     candidates["normalized_phrase"] = normalized.where(normalized.ne(""), candidates.phrase).map(normalize_text)
     candidates["source_type"] = candidates.source_type.fillna("").astype(str).str.strip()
     candidates["source_id"] = candidates.source_id.fillna("").astype(str).str.strip()
+    # Himalayas was a temporary optional source. Keep historical annotations,
+    # but do not mix those postings into the team's current review queue.
+    candidates = candidates.loc[
+        ~candidates.source_id.str.casefold().str.contains("himalayas", regex=False)
+    ].copy()
     job_types = candidates.source_type.str.casefold().isin({"jobs", "philippine job advertisement"})
     candidates.loc[job_types, "source_type"] = "jobs"
     candidates = candidates[candidates.phrase.ne("")].copy()
@@ -1330,21 +1335,6 @@ def labeling():
     source_tools = _icon_expander("Sources and batch tools", icon=":material/settings:", key="review_source_tools", on_change="rerun")
     if source_tools.open:
         with source_tools:
-            with _icon_expander("Optional: add remote job sources"):
-                st.caption("Fetches one page (at most 20 jobs) from Himalayas, keeps only listings that explicitly allow applicants in the Philippines, and records the original listing URL. The provider can rate-limit requests. This adds source evidence only; labels still need your review.")
-                if action_button("Fetch latest Philippines-eligible remote jobs", key="fetch_himalayas_jobs", disabled=not supabase_store.is_admin()):
-                    from .himalayas_feed import fetch_philippines_jobs
-                    try:
-                        report = fetch_philippines_jobs(storage.ROOT)
-                    except Exception as exc:
-                        st.error(f"The feed request did not complete: {exc}")
-                    else:
-                        st.success(
-                            f"Checked {report['response_rows']} listings; found {report['explicit_philippines_eligible_rows']} that explicitly allow applicants in the Philippines; added {report['new_rows_added']} new postings. No labels or models were changed."
-                        )
-                        st.caption("Source: Himalayas. Credit Himalayas and link the original listing wherever these jobs are displayed.")
-                        if report["new_rows_added"]:
-                            st.info("The new postings are saved under `train/remote_feeds`. Use the local AI batch tools below to extract phrases and prepare BGE-M3 drafts.")
             with _icon_expander("Local AI drafts — batch tools"):
                 st.caption("Process up to 25 new drafts per run. Saved batches are retained; run again to continue. First use downloads about 2.3 GB and loads the model on CPU.")
                 if action_button("Generate next 25 local drafts", key="run_local_suggestions", disabled=not supabase_store.is_admin()):
@@ -1353,7 +1343,8 @@ def labeling():
                 from .posting_import import prepare_posting_candidates, COUNTRY_RULE
                 posting_files = [item["filename"] for item in inspect_training_folder(storage.ROOT)
                                  if item["purpose"] == "job-ad source data" and item["filename"].lower().endswith(".csv")
-                                 and "derived" not in Path(item["filename"]).parts]
+                                 and "derived" not in Path(item["filename"]).parts
+                                 and "himalayas" not in Path(item["filename"]).name.casefold()]
                 st.caption("Columns are mapped automatically. " + COUNTRY_RULE)
                 st.caption("This prepares blank-label candidates for review. Verify source accuracy and AI/analytics relevance before using them for research.")
                 if posting_files:
@@ -1400,7 +1391,7 @@ def labeling():
                             if contexts:
                                 st.success(f"Restored missing evidence for {updated:,} shared candidate rows. Teammates can refresh their shared review table.")
                             else:
-                                st.warning("No matching original uploads were found on this computer. Run this repair on the computer that first uploaded these advertisements.")
+                                st.warning("No matching upload archive is visible to this session. Run Restore shared ad evidence from the Researcher workspace on the original uploader's computer (http://127.0.0.1:8503/); a cloud session cannot read files stored on that computer.")
                     if action_button("Refresh shared review table"):
                         supabase_store.clear_read_cache()
                         for key in list(st.session_state):
@@ -1764,16 +1755,22 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                     if generate_clicked:
                         generate_ai_drafts(missing_rows or page_rows)
                     if save_clicked:
-                        try:
-                            for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
-                                if not occurrence or not str(occurrence.get("original_text", "")).strip():
-                                    raise ValueError("Restore the source advertisement text before saving competency links.")
-                                if set(selected) != set(reasons):
-                                    raise ValueError("Select competencies from the active PSF-AAI reference.")
+                        ready_mapping_updates = []
+                        mapping_errors = []
+                        for update in mapping_updates:
+                            occurrence, reasons, confirmed, no_match, saved, selected = update
+                            if not occurrence or not str(occurrence.get("original_text", "")).strip():
+                                mapping_errors.append("Advertisement context is unavailable; restore shared evidence before saving this competency link.")
+                                continue
+                            if set(selected) != set(reasons):
+                                mapping_errors.append("Select competencies from the active PSF-AAI reference before saving links.")
+                                continue
+                            try:
                                 prepare_mapping_review(occurrence, active_taxonomy, reasons, reviewer, confirmed, no_match)
-                        except ValueError as exc:
-                            st.error(str(exc))
-                            return
+                            except ValueError as exc:
+                                mapping_errors.append(str(exc))
+                                continue
+                            ready_mapping_updates.append(update)
                         submitted_rows = edited[edited.label.str.strip().ne("")]
                         versions = None
                         if supabase_store.configured():
@@ -1785,19 +1782,23 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                         submitted_rows = preserve_occurrence_references(expand_phrase_annotations(submitted_rows, occurrences), labels)
                         categories_saved = bool(submitted_rows.label.str.strip().ne("").any() or conflicts)
                         if categories_saved:
-                            labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+                            try:
+                                labels = save_annotations(submitted_rows, reviewer, conflict_resolutions=conflict_resolutions, expected_versions=versions)
+                            except (ValueError, supabase_store.SupabaseError) as exc:
+                                st.error(f"Category annotations could not be saved. {exc}")
+                                return
                         saved_links = 0
-                        try:
-                            for occurrence, reasons, confirmed, no_match, saved, selected in mapping_updates:
+                        mapping_save_error = ""
+                        for occurrence, reasons, confirmed, no_match, saved, selected in ready_mapping_updates:
+                            try:
                                 save_mapping_review(occurrence, active_taxonomy, reasons, reviewer,
                                                     expected_version=int(saved.version.iloc[0]) if not saved.empty else 0,
                                                     context_confirmed=confirmed, unmapped_reason=no_match)
                                 saved_links += 1
-                        except (ValueError, supabase_store.SupabaseError) as exc:
-                            supabase_store.clear_read_cache()
-                            st.warning(f"Partial save: category annotations {'were saved' if categories_saved else 'were unchanged'}; {saved_links} occurrence mapping(s) saved. Refresh before retrying. {exc}")
-                            return
-                        if mapping_updates:
+                            except (ValueError, supabase_store.SupabaseError) as exc:
+                                mapping_save_error = str(exc)
+                                break
+                        if saved_links:
                             supabase_store.clear_read_cache()
                             # Refresh these defaults and versions after the successful batch.
                             fresh = storage.read_frame(REVIEW_TABLE)
@@ -1805,12 +1806,26 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
                                 if occurrence:
                                     page_reviews[index] = fresh[fresh.extraction_id.eq(occurrence["extraction_id"])] if not fresh.empty else pd.DataFrame()
                             manual_table["PSF-AAI competencies"] = edited_table["PSF-AAI competencies"].copy()
-                        if supabase_store.configured():
+                        if supabase_store.configured() and (categories_saved or saved_links):
                             st.session_state.pop("review_snapshot", None)
                             for key in list(st.session_state):
                                 if str(key).startswith(("manual_labels_", "review_draft_")):
                                     del st.session_state[key]
-                        st.success(f"Saved. The dataset has {len(labels):,} category review rows; updated competency links for {saved_links} advertisement occurrence(s).")
+                        if categories_saved or saved_links:
+                            st.success(f"Saved {len(submitted_rows):,} category annotation row(s); updated competency links for {saved_links} advertisement occurrence(s).")
+                        if mapping_errors or mapping_save_error:
+                            details = mapping_errors[:2]
+                            if mapping_save_error:
+                                details.append(mapping_save_error)
+                            remainder = len(mapping_errors) - min(2, len(mapping_errors))
+                            suffix = f" Plus {remainder} more mapping issue(s)." if remainder else ""
+                            category_status = "Category annotations were saved; " if categories_saved else "Category annotations were unchanged; "
+                            st.warning(
+                                f"{category_status}{len(mapping_errors) + bool(mapping_save_error)} competency link(s) still need attention: "
+                                + " ".join(details) + suffix
+                            )
+                        elif not (categories_saved or saved_links):
+                            st.info("No annotation or competency-link changes were found to save.")
                         if st.session_state.get("backup_warning"):
                             st.warning(st.session_state.pop("backup_warning"))
                         _auto_train_after_review(labels, auto_train)
