@@ -68,7 +68,7 @@ spacy-loggers==1.0.5
 spacy-lookups-data==1.0.5
 srsly==2.5.4
 starlette==1.7.0
-streamlit==1.65.0
+streamlit==1.67.0
 thinc==8.3.13
 threadpoolctl==3.7.0
 toml==0.10.2
