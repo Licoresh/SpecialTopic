@@ -21,6 +21,20 @@ def display_model_name(name):
     return MODEL_DISPLAY_NAME if name == MODEL_NAME else name
 
 
+@lru_cache(maxsize=512)
+def _released_predictions(model, phrases):
+    # Keep complete ordered batches: dynamic INT8 output depends on batch context.
+    return tuple(model.predict(phrases))
+
+
+def predict_batch(model, phrases):
+    """Reuse only the immutable released model's identical inference batches."""
+    if (len(phrases) <= 256 and load_final_model.cache_info().currsize
+            and model is load_final_model()):
+        return _released_predictions(model, tuple(phrases))
+    return model.predict(phrases)
+
+
 def _weights(name, spec):
     local = os.environ.get('FOW_INT8_ENCODER_DIR')
     if local:

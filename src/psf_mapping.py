@@ -55,6 +55,7 @@ class TaxonomyMatcher:
             for r in self.rows
         ], normalize_embeddings=True) if self.encoder else None
         self.cache = {}
+        self.match_cache = {}
 
     def evidence(self, key, method, score):
         row = self.rows[self.terms[key][0]]
@@ -159,8 +160,13 @@ class TaxonomyMatcher:
         return [standard] if standard else []
 
     def match(self, phrase, normalized=None):
+        key = (phrase, normalized)
+        if key in self.match_cache:
+            return self.match_cache[key]
         candidates = self.match_candidates(phrase, normalized)
-        return candidates[0] if len(candidates) == 1 else None
+        result = candidates[0] if len(candidates) == 1 else None
+        self.match_cache[key] = result
+        return result
 
 def mapping_table(extracted):
     if extracted.empty:

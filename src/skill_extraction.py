@@ -3,6 +3,7 @@ import pandas as pd
 from .cleaning import clean_text, normalize_text
 from .preprocessing import extract_candidate_phrases
 from .utils import digest
+from .quantized_classifier import predict_batch
 
 # General discovery vocabulary only; these are NOT asserted PSF-AAI competencies.
 VOCABULARY = {
@@ -77,7 +78,8 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
                          f"Classifying phrase {start + 1:,} of {len(phrases):,}")
                 batch = phrases[start:start + 256]
                 predictions.update((phrase, (str(label), None))
-                                   for phrase, label in zip(batch, model.predict(batch)))
+                                   for phrase, label in zip(batch, predict_batch(model, batch)))
+    can_screen_relevance = model is not None and "IRRELEVANT" in model.classes_
     for number, ((_, row), text) in enumerate(zip(frame.iterrows(), texts)):
         checkpoint()
         progress(.4 + .5 * (number + 1) / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")
@@ -85,12 +87,13 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
         seen = set()
         for phrase, normal, start, end, mapped in evidence:
             normal = normalize_text(normal)
+            if normal in seen:
+                continue
             mapped = mapped or (matcher.match(phrase, normal) if matcher else None)
-            annotation = annotation_map.get(normalize_text(phrase), annotation_map.get(normal))
+            annotation = annotation_map.get(normalize_text(phrase), annotation_map.get(normal)) if annotation_map else None
             category = GENERAL.get(normal, "UNCLASSIFIED")
             ml_cat, ml_score = predictions.get(normal, ("", None))
             score = ml_score if ml_score is not None else 0.
-            can_screen_relevance = model is not None and "IRRELEVANT" in model.classes_
             accepted = mapped is not None or normal in GENERAL or (can_screen_relevance and ml_cat not in ("", "IRRELEVANT") and score >= .6)
             if mapped:
                 category = mapped["psf_category"] or category
@@ -106,8 +109,6 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
                     if mapped:
                         mapped = mapped | {"matching_method": "human_annotation", "confidence": 1.}
             skill = mapped["psf_competency"] if mapped else normal
-            if normal in seen:
-                continue
             seen.add(normal)
             result = {"extraction_id": digest([row.source_id, normal])[:24], "source_type": source_type,
                       "source_id": row.source_id, "original_text": row.original_text, "original_phrase": phrase,
