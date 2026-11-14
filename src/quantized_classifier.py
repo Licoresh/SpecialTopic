@@ -13,7 +13,12 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from .config import ROOT
 
 MODEL_NAME = 'MiniLM + BGE-M3 INT8 ONNX (linear SVC)'
+MODEL_DISPLAY_NAME = 'MiniLM + BGE-M3 INT8 ONNX + refitted linear SVC'
 BUNDLE = ROOT / 'data/reference/semantic_int8'
+
+
+def display_model_name(name):
+    return MODEL_DISPLAY_NAME if name == MODEL_NAME else name
 
 
 def _weights(name, spec):
@@ -112,7 +117,8 @@ def load_final_model():
     if hashlib.sha256(path.read_bytes()).hexdigest() != manifest['classifier_sha256']:
         raise ValueError('Final classifier checksum mismatch.')
     model = joblib.load(path)
-    model.name = model.research_model_name_ = MODEL_NAME
+    model.name = MODEL_DISPLAY_NAME
+    model.research_model_name_ = MODEL_NAME
     model.version = manifest['version']
     model.trained_at = manifest['trained_at']
     model.release_status = 'exploratory'

@@ -23,6 +23,7 @@ from .cleaning import clean_dataset, duplicate_ids, job_comparison_csv, normaliz
 from .preprocessing import get_nlp
 from .validation import validate_taxonomy
 from .classification import VECTORIZER_CONFIG, predict_competency_category, SELECTION_BASIS, model_slug
+from .quantized_classifier import display_model_name
 from .training_data import load_labeled_data, validate_labeled_data
 from .model_training import read_model_metadata, training_data_changed
 from .training_sources import (resolve_training_file, inspect_training_folder, training_candidates,
@@ -848,7 +849,7 @@ def home():
                             with action_slot:
                                 page_button("pages/18_Research_Readiness.py", "Review readiness", key="home_readiness")
                     if model:
-                        st.caption(f"Saved classifier: {model['model_name']}. It is available for exploratory workflow checks; see Research Readiness before interpreting model outputs.")
+                        st.caption(f"Saved classifier: {display_model_name(model['model_name'])}. It is available for exploratory workflow checks; see Research Readiness before interpreting model outputs.")
                     else:
                         st.caption("No classifier has been trained. AI-generated phrase suggestions are drafts; they do not count as reviewed labels or model results.")
 
@@ -1946,15 +1947,15 @@ def training():
                 with content():
                     if metadata:
                         with content_section("Saved model", "model_training", "training_saved"):
-                            st.write("Selected model:", metadata["model_name"])
+                            st.write("Selected model:", display_model_name(metadata["model_name"]))
                             _paper_classifier_comparison("training_paper_comparison")
                             if not comparison.empty:
                                 with _icon_expander("Current saved run", expanded=False):
-                                    display(comparison, key="training_current_metrics")
+                                    display(comparison.assign(model=comparison.model.map(display_model_name)), key="training_current_metrics")
 
 
 def _paper_classifier_comparison(key):
-    paper_metrics = pd.read_csv(ROOT / "data/reference/classifier_comparison.csv")
+    paper_metrics = pd.read_csv(Path(__file__).resolve().parents[1] / "data/reference/classifier_comparison.csv")
     st.caption("Paper Table 10 · 356 reviewed phrases · 70 holdout phrases from 23 job ads. CV macro F1 uses training folds only. The exploratory comparisons reuse the same holdout.")
     st.caption("INT8 ONNX CV was recalculated through the final inference adapter, encoding every validation partition separately. The saved SVC procedure fits each fold on original embeddings and predicts with INT8; the refitted procedure uses INT8 in both stages. The refitted model has the highest mean training CV macro F1 and is the final shared classifier. Holdout scores remain exploratory because the same 70 phrases were reused.")
     display(paper_metrics, key=key, column_config={
@@ -1992,7 +1993,7 @@ def evaluation():
                         page_button("pages/07_ML_Training.py", "Open model training", primary=True, key="evaluation_open_training")
                         page_button("pages/06_Manual_Labeling.py", "Review phrases", key="evaluation_open_review")
                 return
-            st.write("Selected model:", metadata["model_name"])
+            st.write("Selected model:", display_model_name(metadata["model_name"]))
             if overlap or too_few_test_sources or split_info.get("strategy", "").startswith("stratified phrase-level"):
                 st.error("These saved scores do not provide adequate evidence of generalization across independent job ads, so they are withheld from research reporting. Label more independent ads across categories, then retrain with a source-disjoint evaluation.")
                 if overlap:
@@ -2014,8 +2015,9 @@ def evaluation():
             if labels_changed:
                 st.warning("Training data has changed since this model was trained. Retraining is recommended.")
             with content_section("Current saved run", "bar_chart", "evaluation_results"):
-                display(metrics)
+                display(metrics.assign(model=metrics.model.map(display_model_name)))
                 data = metrics.melt(id_vars="model", value_vars=["accuracy", "macro_f1", "weighted_f1"], var_name="metric", value_name="score")
+                data["model"] = data.model.map(display_model_name)
                 data.score = pd.to_numeric(data.score)
                 left, right = st.columns([2.5, 1], gap="medium", vertical_alignment="center")
                 with left:
@@ -2025,11 +2027,12 @@ def evaluation():
                     detail = (f"Displayed holdout Macro F1 ranges from {macro.score.min():.3f} to {macro.score.max():.3f}."
                               if not macro.empty else "No Macro F1 values are available in this comparison.")
                     content_note("Evaluation insight", f"The chart compares {data.model.nunique()} saved {'model' if data.model.nunique() == 1 else 'models'}. {detail}",
-                                 items=[f"Selected classifier: {metadata['model_name']}.",
+                                 items=[f"Selected classifier: {display_model_name(metadata['model_name'])}.",
                                         ("This run selected its model using training cross-validation. These holdout comparisons do not select a new winner."
                                          if metadata.get("selection_basis") == SELECTION_BASIS else
                                          "This legacy run used an earlier selection procedure. Treat its scores as internal comparisons and retrain before final evaluation.")], icon="target")
-            choice = st.selectbox("Evaluation model", metrics.model.tolist(), index=metrics.model.tolist().index(metadata["model_name"]))
+            choice = st.selectbox("Evaluation model", metrics.model.tolist(), index=metrics.model.tolist().index(metadata["model_name"]),
+                                  format_func=display_model_name)
             slug = model_slug(choice)
             with loading_content("evaluation_details", "heatmap", columns=range(min(12, metadata.get("number_of_classes", 1))), rows=min(12, metadata.get("number_of_classes", 1))) as content:
                 matrix, per_class, predictions = load_data_with_skeleton(
@@ -2685,7 +2688,7 @@ def _job_market_content(tables, meta, revision=None):
     if meta.get("dataset_id"):
         input_id = meta.get("analysis_input_id", "")
         details = [meta.get("filename"), f"Dataset ID `{meta['dataset_id'][:16]}`",
-                   meta.get("classifier_name"), f"Analysis input ID `{input_id[:16]}`" if input_id else "",
+                   display_model_name(meta.get("classifier_name")), f"Analysis input ID `{input_id[:16]}`" if input_id else "",
                    f"Model ID `{meta['classifier_version']}`"]
         st.caption(" · ".join(detail for detail in details if detail))
         st.download_button("Download analysis input CSV", data=lambda: job_comparison_csv(jobs),
