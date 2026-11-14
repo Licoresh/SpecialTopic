@@ -16,7 +16,7 @@ from .gap_analysis import calculate_gaps
 from .labeling import apply_corrections
 
 # Bump when extraction/matching/classification semantics change, not for UI fixes.
-EXTRACTION_PIPELINE_VERSION = 3
+EXTRACTION_PIPELINE_VERSION = 4
 
 
 def _research_selection():
@@ -28,6 +28,9 @@ def _research_selection():
 
 
 def research_classifier_revision():
+    from .quantized_classifier import BUNDLE
+    if (BUNDLE / 'manifest.json').is_file():
+        return digest((BUNDLE / 'manifest.json').read_bytes())
     metadata = _research_selection()
     if not metadata:
         path = ROOT / "public-web/site/model.json"
@@ -39,6 +42,9 @@ def research_classifier_revision():
 
 
 def research_classifier():
+    from .quantized_classifier import BUNDLE, load_final_model
+    if (BUNDLE / 'classifier.joblib').is_file():
+        return load_final_model()
     from .classification import load_trained_model
     from .public_engine import _model
 

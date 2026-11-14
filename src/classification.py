@@ -19,7 +19,7 @@ from .training_data import validate_labeled_data, source_disjoint_split
 SELECTION_BASIS = "training_cross_validation"
 
 MODEL_FILES = {"Multinomial Naive Bayes": "naive_bayes_pipeline.joblib", "Logistic Regression": "logistic_regression_pipeline.joblib"}
-SEMANTIC_MODEL = "MiniLM + BGE-M3 (linear SVC)"
+SEMANTIC_MODEL = "MiniLM + BGE-M3 INT8 ONNX (linear SVC)"
 SEMANTIC_SLUG = "semantic"
 SEMANTIC_ENCODERS = (
     ("sentence-transformers/all-MiniLM-L6-v2", "c21050a7ef692090620a6d037dd736908f9c7cf6"),
@@ -112,23 +112,20 @@ def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_c
         evaluation.update(model=model, train_count=len(train), test_count=len(test), split={"strategy": split_strategy, "train_phrases": train.text.tolist(), "test_phrases": test.text.tolist(), "train_source_rows": train.source_row.tolist(), "test_source_rows": test.source_row.tolist(), "train_source_ids": sorted(train.source_id.astype(str).unique().tolist()) if "source_id" in train else [], "test_source_ids": sorted(test.source_id.astype(str).unique().tolist()) if "source_id" in test else []}, test_size=test_size, validation=validation)
         result[name] = evaluation
     if include_semantic:
+        from .quantized_classifier import QuantizedSkillEmbeddings
         if not use_grouped_cv or not cv_splits:
             raise ValueError("The combined model requires valid source-grouped training folds.")
         if progress:
             progress(.65, "Encoding reviewed phrases with MiniLM and BGE-M3")
-        try:
-            train_vectors = _encode_phrases(train.text)
-        except (ImportError, OSError, RuntimeError, ValueError) as exc:
-            raise ValueError("Combined training needs sentence-transformers and both pinned encoders in the local Hugging Face cache.") from exc
         classifier = SVC(C=10, kernel="linear", class_weight="balanced", random_state=SEED)
-        scores = cross_validate(classifier, train_vectors, train.label, cv=cv_splits,
+        pipeline = Pipeline([("embeddings", QuantizedSkillEmbeddings()), ("classifier", classifier)])
+        scores = cross_validate(pipeline, train.text, train.label, cv=cv_splits,
                                 scoring={"macro_f1": "f1_macro", "weighted_f1": "f1_weighted", "accuracy": "accuracy"}, error_score="raise")
         semantic_metrics = {"cv_folds": folds}
         for metric in ("macro_f1", "weighted_f1", "accuracy"):
             values = scores["test_" + metric]
             semantic_metrics.update({f"cv_{metric}_mean": float(values.mean()), f"cv_{metric}_std": float(values.std())})
-        classifier.fit(train_vectors, train.label)
-        pipeline = Pipeline([("embeddings", FrozenSkillEmbeddings()), ("classifier", classifier)])
+        pipeline.fit(train.text, train.label)
         pipeline.research_model_name_ = SEMANTIC_MODEL
         result[SEMANTIC_MODEL] = {
             **result["Logistic Regression"], "model": pipeline, "metrics": semantic_metrics,
@@ -212,5 +209,9 @@ def predict_competency_category(text, root=None):
             "model_name": getattr(model, "research_model_name_", type(model.named_steps["classifier"]).__name__)}
 
 def load_trained_model(root=None):
+    if root is None:
+        from .quantized_classifier import BUNDLE, load_final_model
+        if (BUNDLE / 'classifier.joblib').is_file():
+            return load_final_model()
     from . import storage
     return cached_load_model(Path(root or storage.ROOT) / "models/competency_classifier.joblib")

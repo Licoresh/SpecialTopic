@@ -14,6 +14,15 @@ from .training_lock import exclusive_training, ensure_training_lease
 from . import supabase_store
 
 def read_model_metadata(root=None):
+    if root is None:
+        from .quantized_classifier import BUNDLE
+        release = BUNDLE / 'manifest.json'
+        if release.is_file():
+            final = json.loads(release.read_text())['metadata']
+            # Retain private snapshot/provenance only on the research host.
+            prior_path = storage.ROOT / 'models/model_metadata.json'
+            prior = json.loads(prior_path.read_text()) if prior_path.is_file() else {}
+            return prior | final | {'active_release': True}
     if supabase_store.configured():
         return storage.read_json("model_metadata", {})
     path = Path(root or storage.ROOT) / "models/model_metadata.json"

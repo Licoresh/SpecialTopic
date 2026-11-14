@@ -4,6 +4,9 @@
   "installCommand": "",
   "buildCommand": "",
   "outputDirectory": "public-web/site",
+  "redirects": [
+    {"source": "/", "destination": "https://futureofworks.streamlit.app/", "permanent": false}
+  ],
   "functions": {
     "api/analyze.py": {
       "maxDuration": 300,

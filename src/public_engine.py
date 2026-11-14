@@ -89,6 +89,9 @@ class _ReleasedClassifier:
 
 
 def _model():
+    from .quantized_classifier import BUNDLE, load_final_model
+    if (BUNDLE / 'classifier.joblib').is_file():
+        return load_final_model()
     artifact_path = ROOT / _MODEL_PATH
     try:
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -98,6 +101,12 @@ def _model():
 
 
 def load_semantic_public_model():
+    from .quantized_classifier import BUNDLE, load_final_model
+    if (BUNDLE / 'classifier.joblib').is_file():
+        try:
+            return load_final_model()
+        except Exception as exc:
+            raise ClassifierUnavailable('The final INT8 classifier could not be loaded.') from exc
     from .classification import SEMANTIC_ENCODERS, SEMANTIC_MODEL, _research_encoder, cached_load_model
 
     path = ROOT / "models/competency_classifier.joblib"

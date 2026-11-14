@@ -87,3 +87,9 @@ wrapt==2.5.0
 pypdf==6.20.0
 
 filelock==4.1.0
+flatbuffers==25.12.19
+onnxruntime==1.32.0
+tokenizers==0.22.2
+huggingface-hub==0.36.2
+fsspec==2026.9.0
+PyYAML==6.0.3

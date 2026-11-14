@@ -1956,6 +1956,7 @@ def training():
 def _paper_classifier_comparison(key):
     paper_metrics = pd.read_csv(ROOT / "data/reference/classifier_comparison.csv")
     st.caption("Paper Table 10 · 356 reviewed phrases · 70 holdout phrases from 23 job ads. CV macro F1 uses training folds only. The exploratory comparisons reuse the same holdout.")
+    st.caption("INT8 ONNX CV was recalculated through the final inference adapter, encoding every validation partition separately. The saved SVC procedure fits each fold on original embeddings and predicts with INT8; the refitted procedure uses INT8 in both stages. The refitted model has the highest mean training CV macro F1 and is the final shared classifier. Holdout scores remain exploratory because the same 70 phrases were reused.")
     display(paper_metrics, key=key, column_config={
         column: st.column_config.NumberColumn(format="%.4f")
         for column in paper_metrics.columns if column != "Configuration"

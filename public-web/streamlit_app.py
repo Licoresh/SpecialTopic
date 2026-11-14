@@ -62,8 +62,8 @@ FIELD_LABELS = {
 }
 PRIMARY_FIELDS = ("job_title", "job_description", "required_skills", "preferred_skills", "qualifications")
 OPTIONAL_FIELDS = tuple(field for field in FIELDS["jobs"] if field not in PRIMARY_FIELDS)
-SEMANTIC_ENABLED = os.environ.get("FOW_PUBLIC_SEMANTIC") == "1"
-ENGINE = None if SEMANTIC_ENABLED else health(hosted=True)
+SEMANTIC_ENABLED = True
+ENGINE = None
 
 
 @st.cache_resource(show_spinner=False)
@@ -1054,6 +1054,9 @@ def _process_pending_upload(loading_slot):
 
     update(0, "Preparing your dataset analysis…")
     try:
+        from src.quantized_classifier import prepare_runtime
+        update(.03, "Loading the final INT8 classifier. The first run downloads the encoders; later runs reuse them.")
+        prepare_runtime()
         result = analyze_upload(content, file_name, mapping, hosted=True, progress=update, model=_analysis_model())
         update(.95, "Drawing the charts in all six sections…")
         _results_screen(result, preload=True)

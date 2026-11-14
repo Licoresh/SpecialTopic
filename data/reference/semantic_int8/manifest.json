@@ -1,0 +1,178 @@
+{
+  "encoders": {
+    "minilm": {
+      "sha256": "4f32831df6522f1741a6126acc4444aeb4cd241a64ac48072008da28a4367632",
+      "url": "https://github.com/Licoresh/SpecialTopic/releases/download/fow-int8-20261114/minilm_int8.onnx",
+      "max_length": 256,
+      "pooling": "mean",
+      "pad_token": "[PAD]",
+      "pad_id": 0
+    },
+    "bge": {
+      "sha256": "d4913ba12db4ad3a42437204f61fb55adec910012d9e71b7070b10fbe6d0fc9a",
+      "url": "https://github.com/Licoresh/SpecialTopic/releases/download/fow-int8-20261114/bge_int8.onnx",
+      "max_length": 128,
+      "pooling": "cls",
+      "pad_token": "<pad>",
+      "pad_id": 1
+    }
+  },
+  "model_name": "MiniLM + BGE-M3 INT8 ONNX (linear SVC)",
+  "classifier_sha256": "57e3f4e65417535d44bbe54c0c0ac1654b148af90364f1f6206c78c31000ec84",
+  "trained_at": "2026-11-14T13:29:18.935196+00:00",
+  "evaluation": {
+    "portable_max_vector_difference": 4.214684851122641e-08,
+    "encode356_seconds": 7.645313300003181,
+    "holdout_saved": {
+      "macro_f1": 0.7502308026501575,
+      "weighted_f1": 0.7312169312169312,
+      "accuracy": 0.7285714285714285
+    },
+    "cv_saved_folds": [
+      {
+        "macro_f1": 0.4118490205446727,
+        "weighted_f1": 0.571298266950441,
+        "accuracy": 0.5818181818181818
+      },
+      {
+        "macro_f1": 0.5890066171396093,
+        "weighted_f1": 0.5343498292640885,
+        "accuracy": 0.5737704918032787
+      },
+      {
+        "macro_f1": 0.7129251700680272,
+        "weighted_f1": 0.7630743525480367,
+        "accuracy": 0.7719298245614035
+      },
+      {
+        "macro_f1": 0.5056234615058145,
+        "weighted_f1": 0.7147402820777434,
+        "accuracy": 0.7192982456140351
+      },
+      {
+        "macro_f1": 0.41007231946336864,
+        "weighted_f1": 0.5797108094888727,
+        "accuracy": 0.6071428571428571
+      }
+    ],
+    "cv_refit_folds": [
+      {
+        "macro_f1": 0.412109500805153,
+        "weighted_f1": 0.5716960913482653,
+        "accuracy": 0.5818181818181818
+      },
+      {
+        "macro_f1": 0.5954248366013071,
+        "weighted_f1": 0.5353476909889638,
+        "accuracy": 0.5737704918032787
+      },
+      {
+        "macro_f1": 0.7155388471177945,
+        "weighted_f1": 0.7623268698060942,
+        "accuracy": 0.7719298245614035
+      },
+      {
+        "macro_f1": 0.5405682272909165,
+        "weighted_f1": 0.7583724015922158,
+        "accuracy": 0.7719298245614035
+      },
+      {
+        "macro_f1": 0.41865079365079366,
+        "weighted_f1": 0.5959821428571429,
+        "accuracy": 0.625
+      }
+    ],
+    "cv_saved_mean": 0.5258953177442984,
+    "cv_refit_mean": 0.536458441093193,
+    "holdout_refit": {
+      "macro_f1": 0.7667469765684051,
+      "weighted_f1": 0.7576412509448224,
+      "accuracy": 0.7571428571428571
+    },
+    "selection_rule": "Prefer the compression-only procedure if it preserves or improves training CV; holdout is diagnostic and reused.",
+    "procedure": "Each validation partition encoded independently through the production ONNX/tokenizers adapter; each CV SVC fitted only on its training partition."
+  },
+  "version": "db99de0186aac760",
+  "metadata": {
+    "model_name": "MiniLM + BGE-M3 INT8 ONNX (linear SVC)",
+    "classifier_sha256": "57e3f4e65417535d44bbe54c0c0ac1654b148af90364f1f6206c78c31000ec84",
+    "model_version": "db99de0186aac760",
+    "train_size": 286,
+    "test_size": 70,
+    "rows_used": 356,
+    "training_timestamp": "2026-11-14T13:29:18.935196+00:00",
+    "selection_basis": "training_cross_validation",
+    "cv_folds": 5,
+    "cv_macro_f1_mean": 0.536458441093193,
+    "cv_macro_f1_std": 0.11393420795390438,
+    "refit_on_holdout": false,
+    "macro_f1": 0.7667469765684051,
+    "weighted_f1": 0.7576412509448224,
+    "accuracy": 0.7571428571428571,
+    "macro_precision": 0.8031746031746031,
+    "macro_recall": 0.7845796676441837,
+    "weighted_precision": 0.7851948051948052,
+    "weighted_recall": 0.7571428571428571,
+    "nested_macro_f1": 0.6512807640218558
+  },
+  "source_encoders": [
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "c21050a7ef692090620a6d037dd736908f9c7cf6",
+      "license": "Apache-2.0"
+    },
+    {
+      "model": "BAAI/bge-m3",
+      "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+      "license": "MIT"
+    }
+  ],
+  "classifier_config": {
+    "kernel": "linear",
+    "C": 10,
+    "class_weight": "balanced",
+    "random_state": 42
+  },
+  "nested_evaluation": {
+    "macro_f1": 0.6512807640218558,
+    "weighted_f1": 0.7407330306714514,
+    "accuracy": 0.7612359550561798,
+    "folds": [
+      {
+        "fold": 1,
+        "kernel": "rbf",
+        "C": 10,
+        "inner_macro_f1": 0.5991122621183402
+      },
+      {
+        "fold": 2,
+        "kernel": "rbf",
+        "C": 10,
+        "inner_macro_f1": 0.6182410321848784
+      },
+      {
+        "fold": 3,
+        "kernel": "rbf",
+        "C": 10,
+        "inner_macro_f1": 0.5890542671003504
+      },
+      {
+        "fold": 4,
+        "kernel": "rbf",
+        "C": 100,
+        "inner_macro_f1": 0.595355952719346
+      },
+      {
+        "fold": 5,
+        "kernel": "linear",
+        "C": 100,
+        "inner_macro_f1": 0.5895346715171231
+      }
+    ],
+    "scope": "Internal nested grouped evaluation on the same existing labels; every inner/outer training and validation phrase partition encoded independently through the final ONNX adapter."
+  },
+  "tokenizer_sha256": {
+    "minilm": "e942e75e79a0d07b397e54b640ddf836f07739edc9bca664be8dff729da6090c",
+    "bge": "dfbf70c4aa4fadbbc57a9f23f38b8c94d6c0aeb75e526b695564d559902ec69a"
+  }
+}
