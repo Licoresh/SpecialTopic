@@ -171,15 +171,21 @@ def test_retry_saving_reuses_computation(worker, monkeypatch, jobs, taxonomy):
     pd.testing.assert_frame_equal(storage.read_frame("extractions_original"), expected)
 
 
-@pytest.mark.parametrize("changed", ["labels", "jobs", "settings", "taxonomy", "released_model", "semantic_model", "cleaning"])
+@pytest.mark.parametrize("changed", ["labels", "jobs", "settings", "taxonomy", "released_model", "semantic_model", "pinned_model", "cleaning"])
 def test_retry_rejects_changed_inputs(workspace, monkeypatch, jobs, taxonomy, changed):
-    from src import workflow
+    from src import workflow, quantized_classifier
     from src.classification import SEMANTIC_MODEL
     from src.utils import digest
 
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)
-    if changed == "released_model":
+    if changed in {"released_model", "semantic_model", "pinned_model"}:
+        monkeypatch.setattr(quantized_classifier, 'BUNDLE', workspace / 'data/reference/semantic_int8')
+    if changed == 'pinned_model':
+        model_path = quantized_classifier.BUNDLE / 'manifest.json'
+        model_path.parent.mkdir(parents=True)
+        model_path.write_bytes(b'initial pinned model manifest')
+    elif changed == "released_model":
         model_path = workspace / "public-web/site/model.json"
         model_path.parent.mkdir(parents=True)
         model_path.write_bytes(b"initial released model")
@@ -191,7 +197,7 @@ def test_retry_rejects_changed_inputs(workspace, monkeypatch, jobs, taxonomy, ch
         }), encoding="utf-8")
     signature = workflow.input_signature()
     retry_signature = workflow._extraction_retry_signature(signature)
-    if changed in {"released_model", "semantic_model"}:
+    if changed in {"released_model", "semantic_model", "pinned_model"}:
         model_path.write_bytes(b"changed classifier artifact")
     elif changed == "labels":
         storage.save_frame("labeled_competencies", pd.DataFrame({"phrase": ["SYNTHETIC Python"], "label": ["Technical / Digital"]}))

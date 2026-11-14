@@ -16,6 +16,29 @@ from test_result_views import result_tables
 PUBLIC_APP = Path(__file__).resolve().parents[1] / "public-web/streamlit_app.py"
 
 
+def test_public_processing_finishes_and_keeps_unchanged_results(monkeypatch, public_app):
+    from src import public_engine
+
+    analyze = Mock(wraps=public_engine.analyze_upload)
+    monkeypatch.setattr(public_engine, 'analyze_upload', analyze)
+    app = public_app
+    app.session_state['public_stage'] = 'processing'
+    app.session_state['public_content'] = b'job_title,job_description\nAnalyst,SQL and Python data analysis.\nEngineer,Machine learning and communication.'
+    app.session_state['public_filename'] = 'synthetic.csv'
+    app.session_state['public_mapping'] = {'job_title': 'job_title', 'job_description': 'job_description'}
+    app.run(timeout=60)
+    assert not app.exception and not app.error
+    assert app.session_state['public_stage'] == 'results'
+    result = app.session_state['public_result']
+    assert result['summary']['ads'] == 2
+    assert result['model']['version'] == public_engine._model().version
+    assert result['analysisRevision'] == public_engine.automatic_analysis_revision(public_engine._model())
+    assert len(app.tabs) == 6
+    app.run(timeout=60)
+    assert not app.exception and not app.error
+    assert analyze.call_count == 1
+
+
 @pytest.fixture
 def public_app():
     # Each AppTest has a separate component registry.
@@ -82,8 +105,8 @@ def test_public_sort_and_chart_filters_rerun_only_their_own_results(monkeypatch,
 def test_public_mapping_edits_update_validation_without_a_full_rerun(monkeypatch, public_app):
     from src import public_engine
 
-    health = Mock(wraps=public_engine.health)
-    monkeypatch.setattr(public_engine, "health", health)
+    load_model = Mock(wraps=public_engine.load_semantic_public_model)
+    monkeypatch.setattr(public_engine, "load_semantic_public_model", load_model)
     app = public_app
     app.session_state["public_stage"] = "review"
     app.session_state["public_content"] = b"job_title,job_description\nAnalyst,Uses SQL"
@@ -99,12 +122,12 @@ def test_public_mapping_edits_update_validation_without_a_full_rerun(monkeypatch
     _run_fragment(app, monkeypatch, mapping_key)
     assert app.button(key="public_start_analysis").proto.disabled
     assert app.session_state["public_mapping"]["job_title"] == "job_description"
-    assert health.call_count == 1
+    assert load_model.call_count == 1
 
     app.selectbox(key=mapping_key).set_value("job_title")
     _run_fragment(app, monkeypatch, mapping_key)
     assert not app.button(key="public_start_analysis").proto.disabled
-    assert health.call_count == 1
+    assert load_model.call_count == 1
 
 
 def test_evidence_open_and_pagination_skip_sources_and_charts(monkeypatch):

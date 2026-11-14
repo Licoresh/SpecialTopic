@@ -325,8 +325,8 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None, m
     if jobs.empty:
         raise ValueError("The mapped CSV has no job advertisement text.")
     settings = DEFAULTS
-    analysis_revision = automatic_analysis_revision(model)
     model = _model() if model is None else model
+    analysis_revision = automatic_analysis_revision(model)
     extracted, views, taxonomy, mapping_rows, alignment = automatic_job_analysis(jobs, model, progress)
     chartable = views["chart_skill_occurrences"]
     _, _, _, rates = calculate_gaps(views["chart_skill_occurrences"], jobs, alignment, settings["emerging_min_jobs"])

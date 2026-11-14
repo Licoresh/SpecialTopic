@@ -26,7 +26,8 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     progress(.05, "Preparing NLP phrases from the complete source text")
     texts = frame.cleaned_text.map(clean_text)
     options.setdefault("priority_phrases", GENERAL.keys())
-    processed = extract_candidate_phrases(texts, progress=progress, **options)
+    processed = extract_candidate_phrases(
+        texts, progress=lambda value, message: progress(.05 + (value - .05) * .25, message), **options)
     annotation_map = {}
     psf_annotations = {}
     if annotations is not None and not annotations.empty:
@@ -47,10 +48,10 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     extracted, diagnostics = [], []
     # NLP and model predictions are reused for repeated text/phrases.
     evidence_by_text = {}
-    progress(.25, "Scanning full text against vocabulary and PSF-AAI")
+    progress(.10, "Scanning full text against vocabulary and PSF-AAI")
     for number, text in enumerate(processed):
         checkpoint()
-        progress(.25 + .1 * number / max(len(processed), 1), f"Scanning text {number + 1:,} of {len(processed):,}")
+        progress(.10 + .05 * number / max(len(processed), 1), f"Scanning text {number + 1:,} of {len(processed):,}")
         evidence = []
         if matcher:
             evidence.extend((p, normalize_text(p), a, b, m) for p, a, b, m in matcher.exact_in_text(text))
@@ -58,7 +59,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
             evidence.append((hit.group(), normalize_text(hit.group()), hit.start(), hit.end(), None))
         evidence.extend((*p, None) for p in processed[text]["phrases"])
         evidence_by_text[text] = evidence
-    progress(.35, "Classifying candidate phrases")
+    progress(.15, "Classifying candidate phrases")
     predictions = {}
     model_name = ""
     if model is not None:
@@ -74,7 +75,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
         elif phrases:
             for start in range(0, len(phrases), 256):
                 checkpoint()
-                progress(.35 + .05 * start / len(phrases),
+                progress(.15 + .65 * start / len(phrases),
                          f"Classifying phrase {start + 1:,} of {len(phrases):,}")
                 batch = phrases[start:start + 256]
                 predictions.update((phrase, (str(label), None))
@@ -82,7 +83,7 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
     can_screen_relevance = model is not None and "IRRELEVANT" in model.classes_
     for number, ((_, row), text) in enumerate(zip(frame.iterrows(), texts)):
         checkpoint()
-        progress(.4 + .5 * (number + 1) / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")
+        progress(.8 + .1 * (number + 1) / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")
         evidence = evidence_by_text[text]
         seen = set()
         for phrase, normal, start, end, mapped in evidence:

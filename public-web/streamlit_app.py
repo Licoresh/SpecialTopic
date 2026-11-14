@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from time import monotonic
 
 # Prefer this repository's shared modules even when the host pre-populates
 # PYTHONPATH with the project root later in the search order.
@@ -1045,20 +1046,27 @@ def _process_pending_upload(loading_slot):
             st.html('<button type="button" class="public-processing-continue" hidden>View available results</button>')
             st.html('<p class="public-processing-privacy">Your recent upload stays available in this browser session.</p>')
 
-    def update(value, text):
+    last_update = 0.
+
+    def update(value, text, force=False):
+        nonlocal last_update
+        now = monotonic()
+        if not force and now - last_update < .15:
+            return
+        last_update = now
         percentage = min(95, max(0, round(float(value) * 100)))
         meter.html(f'<p class="public-processing-status" role="status">{escape_html(str(text))}</p>'
                    '<div class="public-processing-meter">'
                    f'<progress aria-label="Analysis progress" max="100" value="{percentage}"></progress>'
                    f'<span class="public-processing-percent" aria-hidden="true">{percentage}%</span></div>')
 
-    update(0, "Preparing your dataset analysis…")
+    update(0, "Preparing your dataset analysis…", force=True)
     try:
         from src.quantized_classifier import prepare_runtime
-        update(.03, "Loading the final INT8 classifier. The first run downloads the encoders; later runs reuse them.")
+        update(.03, "Loading the final INT8 classifier. The first run downloads the encoders; later runs reuse them.", force=True)
         prepare_runtime()
         result = analyze_upload(content, file_name, mapping, hosted=True, progress=update, model=_analysis_model())
-        update(.95, "Drawing the charts in all six sections…")
+        update(.95, "Drawing the charts in all six sections…", force=True)
         _results_screen(result, preload=True)
     except Exception as exc:
         st.session_state["public_error"] = str(exc)

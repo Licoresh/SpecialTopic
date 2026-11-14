@@ -2,6 +2,7 @@
 from functools import lru_cache
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import urllib.request
@@ -33,6 +34,27 @@ def predict_batch(model, phrases):
             and model is load_final_model()):
         return _released_predictions(model, tuple(phrases))
     return model.predict(phrases)
+
+
+def _inference_threads():
+    count = os.cpu_count() or 1
+    try:
+        if hasattr(os, 'sched_getaffinity'):
+            count = min(count, len(os.sched_getaffinity(0)))
+    except OSError:
+        pass
+    try:
+        quota, period = Path('/sys/fs/cgroup/cpu.max').read_text().split()
+        quota, period = (int(quota), int(period)) if quota != 'max' else (-1, 1)
+    except (OSError, ValueError):
+        try:
+            quota = int(Path('/sys/fs/cgroup/cpu/cpu.cfs_quota_us').read_text())
+            period = int(Path('/sys/fs/cgroup/cpu/cpu.cfs_period_us').read_text())
+        except (OSError, ValueError):
+            quota, period = -1, 1
+    if quota > 0 and period > 0:
+        count = min(count, math.ceil(quota / period))
+    return max(1, min(4, count))
 
 
 def _weights(name, spec):
@@ -74,7 +96,7 @@ def _encoder(name):
     tokenizer.enable_truncation(max_length=spec['max_length'])
     tokenizer.enable_padding(pad_id=spec['pad_id'], pad_token=spec['pad_token'])
     options = ort.SessionOptions()
-    options.intra_op_num_threads = 2
+    options.intra_op_num_threads = _inference_threads()
     options.inter_op_num_threads = 1
     session = ort.InferenceSession(str(_weights(name, spec)), sess_options=options,
                                    providers=['CPUExecutionProvider'])
