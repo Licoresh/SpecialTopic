@@ -113,7 +113,13 @@
     "macro_recall": 0.7845796676441837,
     "weighted_precision": 0.7851948051948052,
     "weighted_recall": 0.7571428571428571,
-    "nested_macro_f1": 0.6512807640218558
+    "nested_macro_f1": 0.6512807640218558,
+    "cv_weighted_f1_mean": 0.6447450393185364,
+    "cv_weighted_f1_std": 0.09635186870060024,
+    "cv_accuracy_mean": 0.6648896645488535,
+    "cv_accuracy_std": 0.08911784550106096,
+    "selected_model": "MiniLM + BGE-M3 INT8 ONNX (linear SVC)",
+    "feature_representation": "AVX2 dynamic INT8 ONNX MiniLM mean pooling + BGE-M3 CLS pooling, equal-weight normalized concatenation"
   },
   "source_encoders": [
     {
