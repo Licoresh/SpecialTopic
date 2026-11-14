@@ -22,13 +22,13 @@ from .column_mapping import suggest_column_mapping
 from .cleaning import clean_dataset, duplicate_ids, job_comparison_csv, normalize_text, analysis_job_values, analysis_jobs
 from .preprocessing import get_nlp
 from .validation import validate_taxonomy
-from .classification import VECTORIZER_CONFIG, predict_competency_category, SELECTION_BASIS
+from .classification import VECTORIZER_CONFIG, predict_competency_category, SELECTION_BASIS, model_slug
 from .training_data import load_labeled_data, validate_labeled_data
 from .model_training import read_model_metadata, training_data_changed
 from .training_sources import (resolve_training_file, inspect_training_folder, training_candidates,
                                training_taxonomy, select_training_file)
 from .labeling import annotation_conflicts, save_annotations, save_correction, corrections
-from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle
+from .workflow import run_extraction, analysis_bundle, input_signature, current_extractions, extraction_freshness, job_market_bundle, research_classifier, research_classifier_revision
 from .analytics import experience_chart_insight, location_chart_insight, job_market_kpis, job_skill_breakdown, skill_chart_tables, psf_demand_tables, psf_reference_roles, chart_skill_key, unmapped_chart_counts, chart_mapping_rows
 from .job_profile import experience_exact_years, job_profile_tables, job_title_timeline, selected_timeline
 from .chart_exports import chart_downloads, chart_filename, chart_group_downloads, chart_table
@@ -693,7 +693,7 @@ def current_analysis():
         lambda: extraction_freshness(meta), ttl=15, max_entries=1)
     st.session_state["_current_analysis_signature"] = signature
     if not current:
-        st.warning("Inputs, labels, settings or the shared released classifier changed. Run Competency Extraction again before interpreting or exporting results.")
+        st.warning("Inputs, labels, settings or the research classifier changed. Run Competency Extraction again before interpreting or exporting results.")
         return False
     return True
 
@@ -701,7 +701,7 @@ def filtered_bundle(*, automatic=False):
     if automatic:
         from .public_engine import automatic_analysis_revision
 
-        revision = digest([VERSION, storage.frame_revision("cleaned_jobs"), automatic_analysis_revision()])
+        revision = digest([VERSION, storage.frame_revision("cleaned_jobs"), automatic_analysis_revision(), research_classifier_revision()])
         result = _session_cached_value("_fow_market_bundle_cache", revision, job_market_bundle,
                                        ttl=None, max_entries=1, clone=_clone_analysis_bundle)
         st.session_state["_fow_loaded_bundle_revision"] = revision
@@ -1180,12 +1180,12 @@ def quality():
                             st.success("Cleaned data and its quality report are saved on this computer. Configure Supabase to share them with teammates.")
 
 def extraction():
-    from .public_engine import _model
     try:
-        shared_classifier = _model()
-    except ValueError:
+        shared_classifier = research_classifier()
+    except ValueError as exc:
+        classifier_error = str(exc)
         shared_classifier = None
-    page_intro("Extract skill phrases", "Run the same released classifier as the public analyzer. Keep approved labels as review evidence and send new phrases to review.")
+    page_intro("Extract skill phrases", "Apply the selected research classifier to the active job ads. Keep approved labels as review evidence and send new phrases to review.")
     with _icon_expander("How extraction works", expanded=False):
         st.write("Saved reviewer labels stay visible as audit evidence but do not override shared classifier output. New phrases remain unreviewed candidates. Classifier predictions and AI drafts are shown separately and are never treated as researcher-approved labels.")
     if storage.read_json("uploads", {}).get("psf_aai") and _local_verified_psf_available():
@@ -1202,16 +1202,16 @@ def extraction():
             elif taxonomy.attrs.get("reference_source") == "bundled_default":
                 st.caption("Bundled TESDA PSF-AAI reference loaded by default. A reviewed shared reference takes priority when available.")
             if shared_classifier is None:
-                st.warning("No shared classifier release is available. Publish a classifier before running analysis.")
+                st.warning(classifier_error)
             else:
-                st.caption(f"Analysis uses {shared_classifier.name} · {shared_classifier.version}, the same released classifier as the public analyzer.")
+                st.caption(f"Analysis uses {shared_classifier.name} · {shared_classifier.version}.")
                 if training_data_changed():
-                    st.warning("Training labels have changed since the research model was trained. Retrain and release it before applying those changes to analysis.")
+                    st.warning("Training labels have changed since the research model was trained. Retrain before applying those changes to analysis.")
     has_results = "_extraction_results_frame" in st.session_state
     if not has_results:
         content_metrics([
             ("PSF-AAI reference entries", f"{len(taxonomy):,}", "layers"),
-            ("Shared classifier", "Available" if shared_classifier else "Unavailable", "model_training"),
+            ("Research classifier", "Available" if shared_classifier else "Unavailable", "model_training"),
             ("Results view", "Not loaded", "format_list_bulleted"),
         ], "extraction_start")
     if has_results:
@@ -1857,7 +1857,7 @@ def _category_review(candidates, occurrences, reviewed_phrases, categories, taxo
 
 
 def training():
-    page_intro("Train classifier", "Train Naive Bayes and Logistic Regression models using researcher-reviewed labels. Training stays disabled until the real dataset passes the validation checks.")
+    page_intro("Train classifier", "Compare classifiers using researcher-reviewed labels. Training stays disabled until the real dataset passes the validation checks.")
     if supabase_store.configured():
         path = None
         st.caption("Training source: saved researcher-reviewed labels in the shared workspace.")
@@ -1889,6 +1889,9 @@ def training():
         with right:
             include_irrelevant = st.checkbox("Intentionally train IRRELEVANT as a separate class", value=False)
             max_features = st.number_input("Maximum TF-IDF features", 100, 100000, 10000, 100)
+        include_semantic = st.checkbox("Compare MiniLM + BGE-M3", value=True,
+                                       help="Uses the two pretrained encoders cached on this computer.")
+        st.caption("Running with the same labels and settings reproduces the same split and scores.")
     def load_training_review_data():
         current_labels = (storage.read_frame("labeled_competencies") if supabase_store.configured()
                           else load_labeled_data(path))
@@ -1936,23 +1939,35 @@ def training():
                 st.warning("Training data has changed since this model was trained. Retraining is recommended.")
             if action_button("Train / Retrain Models", type="primary", disabled=bool(validation["errors"]) or not supabase_store.is_admin()):
                 _start_processing("Train reviewed labels", background_tasks.train, fraction, include_irrelevant,
-                                  {"max_features": int(max_features)})
+                                  {"max_features": int(max_features)}, include_semantic)
             with loading_content("training_saved_model", "table", columns=["model", "accuracy", "macro_f1", "weighted_f1"]) as content:
                 metadata = read_model_metadata()
                 comparison = storage.read_frame("model_metrics") if metadata else pd.DataFrame()
                 with content():
                     if metadata:
                         with content_section("Saved model", "model_training", "training_saved"):
-                            if not comparison.empty:
-                                st.dataframe(comparison.style.apply(lambda row: ["background-color: #F5E2E7" if str(row.get("selected", "")).casefold() == "true" else ""] * len(row), axis=1), hide_index=True, width="stretch")
                             st.write("Selected model:", metadata["model_name"])
-                            st.caption("Based on the current labeled validation sample. The evaluated training-partition model is saved without refitting on holdout examples. Review per-class errors and validate on an independent sample before publication.")
+                            _paper_classifier_comparison("training_paper_comparison")
+                            if not comparison.empty:
+                                with _icon_expander("Current saved run", expanded=False):
+                                    display(comparison, key="training_current_metrics")
+
+
+def _paper_classifier_comparison(key):
+    paper_metrics = pd.read_csv(ROOT / "data/reference/classifier_comparison.csv")
+    st.caption("Paper Table 10 · 356 reviewed phrases · 70 holdout phrases from 23 job ads. CV macro F1 uses training folds only. The exploratory comparisons reuse the same holdout.")
+    display(paper_metrics, key=key, column_config={
+        column: st.column_config.NumberColumn(format="%.4f")
+        for column in paper_metrics.columns if column != "Configuration"
+    })
 
 
 def evaluation():
     page_intro("Evaluate models", "Review model evaluation only when the holdout represents independent job-ad sources.")
     with _icon_expander("How to read the evaluation metrics", expanded=False):
         st.markdown("**Precision** is the share of a model's category predictions that are correct. **Recall** is the share of actual items in a category that the model finds. **F1-score** balances precision and recall. Macro F1 weighs categories equally; Weighted F1 accounts for category frequency.")
+    with content_section("Model evaluation results", "bar_chart", "paper_classifier_comparison"):
+        _paper_classifier_comparison("paper_classifier_comparison_table")
     with loading_content("evaluation_eligibility", "evaluation") as content:
         metadata, metrics = load_data_with_skeleton(
             lambda: (read_model_metadata(), storage.read_frame("model_metrics")), height=160
@@ -1970,7 +1985,7 @@ def evaluation():
                 overlap or too_few_test_sources or split_info.get("strategy", "").startswith("stratified phrase-level")) else False)
         with content():
             if not metadata or metrics.empty:
-                with content_section("Model evaluation results", "query_stats", "evaluation_empty"):
+                with content_section("Current saved run", "query_stats", "evaluation_empty"):
                     st.info("No research model has been trained. Complete manual labeling and the training gate before any F1-scores or other model results can be reported.")
                     with st.container(horizontal=True, gap="medium", wrap=True):
                         page_button("pages/07_ML_Training.py", "Open model training", primary=True, key="evaluation_open_training")
@@ -1993,9 +2008,11 @@ def evaluation():
                 st.caption("Model selected by training cross-validation before holdout scoring. Holdout scores do not choose the winner; other model scores are diagnostic comparisons.")
             else:
                 st.warning("This saved run used the earlier model-selection procedure. Its scores are internal model comparisons, not an independent final evaluation. Retrain to select by training cross-validation; existing artifacts are preserved.")
+            if metadata.get("evaluation_scope"):
+                st.warning(metadata["evaluation_scope"])
             if labels_changed:
                 st.warning("Training data has changed since this model was trained. Retraining is recommended.")
-            with content_section("Model evaluation results", "bar_chart", "evaluation_results"):
+            with content_section("Current saved run", "bar_chart", "evaluation_results"):
                 display(metrics)
                 data = metrics.melt(id_vars="model", value_vars=["accuracy", "macro_f1", "weighted_f1"], var_name="metric", value_name="score")
                 data.score = pd.to_numeric(data.score)
@@ -2012,7 +2029,7 @@ def evaluation():
                                          if metadata.get("selection_basis") == SELECTION_BASIS else
                                          "This legacy run used an earlier selection procedure. Treat its scores as internal comparisons and retrain before final evaluation.")], icon="target")
             choice = st.selectbox("Evaluation model", metrics.model.tolist(), index=metrics.model.tolist().index(metadata["model_name"]))
-            slug = "nb" if choice.startswith("Multinomial") else "lr"
+            slug = model_slug(choice)
             with loading_content("evaluation_details", "heatmap", columns=range(min(12, metadata.get("number_of_classes", 1))), rows=min(12, metadata.get("number_of_classes", 1))) as content:
                 matrix, per_class, predictions = load_data_with_skeleton(
                     lambda: (
@@ -2034,7 +2051,8 @@ def evaluation():
                     if action_button("Predict competency category", disabled=not phrase.strip()):
                         prediction = predict_competency_category(phrase)
                         st.json(prediction)
-                        st.caption("Confidence is the classifier's uncalibrated probability estimate, not a guarantee of correctness. This preview does not change human annotations.")
+                        if prediction["confidence_score"] is not None:
+                            st.caption("Confidence is an uncalibrated probability estimate.")
                     for filename in ("model_metrics.csv", "classification_report.csv", "confusion_matrix.csv", "model_comparison.csv", "test_predictions.csv"):
                         path = storage.ROOT / "outputs/tables" / filename
                         if path.exists():
@@ -2666,12 +2684,12 @@ def _job_market_content(tables, meta, revision=None):
     if meta.get("dataset_id"):
         input_id = meta.get("analysis_input_id", "")
         details = [meta.get("filename"), f"Dataset ID `{meta['dataset_id'][:16]}`",
-                   f"Analysis input ID `{input_id[:16]}`" if input_id else "",
+                   meta.get("classifier_name"), f"Analysis input ID `{input_id[:16]}`" if input_id else "",
                    f"Model ID `{meta['classifier_version']}`"]
         st.caption(" · ".join(detail for detail in details if detail))
         st.download_button("Download analysis input CSV", data=lambda: job_comparison_csv(jobs),
                            file_name="job-market-analysis-input.csv", mime="text/csv", icon=":material/download:",
-                           help="Upload this CSV to the public analyzer and keep the suggested mappings. Compare the Analysis input ID on both results pages.",
+                           help="Upload this CSV to the public analyzer and keep the suggested mappings. The public analyzer uses its released model.",
                            on_click="ignore")
     chart_keys = {"chart_skill_occurrences", "chart_skill_demand", "chart_phrase_review", "chart_skill_family_demand", "chart_family_ad_counts"}
     views = (tables if chart_keys.issubset(tables) else _session_cached_value(
@@ -2737,7 +2755,7 @@ def _job_market_content(tables, meta, revision=None):
             st.caption("An advertisement may contribute to several broad areas; these counts are overlapping categories, not parts of one whole.")
         with _icon_expander("How technical and enabling categories are determined"):
             st.write("Technical / Digital includes AI and machine learning, data and analytics, and general digital tools. Enabling capabilities include communication, personal effectiveness and leadership. Domain knowledge is separate. Education is a credential, not a skill category.")
-            st.write("The discovery vocabulary, released classifier and released PSF-AAI reference determine these automatic chart categories. Reviewed labels and framework decisions are available in the research evidence and reports.")
+            st.write("The discovery vocabulary and PSF-AAI reference provide the chart evidence. Model predictions are recorded for phrase review. Reviewed labels and framework decisions are available in the research evidence and reports.")
             st.write("Analytical categories and PSF-AAI links are separate decisions. Category needs review means the current label does not resolve to the study hierarchy; it is not a new skill type.")
         evidence_tables(f"Excluded and unclear phrases ({len(unclear):,} source occurrences)", {"": unclear},
                         key="result_unclear_evidence", note="Missing values, experience wording, vague descriptors and unfinished phrases are omitted from skill charts and automatic PSF-AAI demand. The original phrases remain available for inspection.")

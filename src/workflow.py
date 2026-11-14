@@ -16,15 +16,51 @@ from .gap_analysis import calculate_gaps
 from .labeling import apply_corrections
 
 # Bump when extraction/matching/classification semantics change, not for UI fixes.
-EXTRACTION_PIPELINE_VERSION = 2
+EXTRACTION_PIPELINE_VERSION = 3
+
+
+def _research_selection():
+    from .classification import SEMANTIC_MODEL
+    from .model_training import read_model_metadata
+
+    metadata = read_model_metadata()
+    return metadata if metadata.get("model_name") == SEMANTIC_MODEL else {}
+
+
+def research_classifier_revision():
+    metadata = _research_selection()
+    if not metadata:
+        path = ROOT / "public-web/site/model.json"
+        return digest(path.read_bytes()) if path.is_file() else None
+    path = storage.ROOT / "models/competency_classifier.joblib"
+    stat = path.stat() if path.is_file() else None
+    return [metadata.get("classifier_sha256"), stat.st_size if stat else None,
+            stat.st_mtime_ns if stat else None]
+
+
+def research_classifier():
+    from .classification import load_trained_model
+    from .public_engine import _model
+
+    metadata = _research_selection()
+    if not metadata:
+        return _model()
+    path = storage.ROOT / "models/competency_classifier.joblib"
+    expected = metadata.get("classifier_sha256")
+    if not expected or not path.is_file() or digest(path.read_bytes()) != expected:
+        raise ValueError("The selected combined classifier is unavailable on this computer. Use the training computer or retrain here.")
+    model = load_trained_model()
+    model.name = metadata["model_name"]
+    model.version = expected[:16]
+    model.release_status = "evaluated research model"
+    return model
 
 
 def _extraction_inputs():
-    classifier_path = ROOT / "public-web/site/model.json"
     return {"datasets": {k: frame_hash(storage.read_frame("cleaned_"+k)) for k in ("jobs", "psf_aai")},
             "annotations": frame_hash(storage.read_frame("labeled_competencies")),
             "settings": storage.settings(),
-            "classifier": digest(classifier_path.read_bytes()) if classifier_path.is_file() else None}
+            "classifier": research_classifier_revision()}
 
 
 def _legacy_extraction_inputs(inputs=None):
@@ -115,8 +151,7 @@ def run_extraction(progress=None, on_prepared=None):
             progress(.02, f"A newer {kind} upload is pending; using the saved cleaned dataset")
     taxonomy = storage.read_frame("cleaned_psf_aai")
     matcher = TaxonomyMatcher(taxonomy, settings["fuzzy_threshold"], settings["semantic_model"], settings["semantic_threshold"]) if not taxonomy.empty else None
-    from .public_engine import _model
-    model = _model()
+    model = research_classifier()
     annotations = storage.read_frame("labeled_competencies")
     frames, diagnostics = [], []
     for kind in ("jobs",):
@@ -181,13 +216,13 @@ def current_extractions(*, source_ids=None):
     return extracted
 
 def job_market_bundle():
-    """Compare the active jobs using the public preset and released reference."""
-    from .public_engine import _model, automatic_analysis_revision, automatic_job_analysis, automatic_job_scope
+    """Analyze active jobs with the research classifier and automatic analysis preset."""
+    from .public_engine import automatic_analysis_revision, automatic_job_analysis, automatic_job_scope
 
     jobs, quality, analysis_id = automatic_job_scope(storage.read_frame("cleaned_jobs"))
     if jobs.empty:
         return {}, {}
-    model = _model()
+    model = research_classifier()
     _, charts, taxonomy, mapping, _ = automatic_job_analysis(jobs, model)
     kpis = job_market_kpis(jobs, charts, taxonomy)
     for name in ("chart_skill_occurrences", "chart_phrase_review"):
@@ -199,7 +234,9 @@ def job_market_bundle():
     dataset_id = str(hashes[0]) if len(hashes) == 1 else ""
     active_upload = storage.read_json("uploads", {}).get("jobs", {})
     metadata = {"dataset_id": dataset_id, "analysis_input_id": analysis_id, "classifier_version": model.version,
-                "analysis_revision": automatic_analysis_revision(),
+                "analysis_revision": (digest([automatic_analysis_revision(), model.version])
+                                      if model.release_status == "evaluated research model" else automatic_analysis_revision()),
+                "classifier_name": model.name,
                 "kpis": kpis, "quality": quality,
                 "filename": active_upload.get("filename", "") if active_upload.get("hash") == dataset_id else ""}
     return tables, metadata

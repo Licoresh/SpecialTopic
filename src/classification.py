@@ -1,4 +1,7 @@
 from pathlib import Path
+from functools import lru_cache
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.svm import SVC
 import joblib
 import numpy as np
 import pandas as pd
@@ -16,6 +19,47 @@ from .training_data import validate_labeled_data, source_disjoint_split
 SELECTION_BASIS = "training_cross_validation"
 
 MODEL_FILES = {"Multinomial Naive Bayes": "naive_bayes_pipeline.joblib", "Logistic Regression": "logistic_regression_pipeline.joblib"}
+SEMANTIC_MODEL = "MiniLM + BGE-M3 (linear SVC)"
+SEMANTIC_SLUG = "semantic"
+SEMANTIC_ENCODERS = (
+    ("sentence-transformers/all-MiniLM-L6-v2", "c21050a7ef692090620a6d037dd736908f9c7cf6"),
+    ("BAAI/bge-m3", "5617a9f61b028005a4858fdac845db406aefb181"),
+)
+
+
+@lru_cache(maxsize=2)
+def _research_encoder(model_id, revision):
+    from sentence_transformers import SentenceTransformer
+    from huggingface_hub import snapshot_download
+
+    folder = snapshot_download(model_id, revision=revision, local_files_only=True)
+    encoder = SentenceTransformer(folder, device="cpu", local_files_only=True)
+    if model_id == "BAAI/bge-m3":
+        encoder.max_seq_length = 128
+    return encoder
+
+
+def _encode_phrases(phrases):
+    vectors = [_research_encoder(*encoder).encode(
+        list(phrases), normalize_embeddings=True, batch_size=16, show_progress_bar=False)
+        for encoder in SEMANTIC_ENCODERS]
+    return np.column_stack(vectors) / np.sqrt(2)
+
+
+class FrozenSkillEmbeddings(TransformerMixin, BaseEstimator):
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return _encode_phrases(X)
+
+
+def model_slug(name):
+    if name == SEMANTIC_MODEL:
+        return SEMANTIC_SLUG
+    return "nb" if name.startswith("Multinomial") else "lr"
+
+
 VECTORIZER_CONFIG = {"lowercase": True, "ngram_range": (1, 2), "sublinear_tf": True, "min_df": 1, "max_features": 10000,
                      "token_pattern": r"(?u)(?<!\w)(?:\.net|c\+\+|c#|[\w]+)(?!\w)"}
 
@@ -30,7 +74,7 @@ def train_model(phrases, labels, model_type="Multinomial Naive Bayes", vectorize
     pipeline.research_model_name_ = model_type
     return pipeline
 
-def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_config=None, progress=None, require_provenance=False):
+def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_config=None, progress=None, require_provenance=False, include_semantic=False):
     data, validation = validate_labeled_data(labeled, test_size, include_irrelevant, require_provenance)
     if validation["errors"]:
         raise ValueError(" ".join(validation["errors"]))
@@ -67,14 +111,38 @@ def compare_models(labeled, test_size=.2, include_irrelevant=False, vectorizer_c
             evaluation["cv_note"] = "Cross-validation withheld: too few training examples or independent sources."
         evaluation.update(model=model, train_count=len(train), test_count=len(test), split={"strategy": split_strategy, "train_phrases": train.text.tolist(), "test_phrases": test.text.tolist(), "train_source_rows": train.source_row.tolist(), "test_source_rows": test.source_row.tolist(), "train_source_ids": sorted(train.source_id.astype(str).unique().tolist()) if "source_id" in train else [], "test_source_ids": sorted(test.source_id.astype(str).unique().tolist()) if "source_id" in test else []}, test_size=test_size, validation=validation)
         result[name] = evaluation
-    # Require a valid training-only choice before inspecting either model's holdout.
+    if include_semantic:
+        if not use_grouped_cv or not cv_splits:
+            raise ValueError("The combined model requires valid source-grouped training folds.")
+        if progress:
+            progress(.65, "Encoding reviewed phrases with MiniLM and BGE-M3")
+        try:
+            train_vectors = _encode_phrases(train.text)
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("Combined training needs sentence-transformers and both pinned encoders in the local Hugging Face cache.") from exc
+        classifier = SVC(C=10, kernel="linear", class_weight="balanced", random_state=SEED)
+        scores = cross_validate(classifier, train_vectors, train.label, cv=cv_splits,
+                                scoring={"macro_f1": "f1_macro", "weighted_f1": "f1_weighted", "accuracy": "accuracy"}, error_score="raise")
+        semantic_metrics = {"cv_folds": folds}
+        for metric in ("macro_f1", "weighted_f1", "accuracy"):
+            values = scores["test_" + metric]
+            semantic_metrics.update({f"cv_{metric}_mean": float(values.mean()), f"cv_{metric}_std": float(values.std())})
+        classifier.fit(train_vectors, train.label)
+        pipeline = Pipeline([("embeddings", FrozenSkillEmbeddings()), ("classifier", classifier)])
+        pipeline.research_model_name_ = SEMANTIC_MODEL
+        result[SEMANTIC_MODEL] = {
+            **result["Logistic Regression"], "model": pipeline, "metrics": semantic_metrics,
+            "cv_scores": {key[5:]: value.tolist() for key, value in scores.items() if key.startswith("test_")},
+        }
+
+    # Require a valid training-only choice before inspecting any model's holdout.
     selected = select_best_model(result)
     for name, evaluation in result.items():
         holdout = evaluate_model(evaluation["model"], test.text, test.label)
         evaluation["metrics"].update(holdout.pop("metrics"))
         evaluation.update(holdout, selected=name == selected)
     if progress:
-        progress(1., "Both models evaluated")
+        progress(1., "Models evaluated")
     return result
 
 def select_best_model(results):
@@ -101,6 +169,8 @@ def select_best_model(results):
 def predict_category(model, phrases):
     if not len(phrases):
         return pd.DataFrame(columns=["phrase", "predicted_category", "probability"])
+    if not hasattr(model, "predict_proba"):
+        return pd.DataFrame({"phrase": list(phrases), "predicted_category": model.predict(phrases), "probability": None})
     probabilities = model.predict_proba(list(phrases))
     return pd.DataFrame({"phrase": list(phrases), "predicted_category": model.classes_[probabilities.argmax(axis=1)], "probability": probabilities.max(axis=1)})
 
@@ -138,7 +208,7 @@ def predict_competency_category(text, root=None):
         raise ValueError("Enter a nonempty competency phrase.")
     model = load_trained_model(root)
     prediction = predict_category(model, [text]).iloc[0]
-    return {"predicted_label": prediction.predicted_category, "confidence_score": float(prediction.probability),
+    return {"predicted_label": prediction.predicted_category, "confidence_score": float(prediction.probability) if pd.notna(prediction.probability) else None,
             "model_name": getattr(model, "research_model_name_", type(model.named_steps["classifier"]).__name__)}
 
 def load_trained_model(root=None):

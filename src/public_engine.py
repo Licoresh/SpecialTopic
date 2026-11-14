@@ -97,6 +97,30 @@ def _model():
     return _ReleasedClassifier(artifact)
 
 
+def load_semantic_public_model():
+    from .classification import SEMANTIC_ENCODERS, SEMANTIC_MODEL, _research_encoder, cached_load_model
+
+    path = ROOT / "models/competency_classifier.joblib"
+    try:
+        metadata = json.loads(path.with_name("model_metadata.json").read_text(encoding="utf-8"))
+        fingerprint = digest(path.read_bytes())
+        if metadata.get("model_name") != SEMANTIC_MODEL or fingerprint != metadata.get("classifier_sha256"):
+            raise ValueError("The installed model does not match the selected classifier metadata.")
+        model = cached_load_model(path)
+        if getattr(model, "research_model_name_", None) != SEMANTIC_MODEL:
+            raise ValueError("The installed pipeline is not the combined classifier.")
+        for encoder in SEMANTIC_ENCODERS:
+            _research_encoder(*encoder)
+    except Exception as exc:
+        raise ClassifierUnavailable("The combined classifier or its encoders are unavailable on this server.") from exc
+    model.name = SEMANTIC_MODEL
+    model.version = fingerprint[:16]
+    model.trained_at = metadata.get("training_timestamp", "")
+    model.release_status = "exploratory"
+    model.release_note = "The classifier was evaluated on the study's reused phrase holdout."
+    return model
+
+
 def _records(frame):
     if frame is None or frame.empty:
         return []
@@ -129,10 +153,13 @@ def automatic_asset_revision():
     return [digest((ROOT / path).read_bytes()) for path in (_MODEL_PATH, _REFERENCE_PATH)] + [digest(profiles.read_bytes()) if profiles.is_file() else ""]
 
 
-def automatic_analysis_revision():
+def automatic_analysis_revision(model=None):
     """Identify the released inputs that determine every automatic result."""
     from .preprocessing import EXTRACTION_VERSION
-    return digest([RESULT_SCHEMA_VERSION, automatic_asset_revision(), DEFAULTS, EXTRACTION_VERSION])
+    inputs = [RESULT_SCHEMA_VERSION, automatic_asset_revision(), DEFAULTS, EXTRACTION_VERSION]
+    if model is not None:
+        inputs.append(model.version)
+    return digest(inputs)
 
 
 def automatic_job_scope(jobs):
@@ -258,7 +285,7 @@ def _build_charts(jobs, extracted, chart_views, profile, geography, monthly, dat
     }
 
 
-def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
+def analyze_upload(content, filename, mapping, *, hosted=False, progress=None, model=None):
     """Analyze one uploaded CSV without persisting its contents or results."""
     maximum = MAX_HOSTED_UPLOAD_BYTES if hosted else MAX_LOCAL_UPLOAD_BYTES
     if not content:
@@ -289,7 +316,8 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     if jobs.empty:
         raise ValueError("The mapped CSV has no job advertisement text.")
     settings = DEFAULTS
-    model = _model()
+    analysis_revision = automatic_analysis_revision(model)
+    model = _model() if model is None else model
     extracted, views, taxonomy, mapping_rows, alignment = automatic_job_analysis(jobs, model, progress)
     chartable = views["chart_skill_occurrences"]
     _, _, _, rates = calculate_gaps(views["chart_skill_occurrences"], jobs, alignment, settings["emerging_min_jobs"])
@@ -340,7 +368,7 @@ def analyze_upload(content, filename, mapping, *, hosted=False, progress=None):
     }
     return {
         "schemaVersion": RESULT_SCHEMA_VERSION,
-        "analysisRevision": automatic_analysis_revision(),
+        "analysisRevision": analysis_revision,
         "filename": Path(filename).name,
         "mapping": selected,
         "summary": metrics,

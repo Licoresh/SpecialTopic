@@ -67,9 +67,17 @@ def extract_skills(frame, source_type, matcher=None, model=None, annotations=Non
             classifier = model_steps.get("classifier") if hasattr(model_steps, "get") else None
             model_name = type(classifier or model).__name__
         phrases = list(dict.fromkeys(normalize_text(p[1] or p[0]) for evidence in evidence_by_text.values() for p in evidence))
-        if phrases:
+        if phrases and hasattr(model, "predict_proba"):
             probabilities = model.predict_proba(phrases)
             predictions = {p: (str(model.classes_[probs.argmax()]), float(probs.max())) for p, probs in zip(phrases, probabilities)}
+        elif phrases:
+            for start in range(0, len(phrases), 256):
+                checkpoint()
+                progress(.35 + .05 * start / len(phrases),
+                         f"Classifying phrase {start + 1:,} of {len(phrases):,}")
+                batch = phrases[start:start + 256]
+                predictions.update((phrase, (str(label), None))
+                                   for phrase, label in zip(batch, model.predict(batch)))
     for number, ((_, row), text) in enumerate(zip(frame.iterrows(), texts)):
         checkpoint()
         progress(.4 + .5 * (number + 1) / len(frame), f"Mapping advertisement {number + 1:,} of {len(frame):,}")

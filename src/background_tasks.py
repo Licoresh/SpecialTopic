@@ -132,12 +132,11 @@ def extraction_preview(*, progress):
     return frame
 
 
-def train(test_size=.2, include_irrelevant=False, vectorizer_config=None, *, progress):
+def train(test_size=.2, include_irrelevant=False, vectorizer_config=None, include_semantic=False, *, progress):
     from .model_training import train_and_save_models
-    metadata, _ = train_and_save_models(test_size, include_irrelevant, vectorizer_config, progress)
-    return (f"Trained and evaluated both classifiers on {metadata['rows_used']:,} reviewed phrases. "
-            f"Selected {metadata['model_name']}. Open Evaluate models for measured results; "
-            "rerun extraction to apply the model.")
+    metadata, _ = train_and_save_models(test_size, include_irrelevant, vectorizer_config, progress, include_semantic=include_semantic)
+    return (f"Trained and evaluated the classifiers on {metadata['rows_used']:,} reviewed phrases. "
+            f"Selected {metadata['model_name']}. Open Evaluate models for measured results.")
 
 
 def suggest(rows, taxonomy, root, *, progress):

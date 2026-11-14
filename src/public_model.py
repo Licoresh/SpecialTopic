@@ -98,6 +98,8 @@ def prepare_release():
     if digest(model_bytes) != metadata.get("classifier_sha256"):
         raise ValueError("The local classifier does not match the evaluated run. Use the training computer or retrain first.")
     model = load_model(BytesIO(model_bytes))
+    if "tfidf" not in model.named_steps:
+        raise ValueError("The public browser supports the TF-IDF pipelines only. The combined model runs in the research workspace.")
     version, content = _browser_artifact(model, metadata)
     return {"version": version, "content": content, "name": metadata["model_name"],
             "trained_at": metadata["training_timestamp"], "test_ads": len(test_ids), "macro_f1": metadata["macro_f1"],

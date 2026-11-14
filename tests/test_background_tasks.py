@@ -1,4 +1,5 @@
 """Synthetic isolated jobs only; never train or publish real research data."""
+import json
 import time
 from threading import Event
 from unittest.mock import Mock
@@ -170,15 +171,28 @@ def test_retry_saving_reuses_computation(worker, monkeypatch, jobs, taxonomy):
     pd.testing.assert_frame_equal(storage.read_frame("extractions_original"), expected)
 
 
-@pytest.mark.parametrize("changed", ["labels", "jobs", "settings", "taxonomy", "model", "cleaning"])
+@pytest.mark.parametrize("changed", ["labels", "jobs", "settings", "taxonomy", "released_model", "semantic_model", "cleaning"])
 def test_retry_rejects_changed_inputs(workspace, monkeypatch, jobs, taxonomy, changed):
     from src import workflow
+    from src.classification import SEMANTIC_MODEL
+    from src.utils import digest
+
     storage.save_frame("cleaned_jobs", jobs)
     storage.save_frame("cleaned_psf_aai", taxonomy)
+    if changed == "released_model":
+        model_path = workspace / "public-web/site/model.json"
+        model_path.parent.mkdir(parents=True)
+        model_path.write_bytes(b"initial released model")
+    elif changed == "semantic_model":
+        model_path = workspace / "models/competency_classifier.joblib"
+        model_path.write_bytes(b"initial semantic model")
+        model_path.with_name("model_metadata.json").write_text(json.dumps({
+            "model_name": SEMANTIC_MODEL, "classifier_sha256": digest(model_path.read_bytes()),
+        }), encoding="utf-8")
     signature = workflow.input_signature()
     retry_signature = workflow._extraction_retry_signature(signature)
-    if changed == "model":
-        (workspace / "models/competency_classifier.joblib").write_bytes(b"SYNTHETIC MODEL CHANGE")
+    if changed in {"released_model", "semantic_model"}:
+        model_path.write_bytes(b"changed classifier artifact")
     elif changed == "labels":
         storage.save_frame("labeled_competencies", pd.DataFrame({"phrase": ["SYNTHETIC Python"], "label": ["Technical / Digital"]}))
     elif changed in {"jobs", "taxonomy"}:

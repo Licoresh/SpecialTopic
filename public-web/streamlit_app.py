@@ -35,7 +35,8 @@ from src.analytics import experience_chart_insight, location_chart_insight
 from src.design import apply_design
 from src.job_profile import selected_timeline
 from src.loaders import load_data
-from src.public_engine import MAX_HOSTED_UPLOAD_BYTES, analyze_upload, automatic_analysis_revision, health
+from src.public_engine import (MAX_HOSTED_UPLOAD_BYTES, ClassifierUnavailable, analyze_upload,
+                               automatic_analysis_revision, health, load_semantic_public_model)
 from src.ui import (analysis_workflow, chart, collect_result_plots, featured_result_chart, featured_visual_chart, job_market_metrics,
                     alignment_status_insight, chart_download_target, chart_evidence_target, ordered_result_table, result_chart_options, result_count_chart,
                     result_heatmap, result_insight, result_single_metric)
@@ -61,7 +62,17 @@ FIELD_LABELS = {
 }
 PRIMARY_FIELDS = ("job_title", "job_description", "required_skills", "preferred_skills", "qualifications")
 OPTIONAL_FIELDS = tuple(field for field in FIELDS["jobs"] if field not in PRIMARY_FIELDS)
-ENGINE = health(hosted=True)
+SEMANTIC_ENABLED = os.environ.get("FOW_PUBLIC_SEMANTIC") == "1"
+ENGINE = None if SEMANTIC_ENABLED else health(hosted=True)
+
+
+@st.cache_resource(show_spinner=False)
+def _semantic_model():
+    return load_semantic_public_model()
+
+
+def _analysis_model():
+    return _semantic_model() if SEMANTIC_ENABLED else None
 
 
 def _style():
@@ -974,6 +985,8 @@ def _results(result):
             for label, short_label, value in facts
         )
         st.html(f'<div class="public-result-meta"><div class="public-result-file"><span class="material-symbols-rounded public-result-file-icon" aria-hidden="true">description</span><div class="public-result-file-copy"><strong>{file_name}</strong><small>{result["summary"]["rows"]:,} CSV rows</small></div></div><div class="public-result-facts" role="group" aria-label="Analysis details" tabindex="0">{fact_markup}</div></div>')
+        if model["releaseStatus"] == "exploratory":
+            st.caption(model["releaseNote"])
     with actions:
         if st.button("Analyze another dataset", type="primary", icon=":material/upload_file:",
                      key="public_analyze_another", width="stretch"):
@@ -1041,7 +1054,7 @@ def _process_pending_upload(loading_slot):
 
     update(0, "Preparing your dataset analysis…")
     try:
-        result = analyze_upload(content, file_name, mapping, hosted=True, progress=update)
+        result = analyze_upload(content, file_name, mapping, hosted=True, progress=update, model=_analysis_model())
         update(.95, "Drawing the charts in all six sections…")
         _results_screen(result, preload=True)
     except Exception as exc:
@@ -1102,7 +1115,12 @@ def _review_mapping(preview):
 
         text_ready = any(mapping.get(field) for field in TEXT_FIELDS["jobs"])
         unique = not duplicate_columns
-        classifier_ready = bool(ENGINE.get("classifierAvailable"))
+        try:
+            model = _analysis_model()
+            classifier_ready = model is not None or bool(ENGINE and ENGINE["classifierAvailable"])
+        except ClassifierUnavailable:
+            model = None
+            classifier_ready = False
         ready = text_ready and unique and classifier_ready
         checks = (("CSV structure validated", True),
                   ("At least one job text column identified", text_ready),
@@ -1117,6 +1135,8 @@ def _review_mapping(preview):
             st.html(f'<div class="public-readiness"><span>{"Ready to analyze" if ready else "Complete the review"}</span><span>{completed * 25}%</span></div>')
             st.progress(completed * 25)
             st.html('<p class="public-workflow-note">Results depend on the structure, quality, and coverage of the uploaded dataset.</p>')
+            if model is not None:
+                st.caption(f"Classifier · {model.name}")
             if not classifier_ready:
                 st.warning("The public classifier is unavailable. You can review the columns, but analysis cannot start until it is available.")
     st.markdown('<p class="public-privacy">Your latest CSV stays available until this browser session ends.</p>', unsafe_allow_html=True)
@@ -1139,7 +1159,11 @@ def main():
     _style()
     _restore_recent_upload()
     result = st.session_state.get("public_result")
-    if result and result.get("analysisRevision") != automatic_analysis_revision():
+    try:
+        current_revision = automatic_analysis_revision(_analysis_model()) if result else None
+    except ClassifierUnavailable:
+        current_revision = None
+    if result and result.get("analysisRevision") != current_revision:
         st.session_state.pop("public_result")
         can_refresh = st.session_state.get("public_content") is not None and st.session_state.get("public_filename")
         st.session_state["public_stage"] = "processing" if can_refresh else "review"

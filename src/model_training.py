@@ -5,7 +5,7 @@ import platform
 from pathlib import Path
 import pandas as pd
 from . import storage
-from .classification import compare_models, save_model, MODEL_FILES, VECTORIZER_CONFIG, SELECTION_BASIS
+from .classification import compare_models, save_model, MODEL_FILES, VECTORIZER_CONFIG, SELECTION_BASIS, SEMANTIC_MODEL, SEMANTIC_ENCODERS, model_slug
 from .training_data import load_labeled_data, labeled_file_hash
 from .reporting import export_csv
 from .utils import timestamp, frame_hash, digest
@@ -30,7 +30,7 @@ def training_data_changed(root=None, *, metadata=None):
     return str(path.resolve()) != meta.get("training_file") or meta.get("training_file_hash", meta.get("training_data_hash")) != labeled_file_hash(path)
 
 @exclusive_training
-def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_config=None, progress=None):
+def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_config=None, progress=None, include_semantic=False):
     root = storage.ROOT
     shared = supabase_store.configured()
     if shared:
@@ -44,7 +44,7 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
         path = resolve_training_file(root)
         labels = load_labeled_data(path)
     before_hash = labeled_file_hash(path)
-    results = compare_models(labels, test_size, include_irrelevant, vectorizer_config, progress, require_provenance=True)
+    results = compare_models(labels, test_size, include_irrelevant, vectorizer_config, progress, require_provenance=True, include_semantic=include_semantic)
     if labeled_file_hash(path) != before_hash:
         raise ValueError("Annotations changed during training. No model was published; retry with the current dataset.")
     ensure_training_lease()
@@ -53,7 +53,7 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
     vectorizer = VECTORIZER_CONFIG | (vectorizer_config or {})
     comparison, reports, matrices, predictions, details = [], [], [], [], {}
     for name, result in results.items():
-        slug = "nb" if name.startswith("Multinomial") else "lr"
+        slug = model_slug(name)
         comparison.append({"model": name, **result["metrics"], "selected": name == selected})
         per_class = result["per_class"].reset_index(names="class")
         confusion = result["confusion"].rename_axis("actual").reset_index()
@@ -63,7 +63,7 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
         details[name] = {"metrics": result["metrics"], "train_count": result["train_count"], "test_count": result["test_count"],
                          "split": result["split"], "cv_note": result.get("cv_note", ""), "cv_scores": result.get("cv_scores", {}),
                          "test_fraction": test_size, "random_state": 42, "selection_basis": SELECTION_BASIS, "training_hash": frame_hash(labels),
-                         "training_data_hash": before_hash, "timestamp": trained_at, "features": vectorizer,
+                         "training_data_hash": before_hash, "timestamp": trained_at, "features": {"encoders": SEMANTIC_ENCODERS} if name == SEMANTIC_MODEL else vectorizer,
                          "config": result["model"].named_steps["classifier"].get_params()}
     winner = results[selected]
     validation = winner["validation"]
@@ -80,6 +80,10 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
                 "include_irrelevant": include_irrelevant, "validation": validation, "split": winner["split"],
                 "interpretation": "Based on the current labeled validation sample. Minimum sample gates do not establish research accuracy; independent validation is still required.",
                 "classifier_config": details[selected]["config"], "refit_on_holdout": False}
+    if include_semantic:
+        metadata["evaluation_scope"] = "Exploratory comparison on a previously inspected holdout. Independent confirmation is pending."
+    if selected == SEMANTIC_MODEL:
+        metadata["encoders"] = SEMANTIC_ENCODERS
     from .background_tasks import begin_publication
     begin_publication()
     # No artifacts are written before both models, their evaluation, and selection succeed.
@@ -88,8 +92,8 @@ def train_and_save_models(test_size=.2, include_irrelevant=False, vectorizer_con
         metadata["shared_run_id"] = supabase_store.session_state()["training_run_id"]
         metadata["snapshot_note"] = "Evaluated on a fixed Supabase reviewed-label snapshot; subsequent team edits are not included."
     for name, result in results.items():
-        slug = "nb" if name.startswith("Multinomial") else "lr"
-        save_model(result["model"], root / "models" / MODEL_FILES[name])
+        slug = model_slug(name)
+        save_model(result["model"], root / "models" / MODEL_FILES.get(name, "semantic_pipeline.joblib"))
         storage.save_frame(f"evaluation_{slug}_per_class", result["per_class"].reset_index(names="class"))
         storage.save_frame(f"evaluation_{slug}_confusion", result["confusion"].reset_index(names="actual"))
         storage.save_frame(f"evaluation_{slug}_predictions", result["predictions"])
